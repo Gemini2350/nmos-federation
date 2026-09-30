@@ -1,85 +1,88 @@
 # CLAUDE.md — NMOS Federation
 
-Gateway für punktuellen Signalaustausch zwischen getrennten ST-2110/NMOS-Systemen.
-Vollständiges Konzept: `docs/ARCHITECTURE.md` — bei Architekturfragen dort nachsehen,
-nicht neu erfinden.
+A gateway for exchanging individual signals between separate ST 2110 / NMOS systems.
+Full concept: `docs/ARCHITECTURE.md` — look there for architecture questions instead
+of reinventing them.
 
-## Kurzfassung
+## In short
 
-Virtuelle NMOS-Receiver in einer Domäne; wird darauf geschaltet, entsteht ein
-virtueller NMOS-Sender in einer anderen Domäne mit umgeschriebenem SDP. Der
-Medienpfad läuft über Multicast-NAT auf Switches (eAPI), Red und Blue getrennt,
-Adressen paarweise aus dem Pool der Ziel-Domäne (gerade = blue, ungerade = red).
+Virtual NMOS receivers live in one domain; connect a source to one and a virtual
+sender with a rewritten SDP appears in another domain. The essence path runs over
+multicast NAT on the switches (eAPI), red and blue separately, addresses handed out
+in pairs from the target domain's pool (even = blue, odd = red).
 
-**Domäne** = ein Netz mit eigenem Interface, eigenem Pool und eigenem L3-Interface je
-Switch. Genau eine interne, beliebig viele externe; pro Domäne 1..n Registries.
-Mehrere Partner im selben Netz = eine Domäne mit mehreren Registries; Partner in
-getrennten Netzen = mehrere Domänen.
+**Domain** = a network with its own interface, its own pool and its own L3 interface
+per switch. Exactly one internal, any number of external; 1..n registries per domain.
+Several partners in the same network = one domain with several registries; partners
+in separate networks = several domains.
 
-## Struktur
+## Layout
 
 ```
 server/src/
-  federation/engine.ts      Orchestrator: Statemachine, Registrierungen, Reconcile
-  federation/pool.ts        Pärchen-Allokator + NatGroupAllocator
-  federation/pools.ts       PoolManager: ein Pool je Domäne, NAT-Groups global
-  federation/channel.ts     buildChannelPlan — reine Plan-Ableitung, ohne Netzwerk
-  federation/state.ts       persistierter State: seed, Channels, IS-05-Zustände
-  nmos/sdp.ts               SDP parsen (inkl. rtpmap/fmtp) + Gruppen/Quellen ersetzen
-  nmos/resources.ts         IS-04-Ressourcen, Essence aus SDP, deterministische UUIDv5
-  nmos/registry-client.ts   IS-04 Registration + Heartbeat + DNS-SD
-  nmos/node-api.ts          IS-04 Node API, IS-05 vRX/vTX, /transportfile
-  switch/driver.ts          Treiber-Interface program/unprogram/readState
-  switch/arista-eapi.ts     eAPI runCmds, Kommando-Templates
-  switch/mock.ts            protokolliert nur — Federation ohne Hardware testbar
-  tools/switch-preview.ts   druckt die EOS-Kommandos eines Channels
-  config/                   Domänen, Registries, NAT, Validierung
-  api/rest.ts               REST + WebSocket fürs GUI
-ui/                         Vue 3 + Vite: Channels, Devices, Einstellungen
+  federation/engine.ts      orchestrator: state machine, registrations, reconcile
+  federation/pool.ts        pair allocator + NatGroupAllocator
+  federation/pools.ts       PoolManager: one pool per domain, NAT groups global
+  federation/channel.ts     buildChannelPlan — pure plan derivation, no network
+  federation/state.ts       persisted state: seed, channels, IS-05 states
+  nmos/sdp.ts               SDP parsing (incl. rtpmap/fmtp) + group/source rewrite
+  nmos/resources.ts         IS-04 resources, essence from SDP, deterministic UUIDv5
+  nmos/registry-client.ts   IS-04 registration + heartbeat + DNS-SD
+  nmos/node-api.ts          IS-04 node API, IS-05 vRX/vTX, /transportfile
+  switch/driver.ts          driver interface program/unprogram/readState
+  switch/arista-eapi.ts     eAPI runCmds, command templates
+  switch/mock.ts            logs only — federation testable without hardware
+  tools/switch-preview.ts   prints a channel's EOS commands
+  config/                   domains, registries, NAT, validation
+  api/rest.ts               REST + WebSocket for the GUI
+ui/                         Vue 3 + Vite: channels, devices, settings
 ```
 
-Alles ohne Hardware testbar: `switch/mock.ts` protokolliert die Kommandos,
-`engine.test.ts` fährt die ganze Kette gegen eine Stub-Registry.
+Everything is testable without hardware: `switch/mock.ts` logs the commands and
+`engine.test.ts` drives the whole chain against a stub registry.
 
-## Regeln
+## Rules
 
-- **IDs sind persistent.** UUIDv5 aus Node-UUID + logischem Schlüssel. Ein
-  Container-Neustart darf keine Controller-Zuordnung zerreißen.
-- **Adressen kommen aus dem Pool der ZIEL-Domäne** — sie müssen in dem Netz gültig
-  sein, in dem der Sender entsteht.
-- **NAT-Group-Nummern gelten pro Switch, nicht pro Domäne.** Deshalb ein globaler
-  Allokator (`NatGroupAllocator`), nie ein Ableiten aus dem Pool-Index.
-- **Ingress = Quell-Domäne, Egress = Ziel-Domäne**, beides Interfaces auf demselben
-  Switch. Es gibt keine intern/extern-Sonderbehandlung mehr.
-- **Abbau ist die exakte Umkehrung des Aufbaus**, und der vTX wird immer *zuerst*
-  abgemeldet — sonst schaltet jemand auf einen bereits toten Strom.
-- **Eine ausgefallene Registry darf einen Channel nicht kippen.** Je Registry ein
-  eigener Client mit eigenem Heartbeat; Fehlendes zieht der Reconciler nach.
-- **Pool-Freigabe nur über den PoolManager**, nie durch direktes Editieren des State.
-- **Switch-Kommandos gehören in `switch/arista-eapi.ts`**, nirgends sonst.
-- **Die Konfiguration ist ein Provider, kein Snapshot.** `Engine` bekommt
-  `config: () => store.current`; ein `store.save()` ersetzt das Objekt. Wer die
-  Config als Referenz festhält, sieht Settings-Änderungen nie — genau dieser Bug
-  hat die über die REST-API angelegten Receiver in der Node API verschwinden lassen.
-- **Zwei Ports:** `port` (GUI/REST, 0.0.0.0) und `nmosPort` (Node/Connection API, je
-  Domäne an die IP dieser Domäne gebunden). Liegen zwei Domänen auf derselben IP,
-  nimmt die zweite den nächsten freien Port; der `href` folgt dem.
+- **IDs are persistent.** UUIDv5 from the node UUID plus a logical key. A container
+  restart must not break a controller's bindings.
+- **Addresses come from the TARGET domain's pool** — they must be valid in the
+  network where the sender appears.
+- **NAT group numbers are per switch, not per domain.** Hence a global allocator
+  (`NatGroupAllocator`), never derived from the pool index.
+- **Ingress = source domain, egress = target domain**, both interfaces on the same
+  switch. There is no internal/external special case any more.
+- **Teardown is the exact reverse of setup**, and the virtual sender is always
+  unregistered *first* — otherwise someone connects to a stream that is already dead.
+- **A registry that is down must not take a channel with it.** One client with its
+  own heartbeat per registry; the reconciler catches up on what is missing.
+- **Release pool entries only through the PoolManager**, never by editing state.
+- **Switch commands belong in `switch/arista-eapi.ts`** and nowhere else.
+- **The configuration is a provider, not a snapshot.** `Engine` receives
+  `config: () => store.current`; a `store.save()` replaces the object. Holding the
+  config by reference means never seeing settings changes — that exact bug made
+  receivers created through the REST API vanish from the node API.
+- **Two ports:** `port` (GUI/REST, 0.0.0.0) and `nmosPort` (node/connection API,
+  bound per domain to that domain's IP). If two domains share an IP, the second takes
+  the next free port and its `href` follows.
+- **`.dockerignore` matters.** Without it the build context carries both
+  `node_modules` trees and "load build context" takes minutes on a virtiofs-backed
+  Docker host.
 
-## Befehle
+## Commands
 
 ```bash
-cd server && npm install && npm test     # Offline-Tests (Pool, SDP, Plan)
-cd server && npm run dev                 # Backend mit Mock-Switch
-cd server && npm run switch:preview      # EOS-Kommandos eines Channels ausgeben
-curl -s localhost:8080/api/status        # Registries, Switches, Pool-Füllstand
-cd ui && npm run dev                     # GUI-Dev-Server
+cd server && npm install && npm test     # offline tests (pool, SDP, plan, engine)
+cd server && npm run dev                 # backend with the mock switch
+cd server && npm run switch:preview      # print a channel's EOS commands
+cd ui && npm run dev                     # GUI dev server
 docker compose up -d --build
+curl -s localhost:8080/api/status        # registries, switches, pool usage
 ```
 
-## Nicht vergessen
+## Do not forget
 
-Auf der Zielhardware (DCS-7060SX2-48YC6, EOS 4.35.1F) nimmt die CLI
-`ip nat destination static` **an**, die Regel erscheint aber **nicht** in
-`show ip nat translation`. Ob sie in Hardware programmiert wird, ist offen und
-entscheidet sich am Traffic-Test — bis dahin gilt der eAPI-Treiber nicht als
-tragfähig. Stand und nächste Schritte: `docs/ARCHITECTURE.md`, offener Punkt 1.
+Multicast NAT on Arista is platform dependent, and the target platform
+(DCS-7060SX2, Tomahawk+) is not on Arista's NAT list. On the box the CLI **accepts**
+`ip nat destination static`, but `show ip nat translation` stays **empty** — whether
+it is programmed in hardware is decided by a traffic test. Until then the eAPI driver
+does not count as proven. See `docs/ARCHITECTURE.md`, open point 1.

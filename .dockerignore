@@ -1,0 +1,9 @@
+# Without this the build context includes node_modules and dist — tens of thousands
+# of files that make "load build context" take minutes on a virtiofs-backed Docker
+# host. The image installs its own dependencies anyway.
+**/node_modules
+**/dist
+**/.git
+**/.DS_Store
+config/
+*.log

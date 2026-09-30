@@ -12,7 +12,7 @@ import { MockSwitchDriver } from '../switch/mock.js';
 import { DEFAULT_CONFIG, type AppConfig, type DomainConfig } from '../config/schema.js';
 import type { AristaConfig } from '../switch/arista-eapi.js';
 
-/** Stub-Registry: nimmt Registrierungen an und protokolliert sie. */
+/** Stub registry: accepts registrations and records them. */
 interface StubRegistry {
   server: Server;
   url: string;
@@ -128,7 +128,7 @@ async function buildEngine(registryUrls: { internal: string; partnerA: string },
   return { engine, state, drivers, cfg };
 }
 
-test('Ende-zu-Ende: Schaltung auf virtuellen Receiver erzeugt NAT und veröffentlichten Sender', async (t) => {
+test('end to end: connecting to a virtual receiver creates NAT and a published sender', async (t) => {
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
@@ -143,16 +143,16 @@ test('Ende-zu-Ende: Schaltung auf virtuellen Receiver erzeugt NAT und veröffent
 
   await engine.start();
 
-  // Der virtuelle Receiver ist sofort registriert — ohne Schaltung.
+  // The virtual receiver is registered right away — without any connection.
   assert.ok(intReg.posts.some((p) => p.type === 'node'));
   assert.ok(intReg.posts.some((p) => p.type === 'device'));
   const rx = intReg.posts.find((p) => p.type === 'receiver');
-  assert.ok(rx, 'Receiver muss in der internen Registry stehen');
+  assert.ok(rx, 'the receiver must be in the internal registry');
   assert.equal(rx!.data.label, 'Fed RX 1');
-  // Vor der Schaltung gibt es keinen Sender.
+  // Before the connection there is no sender.
   assert.equal(extReg.posts.filter((p) => p.type === 'sender').length, 0);
 
-  // --- Anwender schaltet eine echte Quelle auf den virtuellen Receiver ------
+  // --- the operator connects a real source to the virtual receiver ----------
   const channel = await engine.activate('vrx1', {
     sender_id: 'real-sender-uuid',
     master_enable: true,
@@ -164,16 +164,16 @@ test('Ende-zu-Ende: Schaltung auf virtuellen Receiver erzeugt NAT und veröffent
   assert.equal(channel.targetDomain, 'partnerA');
   assert.deepEqual(channel.legs.map((l) => l.fabric), ['red', 'blue']);
 
-  // Pool: gerade = blue, ungerade = red, aus dem Pool der ZIEL-Domäne.
+  // Pool: even = blue, odd = red, from the TARGET domain's pool.
   assert.equal(channel.allocation!.groups.blue, '239.200.0.0');
   assert.equal(channel.allocation!.groups.red, '239.200.0.1');
   assert.deepEqual(channel.allocation!.sources, { red: '10.9.1.200', blue: '10.9.2.200' });
 
-  // Switch: beide Fabrics programmiert, Ingress intern, Egress extern.
+  // Switch: both fabrics programmed, ingress internal, egress external.
   const redCmds = drivers.red.applied.get(`${channel.id}:red`);
   const blueCmds = drivers.blue.applied.get(`${channel.id}:blue`);
-  assert.ok(redCmds, 'rote Fabric muss programmiert sein');
-  assert.ok(blueCmds, 'blaue Fabric muss programmiert sein');
+  assert.ok(redCmds, 'the red fabric must be programmed');
+  assert.ok(blueCmds, 'the blue fabric must be programmed');
   assert.ok(redCmds!.includes('ip nat destination static 239.10.1.5 239.200.0.1 group 100'));
   assert.ok(redCmds!.includes('ip igmp static-group 239.10.1.5 source 10.1.1.50'));
   assert.ok(redCmds!.includes('ip nat source static 10.1.1.50 10.9.1.200 group 100'));
@@ -181,45 +181,45 @@ test('Ende-zu-Ende: Schaltung auf virtuellen Receiver erzeugt NAT und veröffent
   assert.ok(redCmds!.includes('interface Vlan901'));
   assert.ok(blueCmds!.includes('ip nat destination static 239.10.2.5 239.200.0.0 group 100'));
 
-  // Registry: Sender ist in der Ziel-Registry, mit abgeleiteter Essence.
+  // Registry: the sender is in the target registry, with derived essence.
   const sender = extReg.posts.find((p) => p.type === 'sender');
   const flow = extReg.posts.find((p) => p.type === 'flow');
-  assert.ok(sender, 'Sender muss in der Partner-Registry stehen');
+  assert.ok(sender, 'the sender must be in the partner registry');
   assert.equal(flow!.data.frame_width, 1920);
   assert.equal(flow!.data.frame_height, 1080);
   assert.deepEqual(flow!.data.grain_rate, { numerator: 25, denominator: 1 });
   assert.equal(flow!.data.media_type, 'video/raw');
   assert.match(String(sender!.data.manifest_href), /\/transportfile$/);
-  // …und nicht in der internen.
+  // …and not in the internal one.
   assert.equal(intReg.posts.filter((p) => p.type === 'sender').length, 0);
 
-  // SDP des virtuellen Senders trägt die Pool-Adressen, nicht die Originale.
+  // The virtual sender's SDP carries the pool addresses, not the originals.
   assert.match(channel.senderSdp!, /c=IN IP4 239\.200\.0\.1\/64/);
   assert.match(channel.senderSdp!, /c=IN IP4 239\.200\.0\.0\/64/);
   assert.match(channel.senderSdp!, /a=source-filter: incl IN IP4 239\.200\.0\.1 10\.9\.1\.200/);
   assert.ok(!channel.senderSdp!.includes('239.10.1.5'));
   assert.ok(!channel.senderSdp!.includes('10.1.1.50'));
-  // Essence-Beschreibung bleibt unangetastet.
+  // The essence description is untouched.
   assert.ok(channel.senderSdp!.includes('width=1920; height=1080; exactframerate=25'));
 
-  // --- Receiver wird abgeschaltet ------------------------------------------
+  // --- the receiver is switched off -----------------------------------------
   extReg.deletes.length = 0;
   await engine.deactivate('vrx1');
 
   assert.equal(state.current.channels.length, 0);
-  assert.equal(drivers.red.applied.size, 0, 'NAT muss abgeräumt sein');
+  assert.equal(drivers.red.applied.size, 0, 'NAT must be cleared');
   assert.equal(drivers.blue.applied.size, 0);
   assert.ok(
     extReg.deletes.some((u) => u.includes('/senders/')),
-    'der virtuelle Sender muss abgemeldet sein',
+    'the virtual sender must be unregistered',
   );
-  // Der Sender wird vor Source und Flow abgemeldet — niemand soll auf einen
-  // Strom schalten, den wir gleich abräumen.
+  // The sender is unregistered before source and flow — nobody should connect to
+  // a stream we are about to tear down.
   const senderIdx = extReg.deletes.findIndex((u) => u.includes('/senders/'));
   const flowIdx = extReg.deletes.findIndex((u) => u.includes('/flows/'));
-  assert.ok(senderIdx < flowIdx, 'Sender zuerst, dann Flow');
+  assert.ok(senderIdx < flowIdx, 'sender first, then flow');
 
-  // Pool ist wieder frei und wird als nächstes erneut vergeben.
+  // The pool is free again and is handed out next.
   const again = await engine.activate('vrx1', {
     sender_id: 'real-sender-uuid',
     master_enable: true,
@@ -230,7 +230,7 @@ test('Ende-zu-Ende: Schaltung auf virtuellen Receiver erzeugt NAT und veröffent
   assert.equal(again.allocation!.natGroupId, 100);
 });
 
-test('NAT aus: SDP wird 1:1 kopiert, der Switch bleibt unberührt', async (t) => {
+test('NAT off: the SDP is copied verbatim and the switch is left alone', async (t) => {
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
@@ -259,7 +259,7 @@ test('NAT aus: SDP wird 1:1 kopiert, der Switch bleibt unberührt', async (t) =>
   assert.ok(extReg.posts.some((p) => p.type === 'sender'));
 });
 
-test('unbrauchbares SDP scheitert, bevor der Switch angefasst wird', async (t) => {
+test('an unusable SDP fails before the switch is touched', async (t) => {
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
@@ -277,7 +277,7 @@ test('unbrauchbares SDP scheitert, bevor der Switch angefasst wird', async (t) =
     engine.activate('vrx1', {
       sender_id: null,
       master_enable: true,
-      // fmtp ohne width/height -> Essence nicht ableitbar
+      // fmtp without width/height -> essence cannot be derived
       transport_file: {
         data: 'v=0\r\no=- 1 1 IN IP4 10.1.1.50\r\ns=x\r\nm=video 5004 RTP/AVP 96\r\nc=IN IP4 239.10.1.5/64\r\na=rtpmap:96 raw/90000\r\na=fmtp:96 sampling=YCbCr-4:2:2;\r\n',
         type: 'application/sdp',
@@ -287,8 +287,8 @@ test('unbrauchbares SDP scheitert, bevor der Switch angefasst wird', async (t) =
     /width\/height/,
   );
 
-  assert.equal(drivers.red.applied.size, 0, 'Switch darf nicht angefasst worden sein');
+  assert.equal(drivers.red.applied.size, 0, 'the switch must not have been touched');
   assert.equal(state.current.channels[0]!.state, 'failed');
-  assert.equal(state.current.channels[0]!.allocation, null, 'Pool muss freigegeben sein');
+  assert.equal(state.current.channels[0]!.allocation, null, 'the pool must be released');
   assert.equal(extReg.posts.filter((p) => p.type === 'sender').length, 0);
 });

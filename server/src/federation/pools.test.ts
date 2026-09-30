@@ -21,14 +21,14 @@ const domains = [
   domain('partnerB', 'external', '239.210.0.0'),
 ];
 
-test('jede Domäne hat ihren eigenen Pool', () => {
+test('every domain has its own pool', () => {
   const pools = new PoolManager(domains, [100, 999]);
   assert.equal(pools.allocate('partnerA').groups.blue, '239.200.0.0');
   assert.equal(pools.allocate('partnerB').groups.blue, '239.210.0.0');
   assert.equal(pools.allocate('internal').groups.blue, '239.201.0.0');
 });
 
-test('NAT-Group-Nummern kollidieren nicht zwischen Domänen — sie gelten pro Switch', () => {
+test('NAT group numbers do not collide across domains — they are per switch', () => {
   const pools = new PoolManager(domains, [100, 999]);
   const ids = [
     pools.allocate('partnerA').natGroupId,
@@ -38,19 +38,19 @@ test('NAT-Group-Nummern kollidieren nicht zwischen Domänen — sie gelten pro S
   assert.equal(new Set(ids).size, 3);
 });
 
-test('erschöpfte NAT-Group-Nummern geben das Pärchen wieder frei', () => {
+test('an exhausted NAT group range releases the pair again', () => {
   const pools = new PoolManager(domains, [100, 100]);
   pools.allocate('partnerA');
-  assert.throws(() => pools.allocate('partnerA'), /NAT-Group/);
-  assert.equal(pools.status()['partnerA']!.free, 1); // Pärchen ist nicht verwaist
+  assert.throws(() => pools.allocate('partnerA'), /NAT group/);
+  assert.equal(pools.status()['partnerA']!.free, 1); // the pair is not orphaned
 });
 
-test('unbekannte Domäne wird abgewiesen', () => {
+test('an unknown domain is rejected', () => {
   const pools = new PoolManager(domains, [100, 999]);
-  assert.throws(() => pools.allocate('partnerC'), /keine Domäne/);
+  assert.throws(() => pools.allocate('partnerC'), /no domain/);
 });
 
-test('Freigabe gibt Pärchen und NAT-Group zurück', () => {
+test('releasing returns both the pair and the NAT group', () => {
   const pools = new PoolManager(domains, [100, 999]);
   const a = pools.allocate('partnerA');
   pools.release(a);
@@ -59,7 +59,7 @@ test('Freigabe gibt Pärchen und NAT-Group zurück', () => {
   assert.equal(b.natGroupId, a.natGroupId);
 });
 
-test('Recovery stellt Pärchen und NAT-Group aus dem State wieder her', () => {
+test('recovery restores pair and NAT group from the state', () => {
   const pools = new PoolManager(domains, [100, 999]);
   pools.reserve({ domainId: 'partnerA', index: 1, groups: { red: '', blue: '' }, sources: null, natGroupId: 500 });
   assert.deepEqual(pools.status()['partnerA'], { free: 1, total: 2, used: [1] });

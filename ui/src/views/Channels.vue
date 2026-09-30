@@ -19,7 +19,7 @@ async function refresh() {
 
 onMounted(async () => {
   await refresh();
-  // Live-Updates; der Poll ist nur das Netz darunter.
+  // Live updates; the poll is only the safety net underneath.
   ws = api.events();
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data as string);
@@ -33,38 +33,41 @@ onUnmounted(() => {
   if (poll) clearInterval(poll);
 });
 
-const badge = (state: string) =>
-  state === 'active' ? 'ok' : state === 'failed' ? 'bad' : 'busy';
+const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed' ? 'bad' : 'busy');
 </script>
 
 <template>
   <div class="head">
     <h2>Channels</h2>
-    <button @click="api.reconcile().then(refresh)">Abgleich jetzt</button>
+    <button @click="api.reconcile().then(refresh)">Reconcile now</button>
   </div>
   <p v-if="error" class="bad">{{ error }}</p>
 
   <section v-if="status" class="cards">
+    <div class="card" v-if="!status.nat.enabled">
+      <h3>NAT</h3>
+      <span class="warn">globally off — SDPs are copied verbatim</span>
+    </div>
     <div class="card" v-for="(sw, fabric) in status.switches" :key="fabric">
       <h3>Switch {{ fabric }}</h3>
-      <span :class="sw.reachable ? 'ok' : 'bad'">{{ sw.reachable ? sw.version || 'erreichbar' : sw.error || 'nicht erreichbar' }}</span>
+      <span :class="sw.reachable ? 'ok' : 'bad'">{{ sw.reachable ? sw.version || 'reachable' : sw.error || 'unreachable' }}</span>
     </div>
     <div class="card" v-for="reg in status.registries" :key="reg.id">
       <h3>{{ reg.label }}</h3>
-      <span :class="reg.reachable ? 'ok' : 'bad'">{{ reg.reachable ? `${reg.resources} Ressourcen` : reg.error || 'unbekannt' }}</span>
+      <span :class="reg.reachable ? 'ok' : 'bad'">{{ reg.reachable ? `${reg.resources} resources` : reg.error || 'unknown' }}</span>
       <small>{{ reg.domainId }}</small>
     </div>
     <div class="card" v-for="(pool, domainId) in status.pools" :key="domainId">
       <h3>Pool {{ domainId }}</h3>
-      <span>{{ pool.free }} / {{ pool.total }} Pärchen frei</span>
+      <span>{{ pool.free }} / {{ pool.total }} pairs free</span>
     </div>
   </section>
 
   <table v-if="channels.length">
     <thead>
       <tr>
-        <th>Status</th><th>Richtung</th><th>Quelle</th><th>Federation-Adressen</th>
-        <th>NAT-Group</th><th>Registries</th><th>Fehler</th><th></th>
+        <th>State</th><th>Direction</th><th>Source</th><th>Federation addresses</th>
+        <th>NAT group</th><th>Registries</th><th>Error</th><th></th>
       </tr>
     </thead>
     <tbody>
@@ -74,7 +77,7 @@ const badge = (state: string) =>
         <td>
           <div v-for="leg in c.legs" :key="leg.fabric">
             <span :class="leg.fabric">{{ leg.fabric }}</span> {{ leg.group }}:{{ leg.port }}
-            <small v-if="leg.source">von {{ leg.source }}</small>
+            <small v-if="leg.source">from {{ leg.source }}</small>
           </div>
         </td>
         <td>
@@ -82,19 +85,19 @@ const badge = (state: string) =>
             <div><span class="red">red</span> {{ c.allocation.groups.red }}</div>
             <div><span class="blue">blue</span> {{ c.allocation.groups.blue }}</div>
           </template>
-          <small v-else>NAT aus — SDP 1:1</small>
+          <small v-else>NAT off — SDP copied verbatim</small>
         </td>
         <td>{{ c.allocation?.natGroupId ?? '—' }}</td>
         <td>{{ c.publishedIn.join(', ') || '—' }}</td>
         <td class="bad">{{ c.error || '' }}</td>
         <td class="actions">
           <button v-if="c.state === 'failed'" @click="api.retryChannel(c.receiverId).then(refresh).catch(e => error = e.message)">Retry</button>
-          <button @click="api.dropChannel(c.receiverId).then(refresh)">Abbauen</button>
+          <button @click="api.dropChannel(c.receiverId).then(refresh)">Tear down</button>
         </td>
       </tr>
     </tbody>
   </table>
-  <p v-else>Keine aktive Federation. Schalte mit deinem Controller eine Quelle auf einen virtuellen Receiver.</p>
+  <p v-else>No federation active. Use your controller to connect a source to a virtual receiver.</p>
 </template>
 
 <style scoped>
@@ -106,6 +109,7 @@ const badge = (state: string) =>
 .ok { color: #2e9e4f; }
 .bad { color: #d24b3e; }
 .busy { color: #c08a2e; }
+.warn { color: #c08a2e; }
 .red { color: #d24b3e; font-weight: 600; }
 .blue { color: #3a78c9; font-weight: 600; }
 .actions { display: flex; gap: 0.4rem; }

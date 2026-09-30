@@ -5,11 +5,13 @@ import { api, type Config, type Device, type VirtualReceiver } from '../api';
 const cfg = ref<Config | null>(null);
 const devices = ref<Device[]>([]);
 const error = ref<string | null>(null);
+const notice = ref<string | null>(null);
 
 const draft = ref({ label: 'Federation OUT', sourceDomain: '', targetDomain: '', targetRegistries: [] as string[], nat: true });
 const rxDraft = ref<Record<string, { count: number; pattern: string; format: VirtualReceiver['format'] }>>({});
 
 const domains = computed(() => cfg.value?.domains ?? []);
+const natGloballyOff = computed(() => cfg.value?.nat.enabled === false);
 const registriesOf = (domainId: string) => (cfg.value?.registries ?? []).filter((r) => r.domainId === domainId);
 
 async function refresh() {
@@ -37,39 +39,65 @@ async function run(fn: () => Promise<unknown>) {
   }
 }
 
+/**
+ * Toggling NAT invalidates every channel of this device: addresses, switch rules and
+ * the published sender were all derived from the old setting. The backend rebuilds
+ * them; here we just report what happened.
+ */
+async function setNat(device: Device, nat: boolean) {
+  notice.value = null;
+  try {
+    const res = await api.updateDevice(device.id, { nat });
+    if (res.rebuilt) {
+      const failed = res.failed?.length ?? 0;
+      notice.value = failed
+        ? `${res.rebuilt} channel(s) rebuilt, ${failed} failed: ${res.failed!.map((f) => f.error).join('; ')}`
+        : `${res.rebuilt} channel(s) rebuilt with NAT ${nat ? 'on' : 'off'}.`;
+    }
+    error.value = null;
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+  await refresh();
+}
+
 onMounted(refresh);
 </script>
 
 <template>
   <h2>Devices</h2>
   <p v-if="error" class="bad">{{ error }}</p>
+  <p v-if="notice" class="notice">{{ notice }}</p>
+  <p v-if="natGloballyOff" class="warn">
+    NAT is switched off globally in the settings — per-device NAT has no effect until you enable it there.
+  </p>
 
   <section class="new">
-    <h3>Neues Device</h3>
+    <h3>New device</h3>
     <div class="row">
       <label>Name <input v-model="draft.label" /></label>
-      <label>Quell-Domäne
+      <label>Source domain
         <select v-model="draft.sourceDomain">
           <option v-for="d in domains" :key="d.id" :value="d.id">{{ d.label }} ({{ d.id }})</option>
         </select>
       </label>
-      <label>Ziel-Domäne
+      <label>Target domain
         <select v-model="draft.targetDomain">
           <option v-for="d in domains" :key="d.id" :value="d.id">{{ d.label }} ({{ d.id }})</option>
         </select>
       </label>
       <label class="check"><input type="checkbox" v-model="draft.nat" /> NAT</label>
-      <button @click="run(() => api.createDevice(draft))">Anlegen</button>
+      <button @click="run(() => api.createDevice(draft))">Create</button>
     </div>
     <fieldset v-if="registriesOf(draft.targetDomain).length">
-      <legend>Ziel-Registries (keine Auswahl = alle aktiven der Domäne)</legend>
+      <legend>Target registries (no selection = all enabled ones of the domain)</legend>
       <label v-for="r in registriesOf(draft.targetDomain)" :key="r.id" class="check">
         <input type="checkbox" :value="r.id" v-model="draft.targetRegistries" /> {{ r.label }}
       </label>
     </fieldset>
     <p class="hint">
-      Fan-out in zwei getrennte Netze braucht zwei Devices — das sind zwei NAT-Übersetzungen.
-      Mehrere Registries im selben Netz sind dagegen nur eine Mehrfachregistrierung.
+      Fanning out into two separate networks needs two devices — that is two NAT translations.
+      Several registries in the same network are just a multiple registration of the same sender.
     </p>
   </section>
 
@@ -77,34 +105,40 @@ onMounted(refresh);
     <header>
       <div>
         <strong>{{ d.label }}</strong>
-        <small>{{ d.sourceDomain }} → {{ d.targetDomain }} · {{ d.nat ? 'NAT' : 'ohne NAT' }} ·
-          {{ d.targetRegistries.length ? d.targetRegistries.join(', ') : 'alle Registries der Ziel-Domäne' }}</small>
+        <small>{{ d.sourceDomain }} → {{ d.targetDomain }} ·
+          {{ d.targetRegistries.length ? d.targetRegistries.join(', ') : 'all registries of the target domain' }}</small>
       </div>
-      <button @click="run(() => api.deleteDevice(d.id))">Device löschen</button>
+      <div class="controls">
+        <label class="check" :title="natGloballyOff ? 'NAT is off globally' : 'Rebuilds this device\'s channels'">
+          <input type="checkbox" :checked="d.nat" @change="setNat(d, ($event.target as HTMLInputElement).checked)" />
+          NAT
+        </label>
+        <button @click="run(() => api.deleteDevice(d.id))">Delete device</button>
+      </div>
     </header>
 
     <table v-if="d.receivers?.length">
-      <thead><tr><th>Virtueller Receiver</th><th>Format</th><th>Aktiv</th><th></th></tr></thead>
+      <thead><tr><th>Virtual receiver</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
       <tbody>
         <tr v-for="vrx in d.receivers" :key="vrx.id">
           <td>{{ vrx.label }}</td>
           <td>{{ vrx.format }}</td>
-          <td>{{ vrx.enabled ? 'ja' : 'nein' }}</td>
-          <td><button @click="run(() => api.deleteReceiver(vrx.id))">Entfernen</button></td>
+          <td>{{ vrx.enabled ? 'yes' : 'no' }}</td>
+          <td><button @click="run(() => api.deleteReceiver(vrx.id))">Remove</button></td>
         </tr>
       </tbody>
     </table>
-    <p v-else><small>Noch keine virtuellen Receiver.</small></p>
+    <p v-else><small>No virtual receivers yet.</small></p>
 
     <div class="row" v-if="rxDraft[d.id]">
-      <label>Anzahl <input type="number" min="1" max="256" v-model.number="rxDraft[d.id]!.count" /></label>
-      <label>Namensmuster <input v-model="rxDraft[d.id]!.pattern" /></label>
+      <label>Count <input type="number" min="1" max="256" v-model.number="rxDraft[d.id]!.count" /></label>
+      <label>Name pattern <input v-model="rxDraft[d.id]!.pattern" /></label>
       <label>Format
         <select v-model="rxDraft[d.id]!.format">
           <option value="video">video</option><option value="audio">audio</option><option value="data">data</option>
         </select>
       </label>
-      <button @click="run(() => api.addReceivers(d.id, rxDraft[d.id]!))">Receiver anlegen</button>
+      <button @click="run(() => api.addReceivers(d.id, rxDraft[d.id]!))">Create receivers</button>
     </div>
   </article>
 </template>
@@ -119,8 +153,11 @@ input, select { padding: 0.3rem 0.4rem; }
 input[type='number'] { width: 5rem; }
 fieldset { margin-top: 0.75rem; border: 1px solid #8883; border-radius: 4px; display: flex; gap: 1rem; flex-wrap: wrap; }
 legend { font-size: 0.8rem; opacity: 0.7; }
-.device header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
+.device header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; gap: 1rem; }
 .device small { display: block; opacity: 0.65; }
+.controls { display: flex; align-items: center; gap: 0.75rem; }
 .hint { font-size: 0.8rem; opacity: 0.7; margin-bottom: 0; }
 .bad { color: #d24b3e; }
+.warn { color: #c08a2e; }
+.notice { color: #2e9e4f; }
 </style>

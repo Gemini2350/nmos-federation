@@ -1,12 +1,12 @@
-/** Gemeinsame Typen. Begriffe wie in docs/ARCHITECTURE.md. */
+/** Shared types. Terminology as in docs/ARCHITECTURE.md. */
 
 export type Fabric = 'red' | 'blue';
 export const FABRICS: Fabric[] = ['red', 'blue'];
 
 /**
- * Referenz auf eine Domäne — ein Netz mit eigenem Interface, eigenem Pool und
- * eigenem L3-Interface auf den beiden Switches. Genau eine Domäne ist die interne,
- * dazu kommen beliebig viele externe.
+ * Reference to a domain — a network with its own interface, its own pool and its own
+ * L3 interface on both switches. Exactly one domain is the internal one, plus any
+ * number of external ones.
  */
 export type DomainId = string;
 
@@ -21,36 +21,36 @@ export type ChannelState =
   | 'releasing'
   | 'failed';
 
-/** Ein Bein eines (evtl. ST-2022-7-redundanten) Streams. */
+/** One leg of a (possibly ST 2022-7 redundant) stream. */
 export interface Leg {
   fabric: Fabric;
   group: string;
-  source: string | null;   // aus a=source-filter oder o=, null wenn ASM ohne Filter
+  source: string | null;   // from a=source-filter or o=, null for ASM without a filter
   port: number;
 }
 
-/** Was aus dem Pool der Ziel-Domäne für einen Channel reserviert wurde. */
+/** What was reserved from the target domain's pool for a channel. */
 export interface Allocation {
-  /** Domäne, aus deren Pool reserviert wurde. */
+  /** Domain whose pool this came from. */
   domainId: DomainId;
-  /** Index des Pärchens im Pool; blue = base+2i, red = base+2i+1. */
+  /** Index of the pair; blue = base+2i, red = base+2i+1. */
   index: number;
   groups: Record<Fabric, string>;
-  /** Übersetzte Quelladressen, nur bei aktivem Source-NAT. */
+  /** Translated source addresses, only with source NAT enabled. */
   sources: Record<Fabric, string> | null;
-  /** EOS NAT-Group-Nummer; Source- und Destination-Regel eines Channels teilen sie. */
+  /** EOS NAT group number; a channel's source and destination rule share it. */
   natGroupId: number;
 }
 
-/** Vollständige Anweisung an den Switch-Treiber für eine Fabric. */
+/** Complete instruction to the switch driver for one fabric. */
 export interface FabricPlan {
   fabric: Fabric;
   origin: { group: string; source: string | null };
   translated: { group: string; source: string | null };
   natGroupId: number;
-  /** L3-Interface der Quell-Domäne auf diesem Switch — hier kommt der Original rein. */
+  /** Source domain's L3 interface on this switch — where the original arrives. */
   ingressInterface: string;
-  /** L3-Interface der Ziel-Domäne auf diesem Switch — hier geht der Übersetzte raus. */
+  /** Target domain's L3 interface on this switch — where the translated one leaves. */
   egressInterface: string;
   join: 'igmpStatic' | 'pim' | 'none';
 }
@@ -64,19 +64,19 @@ export interface Channel {
   id: string;
   receiverId: string;
   deviceId: string;
-  /** Domäne, in der der virtuelle Receiver registriert ist. */
+  /** Domain the virtual receiver is registered in. */
   sourceDomain: DomainId;
-  /** Domäne, in der der virtuelle Sender entsteht. */
+  /** Domain the virtual sender is created in. */
   targetDomain: DomainId;
   state: ChannelState;
-  /** Was der vRX geschaltet bekommen hat. */
+  /** What was connected to the virtual receiver. */
   originSdp: string | null;
   originSenderId: string | null;
   legs: Leg[];
   allocation: Allocation | null;
-  /** SDP des virtuellen Senders (transformiert oder 1:1 kopiert). */
+  /** The virtual sender's SDP (rewritten, or copied verbatim when NAT is off). */
   senderSdp: string | null;
-  /** Registry-IDs, in denen der vTX veröffentlicht ist. */
+  /** Registry IDs the virtual sender is published in. */
   publishedIn: string[];
   error: string | null;
   updatedAt: string;
@@ -85,17 +85,17 @@ export interface Channel {
 export interface FederationDevice {
   id: string;
   label: string;
-  /** Domäne, in der die virtuellen Receiver dieses Devices leben. */
+  /** Domain this device's virtual receivers live in. */
   sourceDomain: DomainId;
-  /** Domäne, in die übersetzt wird. Eine Domäne — Fan-out in zwei getrennte Netze
-   *  braucht zwei NAT-Übersetzungen und damit zwei Devices. */
+  /** Domain to translate into. One domain — fanning out into two separate networks
+   *  needs two NAT translations and therefore two devices. */
   targetDomain: DomainId;
-  /** Registry-IDs innerhalb der Ziel-Domäne, in denen der vTX veröffentlicht wird.
-   *  Leer = alle aktiven Registries der Ziel-Domäne. */
+  /** Registry IDs within the target domain to publish the virtual sender in.
+   *  Empty = all enabled registries of the target domain. */
   targetRegistries: string[];
-  /** NAT für dieses Device; false = SDP wird 1:1 kopiert. */
+  /** NAT for this device; false = the SDP is copied verbatim. */
   nat: boolean;
-  /** Name des Spiegel-Devices in der Ziel-Domäne; leer = abgeleitet. */
+  /** Name of the mirror device in the target domain; empty = derived. */
   mirrorLabel?: string;
   receiverIds: string[];
 }

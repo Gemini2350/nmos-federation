@@ -4,8 +4,8 @@ import { buildProgramCommands, buildUnprogramCommands, type AristaConfig } from 
 import { log } from '../util/log.js';
 
 /**
- * Protokolliert die Kommandos, die an einen echten Switch gingen. Damit ist die
- * komplette Federation-Logik ohne Hardware durchspielbar — inklusive Rollback.
+ * Logs the commands that would go to a real switch. That makes the whole federation
+ * logic playable without hardware — including rollback.
  */
 export class MockSwitchDriver implements SwitchDriver {
   readonly applied = new Map<string, string[]>();

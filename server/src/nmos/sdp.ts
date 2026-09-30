@@ -2,18 +2,18 @@ import type { Fabric, Leg } from '../types.js';
 import { ipToInt } from '../federation/pool.js';
 
 export interface SdpMedia {
-  /** Index der m=-Zeile, 0-basiert. */
+  /** Index of the m= line, zero-based. */
   index: number;
   type: string;            // video | audio | application
   port: number;
-  /** Aus media-level c=, sonst session-level c=. */
+  /** From the media-level c=, else the session-level c=. */
   group: string | null;
   ttl: number | null;
-  /** Quelle aus a=source-filter (SSM), sonst null. */
+  /** Source from a=source-filter (SSM), else null. */
   sourceFilter: string | null;
   /** a=rtpmap: 96 raw/90000  ->  { payload: 96, encoding: 'raw', clockRate: 90000, params: [] } */
   rtpmap: { payload: number; encoding: string; clockRate: number; params: string[] } | null;
-  /** Parameter aus a=fmtp, Schlüssel klein geschrieben. */
+  /** Parameters from a=fmtp, keys lower-cased. */
   fmtp: Record<string, string>;
   lines: string[];
 }
@@ -21,13 +21,13 @@ export interface SdpMedia {
 export interface ParsedSdp {
   raw: string;
   eol: string;
-  /** Adresse aus der o=-Zeile. */
+  /** Address from the o= line. */
   originAddress: string | null;
   sessionConnection: { group: string; ttl: number | null } | null;
-  /** true, wenn a=group:DUP vorhanden ist — ST 2022-7. */
+  /** true when a=group:DUP is present — ST 2022-7. */
   dup: boolean;
   media: SdpMedia[];
-  /** a=ts-refclk:ptp=... der ersten Media-Section, falls vorhanden. */
+  /** a=ts-refclk:ptp=... of the first media section, if present. */
   tsRefclk: string | null;
 }
 
@@ -44,13 +44,13 @@ function parseFmtp(params: string): Record<string, string> {
     const token = part.trim();
     if (!token) continue;
     const eq = token.indexOf('=');
-    if (eq < 0) out[token.toLowerCase()] = '';          // Flags wie "interlace"
+    if (eq < 0) out[token.toLowerCase()] = '';          // flags such as "interlace"
     else out[token.slice(0, eq).trim().toLowerCase()] = token.slice(eq + 1).trim();
   }
   return out;
 }
 
-/** Session-Name aus s=, für abgeleitete Labels. */
+/** Session name from s=, used for derived labels. */
 export function sessionName(parsed: ParsedSdp): string | null {
   const line = parsed.raw.split(/\r?\n/).find((l) => l.startsWith('s='));
   return line ? line.slice(2).trim() || null : null;
@@ -131,7 +131,7 @@ export function parseSdp(text: string): ParsedSdp {
     if (/^a=group:DUP\b/i.test(line)) dup = true;
   }
 
-  // Media ohne eigenes c= erbt die Session-Connection.
+  // Media without its own c= inherits the session connection.
   for (const m of media) {
     if (!m.group && sessionConnection) {
       m.group = sessionConnection.group;
@@ -142,9 +142,9 @@ export function parseSdp(text: string): ParsedSdp {
   return { raw: text, eol, originAddress, sessionConnection, dup, media, tsRefclk };
 }
 
-/** Zuordnung Media-Section → Fabric. */
+/** Mapping from media section to fabric. */
 export interface FabricSubnets {
-  red: string | null;   // CIDR, z. B. 10.1.1.0/24
+  red: string | null;   // CIDR, e.g. 10.1.1.0/24
   blue: string | null;
 }
 
@@ -158,8 +158,8 @@ function inCidr(ip: string, cidr: string): boolean {
 }
 
 /**
- * Ordnet jedem Bein eine Fabric zu: primär über das Quell-Subnetz, hilfsweise über
- * die Reihenfolge der m=-Zeilen (Leg 0 = red, Leg 1 = blue).
+ * Assigns a fabric to every leg: primarily from the source subnet, falling back to
+ * the order of the m= lines (leg 0 = red, leg 1 = blue).
  */
 export function assignFabrics(parsed: ParsedSdp, subnets: FabricSubnets): Leg[] {
   const bySubnet = (src: string | null): Fabric | null => {
@@ -181,17 +181,17 @@ export function assignFabrics(parsed: ParsedSdp, subnets: FabricSubnets): Leg[] 
 }
 
 export interface SdpRewrite {
-  /** Neue Adressen je Media-Index. */
+  /** New addresses per media index. */
   byMediaIndex: Map<number, { group: string; source: string | null }>;
-  /** Neue o=-Adresse; Default: Quelle des ersten Beins. */
+  /** New o= address; defaults to the first leg's source. */
   originAddress?: string;
-  /** a=ts-refclk der Zieldomäne; ohne Angabe bleibt die Original-Zeile stehen. */
+  /** Target domain's a=ts-refclk; without it the original line is kept. */
   tsRefclk?: string;
 }
 
 /**
- * Schreibt Gruppen- und Quelladressen im SDP um und lässt alles andere in Ruhe —
- * insbesondere fmtp, mediaclk, Payload-Typen und Ports.
+ * Rewrites group and source addresses in the SDP and leaves everything else alone —
+ * in particular fmtp, mediaclk, payload types and ports.
  */
 export function rewriteSdp(text: string, rewrite: SdpRewrite): string {
   const parsed = parseSdp(text);
@@ -208,10 +208,10 @@ export function rewriteSdp(text: string, rewrite: SdpRewrite): string {
     const target = mediaIndex >= 0 ? rewrite.byMediaIndex.get(mediaIndex) : null;
 
     if (mediaIndex < 0) {
-      // Session-Ebene
+      // session level
       const o = ORIGIN_RE.exec(line);
       if (o) {
-        // sess-version hochzählen, damit Empfänger die Änderung sehen
+        // bump sess-version so receivers notice the change
         const version = /^\d+$/.test(o[3]!) ? String(BigInt(o[3]!) + 1n) : o[3]!;
         const addr = newOrigin ?? o[4]!;
         return `o=${o[1]} ${o[2]} ${version} IN IP4 ${addr}`;

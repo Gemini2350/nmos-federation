@@ -2,10 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { parseSdp, sessionName, type ParsedSdp } from './sdp.js';
 
 /**
- * Deterministische IDs (UUIDv5). Ein Container-Neustart darf keine
- * Controller-Zuordnung zerreißen — deshalb nie randomUUID() für Ressourcen, die
- * einen Neustart überleben sollen. Der Seed wird einmal erzeugt und im State
- * persistiert, damit zwei Installationen nicht dieselben IDs vergeben.
+ * Deterministic IDs (UUIDv5). A container restart must not break a controller's
+ * bindings — so never randomUUID() for resources meant to survive a restart. The
+ * seed is generated once and persisted in the state so that two installations do
+ * not hand out the same IDs.
  */
 export function uuidv5(namespace: string, name: string): string {
   const ns = Buffer.from(namespace.replace(/-/g, ''), 'hex');
@@ -18,7 +18,7 @@ export function uuidv5(namespace: string, name: string): string {
 
 export const newSeed = (): string => randomUUID();
 
-/** IS-04-Versionsstempel "<sekunden>:<nanosekunden>". */
+/** IS-04 version stamp "<seconds>:<nanoseconds>". */
 export function nmosVersion(date = new Date()): string {
   const ms = date.getTime();
   return `${Math.floor(ms / 1000)}:${(ms % 1000) * 1_000_000}`;
@@ -47,14 +47,14 @@ const COLORSPACE: Record<string, string> = { BT709: 'BT709', BT2020: 'BT2020', B
 const TCS: Record<string, string> = { SDR: 'SDR', PQ: 'PQ', HLG: 'HLG', LINEAR: 'LINEAR' };
 
 function grainRate(exact: string | undefined): { numerator: number; denominator: number } {
-  if (!exact) throw new Error('fmtp ohne exactframerate');
+  if (!exact) throw new Error('fmtp without exactframerate');
   const [num, den] = exact.split('/');
   const numerator = Number(num);
-  if (!Number.isFinite(numerator) || numerator <= 0) throw new Error(`exactframerate unlesbar: ${exact}`);
+  if (!Number.isFinite(numerator) || numerator <= 0) throw new Error(`cannot parse exactframerate: ${exact}`);
   return { numerator, denominator: den ? Number(den) : 1 };
 }
 
-/** Komponenten nach ST 2110-20 aus sampling + depth. */
+/** ST 2110-20 components derived from sampling + depth. */
 function components(sampling: string, width: number, height: number, depth: number) {
   const sub = sampling.includes('4:2:2') ? [2, 1] : sampling.includes('4:2:0') ? [2, 2] : [1, 1];
   if (sampling.startsWith('RGB')) {
@@ -68,13 +68,13 @@ function components(sampling: string, width: number, height: number, depth: numb
 }
 
 /**
- * Leitet Flow-/Source-Parameter aus dem SDP ab. Schlägt das fehl, geht der Channel
- * in `failed` — lieber kein Sender als ein falsch beschriebener.
+ * Derives flow/source parameters from the SDP. If that fails the channel goes to
+ * `failed` — better no sender than a wrongly described one.
  */
 export function essenceFromSdp(sdp: string | ParsedSdp): EssenceParams {
   const parsed = typeof sdp === 'string' ? parseSdp(sdp) : sdp;
   const media = parsed.media[0];
-  if (!media) throw new Error('SDP ohne m=-Zeile');
+  if (!media) throw new Error('SDP without an m= line');
   const label = sessionName(parsed);
   const encoding = media.rtpmap?.encoding?.toLowerCase() ?? '';
 
@@ -85,9 +85,9 @@ export function essenceFromSdp(sdp: string | ParsedSdp): EssenceParams {
     const depth = Number(f['depth'] ?? 10);
     const sampling = f['sampling'] ?? '';
     if (!Number.isFinite(width) || !Number.isFinite(height) || !width || !height) {
-      throw new Error('fmtp ohne width/height');
+      throw new Error('fmtp without width/height');
     }
-    if (!sampling) throw new Error('fmtp ohne sampling');
+    if (!sampling) throw new Error('fmtp without sampling');
     const interlaceMode =
       'segmented' in f ? 'progressive_segmented_frame' : 'interlace' in f ? 'interlaced_tff' : 'progressive';
     return {
@@ -122,11 +122,11 @@ export function essenceFromSdp(sdp: string | ParsedSdp): EssenceParams {
     return { format: 'urn:x-nmos:format:data', mediaType: 'video/smpte291', label };
   }
 
-  throw new Error(`nicht unterstütztes Essence: m=${media.type} rtpmap=${media.rtpmap?.encoding ?? '-'}`);
+  throw new Error(`unsupported essence: m=${media.type} rtpmap=${media.rtpmap?.encoding ?? '-'}`);
 }
 
 // ---------------------------------------------------------------------------
-// IS-04-Ressourcen
+// IS-04 resources
 // ---------------------------------------------------------------------------
 
 export interface NodeIdentity {
@@ -138,7 +138,7 @@ export interface NodeIdentity {
 }
 
 export interface ClockInfo {
-  /** ts-refclk der Domäne, z. B. "ptp=IEEE1588-2008:08-00-…:0"; null = NotUsed. */
+  /** The domain's ts-refclk, e.g. "ptp=IEEE1588-2008:08-00-…:0"; null = not used. */
   refclk: string | null;
 }
 

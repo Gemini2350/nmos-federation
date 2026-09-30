@@ -1,26 +1,26 @@
 import type { ChannelPlan, FabricPlan } from '../types.js';
 
-/** Ist-Zustand, wie ihn der Reconciler vom Switch liest. */
+/** Actual state as the reconciler reads it from the switch. */
 export interface SwitchState {
-  /** NAT-Group-Nummern, die auf dem Switch konfiguriert sind. */
+  /** NAT group numbers configured on the switch. */
   natGroupIds: number[];
-  /** Rohe Konfigurationszeilen, für Diagnose im GUI. */
+  /** Raw configuration lines, for diagnostics in the GUI. */
   lines: string[];
 }
 
 export interface SwitchDriver {
   readonly id: string;
-  /** Baut Joins und NAT für einen Channel auf. Muss idempotent sein. */
+  /** Sets up joins and NAT for a channel. Must be idempotent. */
   program(plan: FabricPlan, channelId: string): Promise<void>;
-  /** Räumt alles ab, was program() für diesen Channel angelegt hat. */
+  /** Removes everything program() created for this channel. */
   unprogram(plan: FabricPlan, channelId: string): Promise<void>;
-  /** Liest den Ist-Zustand für den Soll/Ist-Abgleich. */
+  /** Reads the actual state for reconciliation. */
   readState(): Promise<SwitchState>;
-  /** Erreichbarkeit + Version, für die Statusanzeige. */
+  /** Reachability + version, for the status display. */
   probe(): Promise<{ reachable: boolean; version?: string; error?: string }>;
 }
 
-/** Programmiert beide Fabrics und rollt bei Teilfehlern zurück. */
+/** Programs both fabrics and rolls back on partial failure. */
 export async function programChannel(
   drivers: Record<string, SwitchDriver>,
   plan: ChannelPlan,
@@ -29,12 +29,12 @@ export async function programChannel(
   try {
     for (const fabricPlan of plan.fabrics) {
       const driver = drivers[fabricPlan.fabric];
-      if (!driver) throw new Error(`kein Switch-Treiber für Fabric ${fabricPlan.fabric}`);
+      if (!driver) throw new Error(`no switch driver for fabric ${fabricPlan.fabric}`);
       await driver.program(fabricPlan, plan.channelId);
       done.push(fabricPlan);
     }
   } catch (err) {
-    // Halb programmierte Channels sind schlimmer als gar keine: zurückrollen.
+    // A half-programmed channel is worse than none at all: roll back.
     for (const fabricPlan of done.reverse()) {
       await drivers[fabricPlan.fabric]?.unprogram(fabricPlan, plan.channelId).catch(() => {});
     }
@@ -50,5 +50,5 @@ export async function unprogramChannel(
   for (const fabricPlan of plan.fabrics) {
     await drivers[fabricPlan.fabric]?.unprogram(fabricPlan, plan.channelId).catch((e) => errors.push(e));
   }
-  if (errors.length) throw new AggregateError(errors, 'Abbau auf dem Switch unvollständig');
+  if (errors.length) throw new AggregateError(errors, 'switch teardown incomplete');
 }

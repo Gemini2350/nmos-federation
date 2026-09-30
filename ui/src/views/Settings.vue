@@ -70,7 +70,7 @@ function toggleSourceNat(index: number) {
 async function probeSwitch(fabric: 'red' | 'blue') {
   try {
     const r = await api.probeSwitch(fabric);
-    probe.value[fabric] = r.reachable ? `erreichbar — ${r.version ?? ''}` : `nicht erreichbar: ${r.error ?? ''}`;
+    probe.value[fabric] = r.reachable ? `reachable — ${r.version ?? ''}` : `unreachable: ${r.error ?? ''}`;
   } catch (e) {
     probe.value[fabric] = (e as Error).message;
   }
@@ -81,57 +81,57 @@ onMounted(refresh);
 
 <template>
   <div class="head">
-    <h2>Einstellungen</h2>
+    <h2>Settings</h2>
     <div>
-      <button @click="check">Prüfen</button>
-      <button @click="save">Speichern</button>
+      <button @click="check">Check</button>
+      <button @click="save">Save</button>
     </div>
   </div>
   <p v-if="error" class="bad">{{ error }}</p>
-  <p v-if="saved" class="ok">Gespeichert.</p>
+  <p v-if="saved" class="ok">Saved.</p>
   <ul v-if="issues.length" class="issues">
     <li v-for="(i, n) in issues" :key="n" :class="i.level === 'error' ? 'bad' : 'warn'">{{ i.level }}: {{ i.message }}</li>
   </ul>
 
   <template v-if="cfg">
     <section>
-      <div class="head"><h3>Domänen</h3><button @click="addDomain">Domäne hinzufügen</button></div>
+      <div class="head"><h3>Domains</h3><button @click="addDomain">Add domain</button></div>
       <article v-for="(d, i) in cfg.domains" :key="i" class="box">
         <div class="row">
           <label>ID <input v-model="d.id" /></label>
           <label>Name <input v-model="d.label" /></label>
-          <label>Art
+          <label>Kind
             <select v-model="d.kind"><option value="internal">internal</option><option value="external">external</option></select>
           </label>
           <label>Interface <input v-model="d.iface.name" /></label>
-          <label>IP der Node-API <input v-model="d.iface.address" /></label>
-          <label class="check"><input type="checkbox" v-model="d.enabled" /> aktiv</label>
+          <label>Node API address <input v-model="d.iface.address" /></label>
+          <label class="check"><input type="checkbox" v-model="d.enabled" /> enabled</label>
         </div>
         <div class="row">
-          <label>Subnetz red <input v-model="d.fabricSubnets.red" placeholder="10.1.1.0/24" /></label>
-          <label>Subnetz blue <input v-model="d.fabricSubnets.blue" placeholder="10.1.2.0/24" /></label>
-          <label>L3-Interface red <input v-model="d.switchInterface.red" placeholder="Vlan101" /></label>
-          <label>L3-Interface blue <input v-model="d.switchInterface.blue" placeholder="Vlan102" /></label>
+          <label>Subnet red <input v-model="d.fabricSubnets.red" placeholder="10.1.1.0/24" /></label>
+          <label>Subnet blue <input v-model="d.fabricSubnets.blue" placeholder="10.1.2.0/24" /></label>
+          <label>L3 interface red <input v-model="d.switchInterface.red" placeholder="Vlan101" /></label>
+          <label>L3 interface blue <input v-model="d.switchInterface.blue" placeholder="Vlan102" /></label>
         </div>
         <div class="row">
-          <label>Pool-Basis (gerade!) <input v-model="d.pool.base" /></label>
-          <label>Pärchen <input type="number" min="1" v-model.number="d.pool.pairs" /></label>
-          <label class="check"><input type="checkbox" :checked="!!d.pool.sourceNat" @change="toggleSourceNat(i)" /> Source-NAT</label>
+          <label>Pool base (must be even) <input v-model="d.pool.base" /></label>
+          <label>Pairs <input type="number" min="1" v-model.number="d.pool.pairs" /></label>
+          <label class="check"><input type="checkbox" :checked="!!d.pool.sourceNat" @change="toggleSourceNat(i)" /> source NAT</label>
           <template v-if="d.pool.sourceNat">
             <label>Source red <input v-model="d.pool.sourceNat.red" /></label>
             <label>Source blue <input v-model="d.pool.sourceNat.blue" /></label>
           </template>
-          <label>ts-refclk-Override <input v-model="d.ptpRefclk" placeholder="leer = Passthrough" /></label>
+          <label>ts-refclk override <input v-model="d.ptpRefclk" placeholder="empty = pass through" /></label>
         </div>
-        <button class="del" @click="cfg.domains.splice(i, 1)">Domäne entfernen</button>
+        <button class="del" @click="cfg.domains.splice(i, 1)">Remove domain</button>
       </article>
     </section>
 
     <section>
-      <div class="head"><h3>Registries</h3><button @click="addRegistry">Registry hinzufügen</button></div>
-      <p class="hint">Mehrere Registries pro Domäne sind der Normalfall, wenn sich Partner ein Netz teilen.</p>
+      <div class="head"><h3>Registries</h3><button @click="addRegistry">Add registry</button></div>
+      <p class="hint">Several registries per domain is the normal case when partners share a network.</p>
       <table>
-        <thead><tr><th>ID</th><th>Name</th><th>Domäne</th><th>Modus</th><th>URL</th><th>Version</th><th>aktiv</th><th></th></tr></thead>
+        <thead><tr><th>ID</th><th>Name</th><th>Domain</th><th>Mode</th><th>URL</th><th>Version</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="(r, i) in cfg.registries" :key="i">
             <td><input v-model="r.id" /></td>
@@ -148,33 +148,33 @@ onMounted(refresh);
     </section>
 
     <section>
-      <h3>NAT und Switches</h3>
+      <h3>NAT and switches</h3>
       <div class="row">
-        <label class="check"><input type="checkbox" v-model="cfg.nat.enabled" /> NAT aktiv</label>
-        <label>Treiber
+        <label class="check"><input type="checkbox" v-model="cfg.nat.enabled" /> NAT enabled</label>
+        <label>Driver
           <select v-model="cfg.nat.driver"><option value="arista-eapi">arista-eapi</option><option value="mock">mock</option></select>
         </label>
-        <label>NAT-Group von <input type="number" v-model.number="cfg.nat.groupIdRange[0]" /></label>
-        <label>bis <input type="number" v-model.number="cfg.nat.groupIdRange[1]" /></label>
+        <label>NAT group from <input type="number" v-model.number="cfg.nat.groupIdRange[0]" /></label>
+        <label>to <input type="number" v-model.number="cfg.nat.groupIdRange[1]" /></label>
       </div>
-      <p class="hint">Die NAT-Group-Nummern gelten pro Switch — der Bereich ist die Obergrenze für gleichzeitige Channels über alle Domänen.</p>
+      <p class="hint">NAT group numbers are per switch — the range is the upper bound for simultaneous channels across all domains.</p>
       <article v-for="fabric in (['red', 'blue'] as const)" :key="fabric" class="box">
         <div class="row">
           <strong :class="fabric">{{ fabric }}</strong>
           <label>Host <input v-model="cfg.nat.switches[fabric].host" /></label>
-          <label>Benutzer <input v-model="cfg.nat.switches[fabric].user" /></label>
-          <label>Passwort <input type="password" v-model="cfg.nat.switches[fabric].password" /></label>
+          <label>User <input v-model="cfg.nat.switches[fabric].user" /></label>
+          <label>Password <input type="password" v-model="cfg.nat.switches[fabric].password" /></label>
           <label class="check"><input type="checkbox" v-model="cfg.nat.switches[fabric].tls" /> HTTPS</label>
           <label>Join
             <select v-model="cfg.nat.switches[fabric].join">
               <option value="igmpStatic">igmpStatic</option><option value="pim">pim</option><option value="none">none</option>
             </select>
           </label>
-          <button @click="probeSwitch(fabric)">Testen</button>
+          <button @click="probeSwitch(fabric)">Test</button>
           <small>{{ probe[fabric] ?? '' }}</small>
         </div>
       </article>
-      <p class="hint">Die L3-Interfaces stehen bei den Domänen: Ingress ist das Interface der Quell-Domäne, Egress das der Ziel-Domäne.</p>
+      <p class="hint">The L3 interfaces live on the domains: ingress is the source domain's interface, egress the target domain's.</p>
     </section>
   </template>
 </template>

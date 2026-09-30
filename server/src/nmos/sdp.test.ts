@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSdp, rewriteSdp, assignFabrics } from './sdp.js';
 
-/** Typisches ST-2110-20-SDP mit 2022-7-Redundanz. */
+/** Typical ST 2110-20 SDP with 2022-7 redundancy. */
 const DUP_SDP = [
   'v=0',
   'o=- 1443716955 1443716955 IN IP4 10.1.1.50',
@@ -41,7 +41,7 @@ const SINGLE_SDP = [
   '',
 ].join('\r\n');
 
-test('redundantes SDP wird mit beiden Beinen erkannt', () => {
+test('a redundant SDP is parsed with both legs', () => {
   const p = parseSdp(DUP_SDP);
   assert.equal(p.dup, true);
   assert.equal(p.media.length, 2);
@@ -52,26 +52,26 @@ test('redundantes SDP wird mit beiden Beinen erkannt', () => {
   assert.equal(p.originAddress, '10.1.1.50');
 });
 
-test('Media ohne eigenes c= erbt die Session-Connection', () => {
+test('media without its own c= inherits the session connection', () => {
   const p = parseSdp(SINGLE_SDP);
   assert.equal(p.media.length, 1);
   assert.equal(p.media[0]!.group, '239.10.1.9');
   assert.equal(p.dup, false);
 });
 
-test('Fabric-Zuordnung folgt dem Quell-Subnetz', () => {
+test('fabric assignment follows the source subnet', () => {
   const p = parseSdp(DUP_SDP);
   const legs = assignFabrics(p, { red: '10.1.1.0/24', blue: '10.1.2.0/24' });
   assert.deepEqual(legs.map((l) => l.fabric), ['red', 'blue']);
 });
 
-test('ohne passende Subnetze zählt die Reihenfolge der m=-Zeilen', () => {
+test('without matching subnets the order of the m= lines decides', () => {
   const p = parseSdp(DUP_SDP);
   const legs = assignFabrics(p, { red: null, blue: null });
   assert.deepEqual(legs.map((l) => l.fabric), ['red', 'blue']);
 });
 
-test('Rewrite ersetzt Gruppe und Quelle in c=, source-filter und o=', () => {
+test('the rewrite replaces group and source in c=, source-filter and o=', () => {
   const out = rewriteSdp(DUP_SDP, {
     byMediaIndex: new Map([
       [0, { group: '239.200.0.1', source: '10.9.1.100' }],
@@ -87,7 +87,7 @@ test('Rewrite ersetzt Gruppe und Quelle in c=, source-filter und o=', () => {
   assert.ok(!out.includes('10.1.1.50'));
 });
 
-test('Rewrite lässt Essence-Beschreibung, Ports und mediaclk unberührt', () => {
+test('the rewrite leaves essence description, ports and mediaclk alone', () => {
   const out = rewriteSdp(DUP_SDP, {
     byMediaIndex: new Map([[0, { group: '239.200.0.1', source: null }]]),
   });
@@ -95,16 +95,16 @@ test('Rewrite lässt Essence-Beschreibung, Ports und mediaclk unberührt', () =>
   assert.ok(out.includes('m=video 5004 RTP/AVP 96'));
   assert.ok(out.includes('a=mediaclk:direct=0'));
   assert.ok(out.includes('a=group:DUP PRIMARY SECONDARY'));
-  // zweites Bein ohne Mapping bleibt stehen
+  // the second leg without a mapping stays as it is
   assert.ok(out.includes('c=IN IP4 239.10.2.5/64'));
 });
 
-test('ohne Mapping-Eintrag bleibt source-filter unverändert', () => {
+test('without a mapping entry the source-filter is unchanged', () => {
   const out = rewriteSdp(DUP_SDP, { byMediaIndex: new Map() });
   assert.ok(out.includes('a=source-filter: incl IN IP4 239.10.1.5 10.1.1.50'));
 });
 
-test('Session-Level c= wird über das erste Bein umgeschrieben', () => {
+test('a session-level c= is rewritten from the first leg', () => {
   const out = rewriteSdp(SINGLE_SDP, {
     byMediaIndex: new Map([[0, { group: '239.200.0.0', source: '10.9.2.100' }]]),
   });
@@ -112,7 +112,7 @@ test('Session-Level c= wird über das erste Bein umgeschrieben', () => {
   assert.ok(!out.includes('239.10.1.9'));
 });
 
-test('ts-refclk kann auf die Zieldomäne umgesetzt werden', () => {
+test('ts-refclk can be mapped to the target domain', () => {
   const out = rewriteSdp(SINGLE_SDP, {
     byMediaIndex: new Map([[0, { group: '239.200.0.0', source: null }]]),
     tsRefclk: 'ptp=IEEE1588-2008:AA-BB-CC-FF-FE-DD-EE-FF:127',
@@ -120,7 +120,7 @@ test('ts-refclk kann auf die Zieldomäne umgesetzt werden', () => {
   assert.match(out, /a=ts-refclk:ptp=IEEE1588-2008:AA-BB-CC-FF-FE-DD-EE-FF:127/);
 });
 
-test('CRLF bleibt CRLF', () => {
+test('CRLF stays CRLF', () => {
   const out = rewriteSdp(DUP_SDP, { byMediaIndex: new Map() });
   assert.ok(out.includes('\r\n'));
 });

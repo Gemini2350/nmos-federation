@@ -4,7 +4,7 @@ import { log } from '../util/log.js';
 
 export type ResourceType = 'node' | 'device' | 'source' | 'flow' | 'sender' | 'receiver';
 
-/** Reihenfolge, in der IS-04 Ressourcen akzeptiert — Eltern vor Kindern. */
+/** Order in which IS-04 accepts resources — parents before children. */
 export const REGISTER_ORDER: ResourceType[] = ['node', 'device', 'source', 'flow', 'sender', 'receiver'];
 
 export class RegistryError extends Error {
@@ -25,14 +25,14 @@ async function request(url: string, init: RequestInit & { timeoutMs?: number } =
 }
 
 /**
- * IS-04 Registration Client — eine Instanz je Registry.
+ * IS-04 registration client — one instance per registry.
  *
- * Verhalten, das nicht verhandelbar ist:
- *  - Heartbeat alle 5 s auf /health/nodes/<id>
- *  - Heartbeat 404 -> Registry wurde neu gestartet -> alles neu registrieren,
- *    in der Reihenfolge node, device, source, flow, sender/receiver
- *  - eine ausgefallene Registry darf keinen Channel kippen: Fehler werden gemeldet,
- *    nicht geworfen, und der Reconciler zieht Fehlendes nach
+ * Non-negotiable behaviour:
+ *  - heartbeat every 5 s on /health/nodes/<id>
+ *  - heartbeat 404 -> the registry restarted -> re-register everything, in the
+ *    order node, device, source, flow, sender/receiver
+ *  - a registry that is down must never take a channel with it: errors are
+ *    reported, not thrown, and the reconciler catches up on what is missing
  */
 export class RegistryClient {
   private base: string | null = null;
@@ -40,12 +40,12 @@ export class RegistryClient {
   private nodeId: string | null = null;
   reachable = false;
   lastError: string | null = null;
-  /** Was diese Registry nach unserem Kenntnisstand kennt. */
+  /** What this registry knows about, as far as we can tell. */
   readonly registered = new Set<string>();
 
   constructor(
     readonly cfg: RegistryConfig,
-    /** wird gerufen, wenn die Registry alles neu braucht (Heartbeat 404 / Neustart). */
+    /** Called when the registry needs everything again (heartbeat 404 / restart). */
     private readonly onNeedsReregister: (client: RegistryClient) => void,
   ) {}
 
@@ -53,11 +53,11 @@ export class RegistryClient {
     return this.cfg.id;
   }
 
-  /** Basis-URL der Registration API, ohne abschließenden Slash. */
+  /** Base URL of the registration API, without a trailing slash. */
   async resolve(): Promise<string> {
     if (this.base) return this.base;
     if (this.cfg.mode === 'manual') {
-      if (!this.cfg.url) throw new RegistryError(`Registry ${this.cfg.id}: keine URL konfiguriert`);
+      if (!this.cfg.url) throw new RegistryError(`registry ${this.cfg.id}: no URL configured`);
       this.base = this.cfg.url.replace(/\/+$/, '');
       return this.base;
     }
@@ -66,9 +66,9 @@ export class RegistryClient {
   }
 
   /**
-   * Unicast-DNS-SD: _nmos-register._tcp im Suchdomain des Hosts. mDNS bleibt
-   * absichtlich außen vor — über Domänengrenzen hilft es nicht, und intern reicht
-   * in der Praxis Unicast-DNS-SD oder die manuelle URL.
+   * Unicast DNS-SD: _nmos-register._tcp in the host's search domain. mDNS is left
+   * out on purpose — it does not help across domain boundaries, and internally
+   * unicast DNS-SD or a manual URL is enough in practice.
    */
   private async discover(): Promise<string> {
     const domains = [...new Set((dns.getServers().length ? ['local'] : []).concat(['']))];
@@ -80,14 +80,14 @@ export class RegistryClient {
         const best = srv.sort((a, b) => a.priority - b.priority)[0];
         if (best) {
           const url = `http://${best.name.replace(/\.$/, '')}:${best.port}`;
-          log.info({ registry: this.cfg.id, url, via: name }, 'Registry über DNS-SD gefunden');
+          log.info({ registry: this.cfg.id, url, via: name }, 'registry found via DNS-SD');
           return url;
         }
       } catch {
-        /* nächster Kandidat */
+        /* next candidate */
       }
     }
-    throw new RegistryError(`Registry ${this.cfg.id}: DNS-SD hat nichts gefunden — URL konfigurieren`);
+    throw new RegistryError(`registry ${this.cfg.id}: DNS-SD found nothing — configure a URL`);
   }
 
   private apiBase(base: string): string {
@@ -110,19 +110,19 @@ export class RegistryClient {
     this.lastError = null;
     this.registered.add(`${type}:${data.id}`);
     if (type === 'node') this.nodeId = data.id;
-    log.debug({ registry: this.cfg.id, type, id: data.id, status: res.status }, 'registriert');
+    log.debug({ registry: this.cfg.id, type, id: data.id, status: res.status }, 'registered');
   }
 
   async unregister(type: ResourceType, id: string): Promise<void> {
     const base = await this.resolve();
     const res = await request(`${this.apiBase(base)}/resource/${type}s/${id}`, { method: 'DELETE' });
-    // 404 heißt: ist schon weg. Für uns dasselbe Ergebnis.
+    // 404 means it is already gone. Same outcome for us.
     if (res.status !== 204 && res.status !== 200 && res.status !== 404) {
       this.lastError = `unregister ${type} ${id}: HTTP ${res.status}`;
       throw new RegistryError(this.lastError, res.status);
     }
     this.registered.delete(`${type}:${id}`);
-    log.debug({ registry: this.cfg.id, type, id, status: res.status }, 'abgemeldet');
+    log.debug({ registry: this.cfg.id, type, id, status: res.status }, 'unregistered');
   }
 
   knows(type: ResourceType, id: string): boolean {
@@ -139,8 +139,8 @@ export class RegistryClient {
       return;
     }
     if (res.status === 404) {
-      // Registry kennt uns nicht mehr — typisch nach Registry-Neustart.
-      log.warn({ registry: this.cfg.id }, 'Heartbeat 404, registriere neu');
+      // The registry no longer knows us — typical after a registry restart.
+      log.warn({ registry: this.cfg.id }, 'heartbeat 404, re-registering');
       this.registered.clear();
       this.onNeedsReregister(this);
       return;
@@ -167,9 +167,9 @@ export class RegistryClient {
   }
 
   /**
-   * Orphan-Cleanup braucht die Query API — über die Registration API lässt sich
-   * nicht auflisten. Ohne Query-URL bleibt nur die eigene Buchführung, die nach
-   * einem Absturz lückenhaft sein kann.
+   * Orphan cleanup needs the query API — the registration API cannot list. Without
+   * a query URL all we have is our own bookkeeping, which can be incomplete after
+   * a crash.
    */
   async cleanupOrphans(nodeId: string, keep: Set<string>, queryUrl?: string): Promise<number> {
     if (!queryUrl) return 0;
@@ -185,14 +185,14 @@ export class RegistryClient {
             await this.unregister(type, item.id).catch(() => {});
             removed++;
           } else if (!mine) {
-            /* fremde Ressource, Finger weg */
+            /* someone else's resource, hands off */
           }
         }
       } catch {
-        /* Query API nicht erreichbar — kein Cleanup, aber auch kein Abbruch */
+        /* query API unreachable — no cleanup, but no abort either */
       }
     }
-    if (removed) log.info({ registry: this.cfg.id, removed }, 'verwaiste Ressourcen entfernt');
+    if (removed) log.info({ registry: this.cfg.id, removed }, 'removed orphaned resources');
     return removed;
   }
 

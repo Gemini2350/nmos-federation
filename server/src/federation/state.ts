@@ -6,7 +6,7 @@ import { log } from '../util/log.js';
 
 const DEFAULT_DIR = process.env.CONFIG_DIR ?? './config';
 
-/** IS-05-Zustand eines virtuellen Receivers. */
+/** IS-05 state of a virtual receiver. */
 export interface ConnectionState {
   sender_id: string | null;
   master_enable: boolean;
@@ -22,20 +22,20 @@ export const emptyConnection = (): ConnectionState => ({
 });
 
 export interface PersistedState {
-  /** Namespace für alle deterministischen UUIDs. Einmal erzeugt, nie geändert. */
+  /** Namespace for all deterministic UUIDs. Generated once, never changed. */
   seed: string;
   channels: Channel[];
-  /** IS-05 staged/active je virtuellem Receiver (unsere interne ID). */
+  /** IS-05 staged/active per virtual receiver (our internal ID). */
   connections: Record<string, { staged: ConnectionState; active: ConnectionState }>;
 }
 
-/** Laufzeit-State, getrennt von der Konfiguration: ein Settings-Reset darf die
- *  Channel-Buchführung nicht mitnehmen. */
+/** Runtime state, kept apart from the configuration: resetting settings must not
+ *  take the channel bookkeeping with it. */
 export class StateStore {
   private state: PersistedState = { seed: newSeed(), channels: [], connections: {} };
   private writing: Promise<void> = Promise.resolve();
 
-  /** Verzeichnis für state.json; in Tests überschreibbar. */
+  /** Directory for state.json; overridable in tests. */
   constructor(private readonly dir: string = DEFAULT_DIR) {}
 
   get current(): PersistedState {
@@ -51,15 +51,15 @@ export class StateStore {
         channels: parsed.channels ?? [],
         connections: parsed.connections ?? {},
       };
-      log.info({ channels: this.state.channels.length }, 'State geladen');
+      log.info({ channels: this.state.channels.length }, 'state loaded');
     } catch {
-      log.info({}, 'kein State gefunden, starte leer');
+      log.info({}, 'no state found, starting empty');
       await this.save();
     }
     return this.state;
   }
 
-  /** Schreibt atomar und serialisiert — nebenläufige Aufrufe überschreiben sich nicht. */
+  /** Writes atomically and serialised — concurrent calls do not clobber each other. */
   save(): Promise<void> {
     this.writing = this.writing.then(async () => {
       await mkdir(this.dir, { recursive: true });

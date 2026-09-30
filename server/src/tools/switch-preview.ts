@@ -1,6 +1,6 @@
 /**
- * Druckt die EOS-Kommandos, die der Treiber für einen Channel senden würde —
- * zum Gegentesten auf der Hardware, bevor die Software überhaupt läuft.
+ * Prints the EOS commands the driver would send for a channel — for cross-checking
+ * on the hardware before the software even runs.
  *
  *   npm run switch:preview -- --ingress Vlan101 --egress Vlan901
  */
@@ -32,10 +32,10 @@ const plan: FabricPlan = {
   join: cfg.join,
 };
 
-console.log(`! Fabric ${plan.fabric}, Switch ${cfg.host}, Join-Modus ${cfg.join}`);
-console.log(`! ${plan.origin.group} (${plan.origin.source ?? 'ASM'}) auf ${plan.ingressInterface}`);
-console.log(`!   -> ${plan.translated.group} (${plan.translated.source ?? 'unverändert'}) auf ${plan.egressInterface}`);
-console.log('\n! ---- Aufbau ----');
+console.log(`! fabric ${plan.fabric}, switch ${cfg.host}, join mode ${cfg.join}`);
+console.log(`! ${plan.origin.group} (${plan.origin.source ?? 'ASM'}) on ${plan.ingressInterface}`);
+console.log(`!   -> ${plan.translated.group} (${plan.translated.source ?? 'unchanged'}) on ${plan.egressInterface}`);
+console.log('\n! ---- setup ----');
 for (const cmd of buildProgramCommands(plan, cfg)) console.log(cmd);
-console.log('\n! ---- Abbau ----');
+console.log('\n! ---- teardown ----');
 for (const cmd of buildUnprogramCommands(plan, cfg)) console.log(cmd);

@@ -24,7 +24,7 @@ async function main() {
   const store = new ConfigStore();
   const cfg = await store.load();
   for (const issue of store.validate(cfg)) {
-    (issue.level === 'error' ? log.error : log.warn)({}, `Konfiguration: ${issue.message}`);
+    (issue.level === 'error' ? log.error : log.warn)({}, `configuration: ${issue.message}`);
   }
 
   const state = new StateStore();
@@ -48,14 +48,14 @@ async function main() {
   const pools = new PoolManager(cfg.domains, cfg.nat.groupIdRange);
   const engine = new Engine({ config: () => store.current, state, pools, drivers });
 
-  // --- NMOS-APIs: je Domäne ein Listener an der IP dieser Domäne ------------
+  // --- NMOS APIs: one listener per domain on that domain's IP ---------------
   const nmosApps: FastifyInstance[] = [];
   for (const domain of cfg.domains.filter((d) => d.enabled)) {
     const app = Fastify({ logger: false });
     registerNodeApi(app, domain, engine, state);
-    // Liegen zwei Domänen auf derselben IP (Laboraufbau), ist der Wunschport schon
-    // belegt. Dann den nächsten freien nehmen und den href entsprechend setzen —
-    // besser als eine Domäne ohne Node API laufen zu lassen.
+    // If two domains share an IP (lab setup), the configured port is already
+    // taken. Take the next free one and set the href accordingly — better than
+    // leaving a domain without a node API.
     let bound = false;
     for (let offset = 0; offset < 10 && !bound; offset++) {
       const port = cfg.nmosPort + offset;
@@ -65,18 +65,18 @@ async function main() {
         nmosApps.push(app);
         bound = true;
         log.info(
-          { domain: domain.id, address: `${domain.iface.address}:${port}`, ...(offset ? { hinweis: 'Wunschport war belegt' } : {}) },
-          'Node API gebunden',
+          { domain: domain.id, address: `${domain.iface.address}:${port}`, ...(offset ? { note: 'configured port was taken' } : {}) },
+          'node API bound',
         );
       } catch (e) {
         if ((e as { code?: string }).code !== 'EADDRINUSE') {
-          log.error({ domain: domain.id, address: domain.iface.address, err: String(e) }, 'Node API konnte nicht binden');
+          log.error({ domain: domain.id, address: domain.iface.address, err: String(e) }, 'node API could not bind');
           break;
         }
       }
     }
     if (!bound) {
-      log.error({ domain: domain.id, address: domain.iface.address }, 'Node API konnte nicht binden — Domäne bleibt ohne API');
+      log.error({ domain: domain.id, address: domain.iface.address }, 'node API could not bind — domain stays without an API');
       await app.close();
     }
   }
@@ -85,13 +85,14 @@ async function main() {
   const gui = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
   await gui.register(fastifyWebsocket);
   registerRestApi(gui, store, engine, async () => {
-    // Konfigurationsänderungen wirken sofort: Treiber neu bauen (Hosts/Zugangsdaten),
-    // Pools nur solange nichts läuft — laufende Reservierungen dürfen nicht verschwinden.
+    // Configuration changes take effect immediately: rebuild the drivers (hosts and
+    // credentials), rebuild the pools only while nothing is running — live
+    // reservations must not vanish.
     engine.setDrivers(buildDrivers());
     if (engine.channels().length === 0) {
       engine.setPools(new PoolManager(store.current.domains, store.current.nat.groupIdRange));
     } else {
-      log.warn({ channels: engine.channels().length }, 'Pool-Änderungen greifen erst, wenn kein Channel mehr aktiv ist');
+      log.warn({ channels: engine.channels().length }, 'pool changes take effect once no channel is active any more');
     }
     await engine.restartRegistries();
   });
@@ -99,7 +100,7 @@ async function main() {
   if (existsSync(uiDir)) {
     await gui.register(fastifyStatic, { root: uiDir });
     gui.setNotFoundHandler((req, reply) => {
-      if (req.url.startsWith('/api')) return reply.code(404).send({ error: 'unbekannter Endpunkt' });
+      if (req.url.startsWith('/api')) return reply.code(404).send({ error: 'unknown endpoint' });
       return reply.sendFile('index.html');
     });
   }
@@ -116,11 +117,11 @@ async function main() {
       domains: cfg.domains.map((d) => ({ id: d.id, kind: d.kind, registries: registriesOf(cfg, d.id).map((r) => r.id) })),
       channels: engine.channels().length,
     },
-    'nmos-federation läuft',
+    'nmos-federation running',
   );
 
   const shutdown = async () => {
-    log.info({}, 'fahre herunter');
+    log.info({}, 'shutting down');
     await engine.stop();
     await Promise.allSettled([gui.close(), ...nmosApps.map((a) => a.close())]);
     process.exit(0);
@@ -130,6 +131,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  log.error({ err: String(err) }, 'Start fehlgeschlagen');
+  log.error({ err: String(err) }, 'startup failed');
   process.exit(1);
 });

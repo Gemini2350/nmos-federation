@@ -7,20 +7,20 @@ import { randomUUID } from 'node:crypto';
 import { log } from '../util/log.js';
 
 /**
- * REST + WebSocket fürs GUI. Alles unter /api, Live-Events über /api/events.
+ * REST + WebSocket for the GUI. Everything under /api, live events on /api/events.
  *
- *   GET/PUT  /api/config                    Settings (Domänen, Registries, NAT)
- *   POST     /api/config/validate           Prüfen ohne Speichern
- *   GET      /api/status                    Registry-/Switch-Erreichbarkeit, Pool-Füllstand je Domäne
- *   GET      /api/channels                  Channel-Tabelle inkl. Pool-Adressen und Fehlern
- *   POST     /api/channels/:receiverId/retry    fehlgeschlagenen Channel neu aufsetzen
- *   DELETE   /api/channels/:receiverId          Federation dieses Receivers abbauen
+ *   GET/PUT  /api/config                       settings (domains, registries, NAT)
+ *   POST     /api/config/validate              check without saving
+ *   GET      /api/status                       registry/switch reachability, pool usage per domain
+ *   GET      /api/channels                     channel table incl. pool addresses and errors
+ *   POST     /api/channels/:receiverId/retry   rebuild a failed channel
+ *   DELETE   /api/channels/:receiverId         tear down this receiver's federation
  *   GET/POST /api/devices, PUT/DELETE /api/devices/:id
- *   POST     /api/devices/:id/receivers     virtuelle Receiver anlegen (Anzahl, Namensmuster)
+ *   POST     /api/devices/:id/receivers        create virtual receivers (count, name pattern)
  *   DELETE   /api/receivers/:id
- *   POST     /api/switch/:fabric/probe      Verbindungstest
- *   POST     /api/reconcile                 Soll/Ist-Abgleich sofort
- *   WS       /api/events                    Channel-/Status-Änderungen
+ *   POST     /api/switch/:fabric/probe         connectivity test
+ *   POST     /api/reconcile                    run desired/actual reconciliation now
+ *   WS       /api/events                       channel and status changes
  */
 export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine: Engine, onConfigChange: () => Promise<void>): void {
   app.get('/api/status', async () => engine.status());
@@ -69,15 +69,44 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
   app.put<{ Params: { id: string }; Body: Partial<FederationDevice> }>('/api/devices/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
     const i = cfg.devices.findIndex((d) => d.id === req.params.id);
-    if (i < 0) return reply.code(404).send({ error: 'Device unbekannt' });
-    cfg.devices[i] = { ...cfg.devices[i]!, ...req.body, id: req.params.id };
+    if (i < 0) return reply.code(404).send({ error: 'unknown device' });
+    const before = cfg.devices[i]!;
+    const after: FederationDevice = { ...before, ...req.body, id: req.params.id };
+    cfg.devices[i] = after;
+
+    // Changing NAT, the target domain or the target registries invalidates every
+    // channel of this device: its multicast addresses, switch rules and published
+    // sender were all derived from the old setting. Rebuild them instead of leaving
+    // a channel behind that no longer matches its configuration.
+    const rebuild =
+      before.nat !== after.nat ||
+      before.targetDomain !== after.targetDomain ||
+      JSON.stringify(before.targetRegistries) !== JSON.stringify(after.targetRegistries);
+
+    const affected = rebuild
+      ? engine.channels().filter((c) => c.deviceId === after.id).map((c) => c.receiverId)
+      : [];
+    const connections = new Map(affected.map((rx) => [rx, engine.connectionOf(rx)]));
+    for (const rx of affected) await engine.deactivate(rx);
+
     try {
       await store.save(cfg);
       await onConfigChange();
-      return cfg.devices[i];
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+
+    const failed: { receiverId: string; error: string }[] = [];
+    for (const rx of affected) {
+      const conn = connections.get(rx);
+      if (!conn?.transport_file.data) continue;
+      try {
+        await engine.activate(rx, conn);
+      } catch (e) {
+        failed.push({ receiverId: rx, error: (e as Error).message });
+      }
+    }
+    return { ...after, rebuilt: affected.length, failed };
   });
 
   app.delete<{ Params: { id: string } }>('/api/devices/:id', async (req, reply) => {
@@ -95,13 +124,13 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     }
   });
 
-  // ---- Virtuelle Receiver ------------------------------------------------
+  // ---- Virtual receivers -------------------------------------------------
   app.post<{ Params: { id: string }; Body: { count?: number; pattern?: string; format?: VirtualReceiver['format'] } }>(
     '/api/devices/:id/receivers',
     async (req, reply) => {
       const cfg = structuredClone(store.current);
       const device = cfg.devices.find((d) => d.id === req.params.id);
-      if (!device) return reply.code(404).send({ error: 'Device unbekannt' });
+      if (!device) return reply.code(404).send({ error: 'unknown device' });
       const count = Math.max(1, Math.min(256, req.body?.count ?? 1));
       const pattern = req.body?.pattern ?? `${device.label} {n}`;
       const format = req.body?.format ?? 'video';
@@ -151,7 +180,7 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
 
   app.post<{ Params: { receiverId: string } }>('/api/channels/:receiverId/retry', async (req, reply) => {
     const conn = engine.connectionOf(req.params.receiverId);
-    if (!conn?.transport_file.data) return reply.code(409).send({ error: 'kein aktives SDP — erst wieder schalten' });
+    if (!conn?.transport_file.data) return reply.code(409).send({ error: 'no active SDP — make a connection first' });
     try {
       return await engine.activate(req.params.receiverId, conn);
     } catch (e) {
@@ -159,10 +188,10 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     }
   });
 
-  // ---- Betrieb -----------------------------------------------------------
+  // ---- Operations --------------------------------------------------------
   app.post<{ Params: { fabric: string } }>('/api/switch/:fabric/probe', async (req, reply) => {
     const result = await engine.probeSwitch(req.params.fabric);
-    if (!result) return reply.code(404).send({ error: `keine Fabric ${req.params.fabric}` });
+    if (!result) return reply.code(404).send({ error: `no such fabric: ${req.params.fabric}` });
     return result;
   });
 
@@ -171,18 +200,18 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     return { ok: true };
   });
 
-  // ---- Live-Events -------------------------------------------------------
+  // ---- Live events -------------------------------------------------------
   app.get('/api/events', { websocket: true }, (socket) => {
     const send = (payload: unknown) => {
       try {
         socket.send(JSON.stringify(payload));
       } catch {
-        /* Verbindung weg */
+        /* connection gone */
       }
     };
     send({ type: 'hello', channels: engine.channels() });
     const off = engine.on((e) => send(e));
     socket.on('close', off);
-    log.debug({}, 'GUI-WebSocket verbunden');
+    log.debug({}, 'GUI websocket connected');
   });
 }

@@ -3,8 +3,8 @@ services:
     build: .
     image: gemini2350/nmos-federation:latest
     container_name: nmos-federation
-    # Pflicht: die Software braucht beide 2110-Interfaces mit echten IPs
-    # (Node-href je Domäne, Manifest-Abruf, mDNS-Discovery der internen Registry).
+    # Required: the software needs one interface with a real IP per domain
+    # (node href, manifest fetch, mDNS discovery of the internal registry).
     network_mode: host
     restart: unless-stopped
     volumes:

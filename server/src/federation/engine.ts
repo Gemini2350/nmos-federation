@@ -28,8 +28,8 @@ export interface EngineEvent {
 }
 
 export interface EngineDeps {
-  /** Provider, kein Snapshot: ein Settings-Speichern ersetzt das Config-Objekt,
-   *  und Engine wie Node-API müssen danach die neue Fassung sehen. */
+  /** A provider, not a snapshot: saving settings replaces the config object, and
+   *  both engine and node API must see the new one afterwards. */
   config: () => AppConfig;
   state: StateStore;
   pools: PoolManager;
@@ -42,20 +42,20 @@ interface Resource {
 }
 
 /**
- * Orchestrator: hält die Registry-Clients, baut den Ressourcenbaum je Domäne und
- * führt Channels auf und ab.
+ * Orchestrator: owns the registry clients, builds the per-domain resource tree and
+ * brings channels up and down.
  *
- * Kernidee für alles Registry-bezogene: es gibt genau eine Funktion, die den
- * Soll-Zustand einer Registry herstellt (`syncRegistry`). Erstregistrierung,
- * Neu-Registrierung nach Heartbeat-404, Veröffentlichen eines neuen Senders,
- * Abmelden beim Abbau und Reconciliation sind derselbe Codepfad.
+ * Core idea for everything registry-related: there is exactly one function that
+ * establishes a registry's desired state (`syncRegistry`). Initial registration,
+ * re-registration after a heartbeat 404, publishing a new sender, unregistering on
+ * teardown and reconciliation are all the same code path.
  */
 export class Engine {
   readonly registries = new Map<string, RegistryClient>();
   private readonly listeners = new Set<(e: EngineEvent) => void>();
   private reconcileTimer: NodeJS.Timeout | null = null;
-  /** Tatsächlich gebundener Node-API-Port je Domäne — kann vom Wunschport abweichen,
-   *  wenn zwei Domänen auf derselben IP liegen. hrefs müssen das widerspiegeln. */
+  /** Node API port actually bound per domain — may differ from the configured one
+   *  when two domains share an IP. The hrefs must reflect that. */
   private readonly domainPorts = new Map<string, number>();
 
   constructor(private deps: EngineDeps) {}
@@ -64,13 +64,13 @@ export class Engine {
     return this.deps.config();
   }
 
-  /** Für Node-API und REST: immer die aktuelle Fassung. */
+  /** For the node API and REST: always the current version. */
   get config(): AppConfig {
     return this.cfg;
   }
 
-  /** Pools hängen an den Domänen-Konfigurationen und müssen nach einer
-   *  Settings-Änderung neu gebaut werden. */
+  /** Pools depend on the domain configurations and must be rebuilt after a
+   *  settings change. */
   setPools(pools: PoolManager): void {
     this.deps.pools = pools;
   }
@@ -126,7 +126,7 @@ export class Engine {
     }
   }
 
-  // -- Ressourcenbaum ------------------------------------------------------
+  // -- Resource tree -------------------------------------------------------
   private connectionBase(domain: DomainConfig): string {
     return `http://${domain.iface.address}:${this.portOf(domain.id)}/x-nmos/connection/v1.1`;
   }
@@ -149,7 +149,7 @@ export class Engine {
     return this.cfg.receivers.filter((r) => r.deviceId === device.id);
   }
 
-  /** Nur aktive Channels tragen einen veröffentlichten Sender. */
+  /** Only active channels carry a published sender. */
   private activeChannels(): Channel[] {
     return this.deps.state.current.channels.filter((c) => c.state === 'active');
   }
@@ -159,12 +159,12 @@ export class Engine {
     try {
       return essenceFromSdp(channel.originSdp);
     } catch (e) {
-      log.warn({ channel: channel.id, err: String(e) }, 'Essence nicht ableitbar');
+      log.warn({ channel: channel.id, err: String(e) }, 'cannot derive essence');
       return null;
     }
   }
 
-  /** Alle Ressourcen einer Domäne — genau das, was die Node API dort ausliefert. */
+  /** Every resource of a domain — exactly what the node API serves there. */
   domainResources(domainId: string) {
     const domain = domainById(this.cfg, domainId);
     const devices: ReturnType<typeof buildDevice>[] = [];
@@ -246,7 +246,7 @@ export class Engine {
     return { self: this.nodeResource(domain), devices, receivers, senders, sources, flows };
   }
 
-  /** Welche Registries dieses Device auf der Zielseite bedient. */
+  /** Which registries this device serves on the target side. */
   private targetRegistryIds(device: FederationDevice): string[] {
     const all = registriesOf(this.cfg, device.targetDomain).map((r) => r.id);
     if (!device.targetRegistries.length) return all;
@@ -254,8 +254,8 @@ export class Engine {
   }
 
   /**
-   * Soll-Zustand je Registry. Node und Devices gehen an jede Registry, in der
-   * überhaupt etwas von uns steht; Sender nur an die Ziel-Registries ihres Devices.
+   * Desired state per registry. Node and devices go to every registry that holds
+   * anything of ours; senders only to their device's target registries.
    */
   registrationPlan(): Map<string, Resource[]> {
     const plan = new Map<string, Resource[]>();
@@ -301,29 +301,29 @@ export class Engine {
     return plan;
   }
 
-  /** Stellt den Soll-Zustand einer Registry her. Fehler werden gemeldet, nicht geworfen. */
+  /** Establishes a registry's desired state. Errors are reported, not thrown. */
   async syncRegistry(client: RegistryClient): Promise<void> {
     const desired = this.registrationPlan().get(client.id) ?? [];
     const desiredKeys = new Set(desired.map((r) => `${r.type}:${r.data.id}`));
 
-    // Erst weg, was nicht mehr sein soll — Kinder vor Eltern, und der Sender
-    // zuerst: niemand soll auf einen Strom schalten, den wir gleich abräumen.
+    // First remove what should no longer be there — children before parents, and
+    // the sender first: nobody should connect to a stream we are about to tear down.
     for (const type of [...REGISTER_ORDER].reverse()) {
       for (const key of [...client.registered]) {
         const [t, id] = key.split(':') as [ResourceType, string];
         if (t === type && !desiredKeys.has(key)) {
-          await client.unregister(t, id).catch((e) => log.warn({ registry: client.id, key, err: String(e) }, 'Abmelden fehlgeschlagen'));
+          await client.unregister(t, id).catch((e) => log.warn({ registry: client.id, key, err: String(e) }, 'unregister failed'));
         }
       }
     }
 
-    // Dann anlegen/aktualisieren, Eltern vor Kindern.
+    // Then create/update, parents before children.
     for (const type of REGISTER_ORDER) {
       for (const res of desired.filter((r) => r.type === type)) {
         try {
           await client.register(res.type, res.data);
         } catch (e) {
-          log.warn({ registry: client.id, type: res.type, id: res.data.id, err: String(e) }, 'Registrieren fehlgeschlagen');
+          log.warn({ registry: client.id, type: res.type, id: res.data.id, err: String(e) }, 'register failed');
         }
       }
     }
@@ -338,7 +338,7 @@ export class Engine {
     }
   }
 
-  // -- Lebenszyklus --------------------------------------------------------
+  // -- Lifecycle -----------------------------------------------------------
   private buildRegistryClients(): void {
     for (const client of this.registries.values()) client.stopHeartbeat();
     this.registries.clear();
@@ -350,7 +350,7 @@ export class Engine {
     }
   }
 
-  /** Nach einer Settings-Änderung: Clients neu aufbauen, Soll-Zustand herstellen. */
+  /** After a settings change: rebuild the clients, establish the desired state. */
   async restartRegistries(): Promise<void> {
     this.buildRegistryClients();
     await this.syncRegistries();
@@ -362,15 +362,15 @@ export class Engine {
   async start(): Promise<void> {
     this.buildRegistryClients();
 
-    // Pool-Reservierungen aus dem State wiederherstellen, bevor irgendwas Neues kommt.
+    // Restore pool reservations from the state before anything new arrives.
     for (const channel of this.deps.state.current.channels) {
       if (channel.allocation) {
         try {
           this.deps.pools.reserve(channel.allocation);
         } catch (e) {
-          log.error({ channel: channel.id, err: String(e) }, 'Pool-Recovery fehlgeschlagen');
+          log.error({ channel: channel.id, err: String(e) }, 'pool recovery failed');
           channel.state = 'failed';
-          channel.error = `Pool-Recovery: ${(e as Error).message}`;
+          channel.error = `pool recovery: ${(e as Error).message}`;
         }
       }
     }
@@ -389,17 +389,17 @@ export class Engine {
   }
 
   /**
-   * IS-05-Aktivierung eines virtuellen Receivers — der Auslöser der ganzen Kette.
+   * IS-05 activation of a virtual receiver — the trigger for the whole chain.
    */
   async activate(vrxId: string, conn: ConnectionState): Promise<Channel> {
     const vrx = this.cfg.receivers.find((r) => r.id === vrxId);
-    if (!vrx) throw new Error(`unbekannter virtueller Receiver ${vrxId}`);
+    if (!vrx) throw new Error(`unknown virtual receiver ${vrxId}`);
     const device = this.cfg.devices.find((d) => d.id === vrx.deviceId);
-    if (!device) throw new Error(`Receiver ${vrxId} hängt an keinem Device`);
+    if (!device) throw new Error(`receiver ${vrxId} is not attached to a device`);
     const sdp = conn.transport_file.data;
-    if (!sdp) throw new Error('Aktivierung ohne transport_file');
+    if (!sdp) throw new Error('activation without a transport_file');
 
-    await this.deactivate(vrxId); // Umschalten = alte Federation sauber abbauen
+    await this.deactivate(vrxId); // switching over = tear the old federation down cleanly
 
     const channel: Channel = {
       id: `ch-${vrxId}`,
@@ -425,8 +425,8 @@ export class Engine {
     try {
       const parsed = parseSdp(sdp);
       channel.legs = assignFabrics(parsed, source.fabricSubnets);
-      if (!channel.legs.length) throw new Error('SDP ohne verwertbare Multicast-Gruppe');
-      essenceFromSdp(parsed); // früh scheitern, bevor der Switch angefasst wird
+      if (!channel.legs.length) throw new Error('SDP without a usable multicast group');
+      essenceFromSdp(parsed); // fail early, before touching the switch
 
       const useNat = this.cfg.nat.enabled && device.nat;
       if (useNat) {
@@ -450,7 +450,7 @@ export class Engine {
           ...(target.ptpRefclk ? { tsRefclk: target.ptpRefclk } : {}),
         });
       } else {
-        // NAT aus: SDP wird 1:1 kopiert, der Strom fließt unverändert.
+        // NAT off: the SDP is copied verbatim, the stream flows unchanged.
         channel.senderSdp = sdp;
       }
 
@@ -474,7 +474,7 @@ export class Engine {
           natGroupId: channel.allocation?.natGroupId,
           registries: channel.publishedIn,
         },
-        'Channel aktiv',
+        'channel active',
       );
       this.emit({ type: 'channel', channel });
       return channel;
@@ -491,15 +491,15 @@ export class Engine {
       }
       this.deps.state.upsertChannel(channel);
       await this.deps.state.save();
-      log.error({ channel: channel.id, err: channel.error }, 'Channel fehlgeschlagen');
+      log.error({ channel: channel.id, err: channel.error }, 'channel failed');
       this.emit({ type: 'channel', channel });
       throw e;
     }
   }
 
   /**
-   * Abbau. Reihenfolge ist Pflicht: erst den Sender abmelden, dann den Switch
-   * abräumen, dann den Pool freigeben.
+   * Teardown. The order is mandatory: unregister the sender first, then clear the
+   * switch, then release the pool.
    */
   async deactivate(vrxId: string): Promise<void> {
     const channel = this.deps.state.channelFor(vrxId);
@@ -517,7 +517,7 @@ export class Engine {
       try {
         await unprogramChannel(this.deps.drivers, buildChannelPlan(channel, this.cfg));
       } catch (e) {
-        log.warn({ channel: channel.id, err: String(e) }, 'Switch-Abbau unvollständig');
+        log.warn({ channel: channel.id, err: String(e) }, 'switch teardown incomplete');
       }
       channel.state = 'releasing';
       this.deps.pools.release(channel.allocation);
@@ -526,11 +526,11 @@ export class Engine {
 
     this.deps.state.removeChannel(channel.id);
     await this.deps.state.save();
-    log.info({ channel: channel.id }, 'Channel abgebaut');
+    log.info({ channel: channel.id }, 'channel torn down');
     this.emit({ type: 'channel', channel: { ...channel, state: 'idle' } });
   }
 
-  /** Soll/Ist-Abgleich: Registries nachziehen, Switch-Regeln prüfen. */
+  /** Desired/actual reconciliation: catch registries up, verify switch rules. */
   async reconcile(): Promise<void> {
     await this.syncRegistries();
 
@@ -547,17 +547,17 @@ export class Engine {
         if (!channel.allocation) continue;
         if (!channel.legs.some((l) => l.fabric === fabric)) continue;
         if (!present.has(channel.allocation.natGroupId)) {
-          log.warn({ channel: channel.id, fabric, natGroupId: channel.allocation.natGroupId }, 'NAT-Regel fehlt, programmiere nach');
+          log.warn({ channel: channel.id, fabric, natGroupId: channel.allocation.natGroupId }, 'NAT rule missing, reprogramming');
           const plan = buildChannelPlan(channel, this.cfg);
           const fabricPlan = plan.fabrics.find((f) => f.fabric === fabric);
-          if (fabricPlan) await driver.program(fabricPlan, channel.id).catch((e) => log.warn({ err: String(e) }, 'Nachprogrammieren fehlgeschlagen'));
+          if (fabricPlan) await driver.program(fabricPlan, channel.id).catch((e) => log.warn({ err: String(e) }, 'reprogramming failed'));
         }
       }
     }
   }
 
-  // -- Auskunft fürs GUI ---------------------------------------------------
-  /** Aktiver IS-05-Zustand eines virtuellen Receivers — für den Retry-Knopf. */
+  // -- Information for the GUI ---------------------------------------------
+  /** A virtual receiver's active IS-05 state — for the retry button. */
   connectionOf(vrxId: string): ConnectionState | null {
     return this.deps.state.current.connections[vrxId]?.active ?? null;
   }

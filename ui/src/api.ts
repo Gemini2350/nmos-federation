@@ -1,4 +1,4 @@
-/** Dünner Client fürs Backend. Endpunkte siehe server/src/api/rest.ts. */
+/** Thin client for the backend. Endpoints: see server/src/api/rest.ts. */
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { 'content-type': 'application/json' },
@@ -118,7 +118,11 @@ export const api = {
   validateConfig: (cfg: Config) => req<{ issues: Issue[] }>('/config/validate', { method: 'POST', body: JSON.stringify(cfg) }),
   devices: () => req<Device[]>('/devices'),
   createDevice: (d: Partial<Device>) => req<Device>('/devices', { method: 'POST', body: JSON.stringify(d) }),
-  updateDevice: (id: string, d: Partial<Device>) => req<Device>(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(d) }),
+  updateDevice: (id: string, d: Partial<Device>) =>
+    req<Device & { rebuilt?: number; failed?: { receiverId: string; error: string }[] }>(`/devices/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(d),
+    }),
   deleteDevice: (id: string) => req<{ ok: boolean }>(`/devices/${id}`, { method: 'DELETE' }),
   addReceivers: (deviceId: string, body: { count: number; pattern: string; format: VirtualReceiver['format'] }) =>
     req<VirtualReceiver[]>(`/devices/${deviceId}/receivers`, { method: 'POST', body: JSON.stringify(body) }),

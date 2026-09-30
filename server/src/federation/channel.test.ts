@@ -47,7 +47,7 @@ const channel: Channel = {
   updatedAt: '',
 };
 
-test('Ingress kommt aus der Quell-Domäne, Egress aus der Ziel-Domäne', () => {
+test('ingress comes from the source domain, egress from the target domain', () => {
   const plan = buildChannelPlan(channel, cfg);
   const red = plan.fabrics.find((f) => f.fabric === 'red')!;
   const blue = plan.fabrics.find((f) => f.fabric === 'blue')!;
@@ -57,7 +57,7 @@ test('Ingress kommt aus der Quell-Domäne, Egress aus der Ziel-Domäne', () => {
   assert.equal(blue.egressInterface, 'Vlan902');
 });
 
-test('Gegenrichtung dreht Ingress und Egress um', () => {
+test('the reverse direction swaps ingress and egress', () => {
   const back: Channel = { ...channel, sourceDomain: 'partnerA', targetDomain: 'internal' };
   back.allocation = { ...channel.allocation!, domainId: 'internal' };
   const red = buildChannelPlan(back, cfg).fabrics.find((f) => f.fabric === 'red')!;
@@ -65,30 +65,30 @@ test('Gegenrichtung dreht Ingress und Egress um', () => {
   assert.equal(red.egressInterface, 'Vlan101');
 });
 
-test('rote Adresse ist ungerade, blaue gerade — je Bein die richtige', () => {
+test('red address is odd, blue is even — the right one per leg', () => {
   const plan = buildChannelPlan(channel, cfg);
   assert.equal(plan.fabrics.find((f) => f.fabric === 'red')!.translated.group, '239.200.0.1');
   assert.equal(plan.fabrics.find((f) => f.fabric === 'blue')!.translated.group, '239.200.0.0');
 });
 
-test('beide Beine teilen sich die NAT-Group-Nummer nicht mit anderen Channels', () => {
+test('both legs share the NAT group number, and no other channel does', () => {
   const plan = buildChannelPlan(channel, cfg);
   assert.deepEqual(plan.fabrics.map((f) => f.natGroupId), [100, 100]);
 });
 
-test('einbeinige Quelle programmiert nur ihre Fabric', () => {
+test('a single-leg source programs only its own fabric', () => {
   const single: Channel = { ...channel, legs: [channel.legs[0]!] };
   const plan = buildChannelPlan(single, cfg);
   assert.equal(plan.fabrics.length, 1);
   assert.equal(plan.fabrics[0]!.fabric, 'red');
 });
 
-test('Reservierung aus der falschen Domäne wird abgewiesen', () => {
+test('a reservation from the wrong domain is rejected', () => {
   const wrong: Channel = { ...channel, allocation: { ...channel.allocation!, domainId: 'internal' } };
-  assert.throws(() => buildChannelPlan(wrong, cfg), /Reservierung stammt aus Domäne/);
+  assert.throws(() => buildChannelPlan(wrong, cfg), /reservation came from domain/);
 });
 
-test('zwei Beine auf derselben Fabric sind ein Konfigurationsfehler', () => {
+test('two legs on the same fabric is a configuration error', () => {
   const dup: Channel = { ...channel, legs: [channel.legs[0]!, { ...channel.legs[1]!, fabric: 'red' }] };
-  assert.throws(() => buildChannelPlan(dup, cfg), /zwei Beine auf Fabric red/);
+  assert.throws(() => buildChannelPlan(dup, cfg), /two legs on fabric red/);
 });

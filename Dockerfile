@@ -1,4 +1,4 @@
-# --- UI bauen ---------------------------------------------------------------
+# --- build the UI -----------------------------------------------------------
 FROM node:22-alpine AS ui
 WORKDIR /ui
 COPY ui/package*.json ./
@@ -6,7 +6,7 @@ RUN npm ci || npm install
 COPY ui/ ./
 RUN npm run build
 
-# --- Server bauen -----------------------------------------------------------
+# --- build the server -------------------------------------------------------
 FROM node:22-alpine AS server
 WORKDIR /server
 COPY server/package*.json ./
@@ -14,7 +14,7 @@ RUN npm ci || npm install
 COPY server/ ./
 RUN npm run build
 
-# --- Laufzeit ---------------------------------------------------------------
+# --- runtime ----------------------------------------------------------------
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production CONFIG_DIR=/config

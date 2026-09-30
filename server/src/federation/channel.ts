@@ -2,16 +2,16 @@ import type { Channel, ChannelPlan, FabricPlan } from '../types.js';
 import { domainById, type AppConfig } from '../config/schema.js';
 
 /**
- * Übersetzt einen Channel in Switch-Anweisungen.
+ * Turns a channel into switch instructions.
  *
- * Ingress ist das L3-Interface der **Quell**-Domäne, Egress das der **Ziel**-Domäne —
- * beides auf demselben Switch der jeweiligen Fabric. Damit fällt die alte
- * intern/extern-Sonderbehandlung weg: jede Domäne bringt ihre Interfaces mit.
+ * Ingress is the **source** domain's L3 interface, egress the **target** domain's —
+ * both on the same switch for that fabric. This is what removes the old
+ * internal/external special case: every domain brings its own interfaces.
  */
 export function buildChannelPlan(channel: Channel, cfg: AppConfig): ChannelPlan {
-  if (!channel.allocation) throw new Error(`Channel ${channel.id}: keine Pool-Reservierung`);
+  if (!channel.allocation) throw new Error(`channel ${channel.id}: no pool reservation`);
   if (channel.allocation.domainId !== channel.targetDomain) {
-    throw new Error(`Channel ${channel.id}: Reservierung stammt aus Domäne ${channel.allocation.domainId}, Ziel ist ${channel.targetDomain}`);
+    throw new Error(`channel ${channel.id}: reservation came from domain ${channel.allocation.domainId}, target is ${channel.targetDomain}`);
   }
 
   const source = domainById(cfg, channel.sourceDomain);
@@ -20,7 +20,7 @@ export function buildChannelPlan(channel: Channel, cfg: AppConfig): ChannelPlan 
   const fabrics: FabricPlan[] = [];
 
   for (const leg of channel.legs) {
-    if (seen.has(leg.fabric)) throw new Error(`Channel ${channel.id}: zwei Beine auf Fabric ${leg.fabric}`);
+    if (seen.has(leg.fabric)) throw new Error(`channel ${channel.id}: two legs on fabric ${leg.fabric}`);
     seen.add(leg.fabric);
 
     fabrics.push({
@@ -37,12 +37,12 @@ export function buildChannelPlan(channel: Channel, cfg: AppConfig): ChannelPlan 
     });
   }
 
-  if (!fabrics.length) throw new Error(`Channel ${channel.id}: kein verwertbares Bein im SDP`);
+  if (!fabrics.length) throw new Error(`channel ${channel.id}: no usable leg in the SDP`);
   return { channelId: channel.id, fabrics };
 }
 
 /*
- * Die Statemachine selbst liegt in `engine.ts` — dort, wo Pools, Switch-Treiber und
- * Registry-Clients zusammenkommen. Hier steht nur die reine Plan-Ableitung, damit sie
- * ohne Netzwerk testbar bleibt.
+ * The state machine itself lives in `engine.ts`, where pools, switch drivers and
+ * registry clients come together. This file holds only the pure plan derivation so
+ * that it stays testable without a network.
  */

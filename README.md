@@ -1,69 +1,103 @@
 # NMOS Federation
 
-Gateway zum punktuellen Signalaustausch zwischen getrennten ST-2110/NMOS-Systemen.
+A gateway for exchanging individual signals between separate ST 2110 / NMOS systems.
 
-Die Software betreibt **virtuelle NMOS-Receiver** in einer Domäne und spiegelt jede
-darauf geschaltete Quelle als **virtuellen NMOS-Sender** in eine andere Domäne — dort
-in beliebig viele Registries. Der eigentliche Essence-Pfad läuft nicht durch die
-Software, sondern über **Multicast-NAT auf dem Switch** (Arista EOS, Red- und
-Blue-Fabric getrennt) — die Software steuert nur Registrierung, Adressvergabe und
-Switch-Konfiguration.
+The software runs **virtual NMOS receivers** in one domain and mirrors every source
+connected to them as a **virtual NMOS sender** in another domain — there into any
+number of registries. The essence path does not run through the software: it goes
+over **multicast NAT on the switch** (Arista EOS, red and blue fabric kept separate).
+The software only drives registration, address allocation and switch configuration.
 
-Eine **Domäne** ist ein Netz mit eigenem Interface, eigenem Adress-Pool und eigenem
-L3-Interface je Switch: genau eine interne, beliebig viele externe, pro Domäne 1..n
-Registries.
+A **domain** is a network with its own interface, its own address pool and its own L3
+interface per switch: exactly one internal, any number of external, and 1..n
+registries per domain.
 
 ```
-  Domäne "internal"                      Domäne "partnerA"  (…partnerB, …)
+  domain "internal"                      domain "partnerA"  (…partnerB, …)
   ┌───────────────────┐                  ┌───────────────────┐
-  │ realer Sender     │                  │ realer Receiver   │
-  │ 239.10.1.5:5004   │                  │ joint 239.200.0.4 │
+  │ real sender       │                  │ real receiver     │
+  │ 239.10.1.5:5004   │                  │ joins 239.200.0.0 │
   └─────────┬─────────┘                  └─────────▲─────────┘
-            │ IGMP/PIM-Join durch Switch           │
-  ┌─────────▼──────────────── Arista ──────────────┴─────────┐
-  │  ip nat destination static 239.10.1.5 → 239.200.0.4      │  (je Fabric 1x)
+            │ switch joins via IGMP/PIM            │
+  ┌─────────▼──────────────── switch ──────────────┴─────────┐
+  │  ip nat destination static 239.10.1.5 → 239.200.0.1      │  (once per fabric)
   └──────────────────────────────────────────────────────────┘
             ▲                                      ▲
   ┌─────────┴─────────┐  eAPI            ┌──────────┴────────┐
-  │ interne Registry  │◄── nmos-federation ──►│ Registries 1..n  │
-  │ virt. Receiver    │   (Docker, WebGUI)    │ virt. Sender     │
-  └───────────────────┘                       └──────────────────┘
+  │ internal registry │◄── nmos-federation ──►│ registries 1..n │
+  │ virtual receivers │   (Docker, web GUI)   │ virtual senders │
+  └───────────────────┘                       └─────────────────┘
 ```
 
-- Konzept, Datenmodell und Abläufe: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Arbeitsnotizen für Claude Code: [CLAUDE.md](CLAUDE.md)
+- Concept, data model and workflows: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Working notes for Claude Code: [CLAUDE.md](CLAUDE.md)
+
+## Quick start on a Docker host
+
+```bash
+git clone https://github.com/Gemini2350/nmos-federation.git
+cd nmos-federation
+docker compose up -d --build
+```
+
+Then open `http://<host>:8080` and configure it under **Settings**:
+
+1. **Domains** — one internal, one per partner network. Each needs an interface name,
+   the IP its node API is reachable on, the red/blue source subnets, the L3 interface
+   per switch, and a multicast pool whose base address is **even**.
+2. **Registries** — assign each to a domain, by URL or DNS-SD. Several per domain are
+   fine.
+3. **NAT and switches** — host and credentials per fabric, plus the NAT group range.
+   Leave the driver on `mock` at first: the software then logs the switch commands
+   instead of sending them, which lets you see the whole federation in your
+   controller without touching the network.
+
+Then create a **device** (source domain → target domain) and add virtual receivers to
+it. They appear in the registry immediately; connecting a source to one of them with
+your usual controller creates the virtual sender on the other side.
+
+`network_mode: host` is required — the software needs one interface with a real IP
+per domain (node href, manifest fetch, mDNS). Configuration and state live in
+`./config`.
+
+## Ports
+
+| Port | Purpose |
+|---|---|
+| 8080 | web GUI + REST + WebSocket, bound to 0.0.0.0 |
+| 8081 | NMOS node/connection API, one listener per domain on that domain's IP |
 
 ## Status
 
-Lauffähig mit Mock-Switch: virtuelle Receiver werden in der Registry angemeldet, eine
-IS-05-Schaltung darauf programmiert NAT auf beiden Fabrics, schreibt das SDP um und
-veröffentlicht den virtuellen Sender in den Ziel-Registries; Abschalten baut alles in
-umgekehrter Reihenfolge ab. 38 Offline-Tests, darunter die komplette Kette gegen eine
-Stub-Registry.
+Working with the mock switch driver: virtual receivers are registered, an IS-05
+connection to one of them programs NAT on both fabrics, rewrites the SDP and
+publishes the virtual sender in the target registries; disabling it tears everything
+down in reverse order. 38 offline tests, including the full chain against a stub
+registry.
 
-Noch offen: der eAPI-Treiber ist gegen echte Hardware nicht verifiziert (siehe unten),
-BCP-008-01-Monitoring fehlt, DNS-SD-Discovery ist auf Unicast beschränkt, und von den
-IS-05-Aktivierungsmodi ist nur `activate_immediate` implementiert.
+Still open: the eAPI driver is unverified against real hardware (see below),
+BCP-008-01 monitoring is missing, discovery is limited to unicast DNS-SD, and of the
+IS-05 activation modes only `activate_immediate` is implemented.
 
-⚠ Multicast NAT auf der Zielplattform (DCS-7060SX2) ist noch nicht bewiesen: die CLI
-nimmt die Regel an, `show ip nat translation` bleibt aber leer — siehe
-`docs/ARCHITECTURE.md`, offener Punkt 1.
+> ⚠ Multicast NAT on the target platform (DCS-7060SX2) is not proven yet: the CLI
+> accepts the rule, but `show ip nat translation` stays empty — see
+> `docs/ARCHITECTURE.md`, open point 1.
+
+## Development
 
 ```bash
-cd server && npm install && npm test
-cd server && npm run dev          # Backend mit Mock-Switch, GUI auf :8080
+cd server && npm install && npm test   # offline tests
+cd server && npm run dev               # backend with the mock switch, GUI on :8080
+cd ui && npm run dev                   # GUI dev server
 ```
 
-Die EOS-Kommandos, die der Treiber senden würde, lassen sich ohne laufende Software
-ausgeben — zum Gegentesten auf der Hardware:
+The commands the driver would send can be printed without running the software, for
+cross-checking on the hardware:
 
 ```bash
 cd server && npm run switch:preview -- --ingress Vlan101 --egress Vlan901
 ```
 
-## Ports
+## License
 
-| Port | Was |
-|---|---|
-| 8080 | WebGUI + REST + WebSocket, an 0.0.0.0 |
-| 8081 | NMOS Node/Connection API, je Domäne an die IP dieser Domäne gebunden |
+MIT

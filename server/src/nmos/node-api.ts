@@ -6,12 +6,12 @@ import { emptyConnection, type ConnectionState } from '../federation/state.js';
 import { log } from '../util/log.js';
 
 /**
- * IS-04 Node API + IS-05 Connection API für **eine** Domäne.
+ * IS-04 Node API + IS-05 Connection API for **one** domain.
  *
- * Die IS-05-Aktivierung eines virtuellen Receivers ist der Auslöser der gesamten
- * Federation-Kette: transport_file (SDP) + master_enable=true -> Engine.activate().
+ * The IS-05 activation of a virtual receiver is the trigger for the whole federation
+ * chain: transport_file (SDP) + master_enable=true -> Engine.activate().
  *
- * Virtuelle Sender sind read-only; /transportfile liefert das transformierte SDP.
+ * Virtual senders are read-only; /transportfile serves the rewritten SDP.
  */
 
 const NODE_VER = 'v1.3';
@@ -33,14 +33,14 @@ interface StagedPatch {
 export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engine: Engine, state: StateStore): void {
   const res = () => engine.domainResources(domain.id);
 
-  /** NMOS-Receiver-ID -> unser virtueller Receiver. */
+  /** NMOS receiver ID -> our virtual receiver. */
   const vrxByNmosId = (nmosId: string) =>
     engine.config.receivers.find((r) => engine.receiverNmosId(r.id, domain.id) === nmosId);
 
   const channelBySenderNmosId = (nmosId: string) =>
     engine.channels().find((c) => c.targetDomain === domain.id && engine.senderNmosId(c.receiverId, domain.id) === nmosId);
 
-  // ---- Discovery-Pfade ----------------------------------------------------
+  // ---- Discovery paths ----------------------------------------------------
   app.get('/x-nmos/', async () => ['node/', 'connection/']);
   app.get('/x-nmos/node/', async () => [`${NODE_VER}/`]);
   app.get(`/x-nmos/node/${NODE_VER}/`, async () => ['self/', 'devices/', 'sources/', 'flows/', 'senders/', 'receivers/']);
@@ -61,7 +61,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
     });
   }
 
-  // ---- IS-05 Sender (read-only) ------------------------------------------
+  // ---- IS-05 senders (read-only) -----------------------------------------
   app.get(`/x-nmos/connection/${CONN_VER}/single/senders`, async () => res().senders.map((s) => `${s.id}/`));
 
   app.get<{ Params: { id: string } }>(`/x-nmos/connection/${CONN_VER}/single/senders/:id`, async () => [
@@ -102,20 +102,20 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
 
   app.get<{ Params: { id: string } }>(`/x-nmos/connection/${CONN_VER}/single/senders/:id/transportfile`, async (req, reply) => {
     const channel = channelBySenderNmosId(req.params.id);
-    if (!channel?.senderSdp) return reply.code(404).send({ code: 404, error: 'kein aktives Transportfile', debug: null });
+    if (!channel?.senderSdp) return reply.code(404).send({ code: 404, error: 'no active transport file', debug: null });
     return reply.type('application/sdp').send(channel.senderSdp);
   });
 
-  // Ein fremder Controller darf unsere virtuellen Sender nicht umkonfigurieren.
+  // A foreign controller must not reconfigure our virtual senders.
   app.patch<{ Params: { id: string } }>(`/x-nmos/connection/${CONN_VER}/single/senders/:id/staged`, async (req, reply) =>
     reply.code(423).send({
       code: 423,
-      error: 'virtuelle Sender werden von der Federation gesteuert und sind nicht patchbar',
+      error: 'virtual senders are driven by the federation and cannot be patched',
       debug: null,
     }),
   );
 
-  // ---- IS-05 Receiver ----------------------------------------------------
+  // ---- IS-05 receivers ---------------------------------------------------
   app.get(`/x-nmos/connection/${CONN_VER}/single/receivers`, async () => res().receivers.map((r) => `${r.id}/`));
 
   app.get<{ Params: { id: string } }>(`/x-nmos/connection/${CONN_VER}/single/receivers/:id`, async () => [
@@ -155,7 +155,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
       const vrx = vrxByNmosId(req.params.id);
       if (!vrx) return reply.code(404).send({ code: 404, error: 'not found', debug: null });
       if (!vrx.enabled) {
-        return reply.code(423).send({ code: 423, error: 'virtueller Receiver ist deaktiviert', debug: null });
+        return reply.code(423).send({ code: 423, error: 'virtual receiver is disabled', debug: null });
       }
 
       const body = req.body ?? {};
@@ -163,7 +163,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
       if (mode && mode !== 'activate_immediate') {
         return reply.code(501).send({
           code: 501,
-          error: `Aktivierungsmodus ${mode} wird nicht unterstützt — nur activate_immediate`,
+          error: `activation mode ${mode} is not supported — only activate_immediate`,
           debug: null,
         });
       }
@@ -185,7 +185,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
         return shape(staged);
       }
 
-      // Immediate: staged wird active, danach läuft die Federation-Kette.
+      // Immediate: staged becomes active, then the federation chain runs.
       const activationTime = `${Math.floor(Date.now() / 1000)}:0`;
       conn.active = structuredClone(staged);
       conn.staged = emptyConnection();
@@ -198,8 +198,8 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
           await engine.deactivate(vrx.id);
         }
       } catch (e) {
-        log.error({ receiver: vrx.id, err: String(e) }, 'Aktivierung fehlgeschlagen');
-        return reply.code(500).send({ code: 500, error: `Federation fehlgeschlagen: ${(e as Error).message}`, debug: null });
+        log.error({ receiver: vrx.id, err: String(e) }, 'activation failed');
+        return reply.code(500).send({ code: 500, error: `federation failed: ${(e as Error).message}`, debug: null });
       }
 
       return shape(conn.active, { mode: 'activate_immediate', requested_time: null, activation_time: activationTime });

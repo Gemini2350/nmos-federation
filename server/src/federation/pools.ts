@@ -3,11 +3,11 @@ import type { DomainConfig } from '../config/schema.js';
 import { NatGroupAllocator, PoolAllocator, poolsOverlap } from './pool.js';
 
 /**
- * Hält je Domäne einen Pool. Vergeben wird immer aus dem Pool der **Ziel**-Domäne:
- * die Adressen müssen im Netz gültig sein, in dem der virtuelle Sender entsteht.
+ * Keeps one pool per domain. Allocation always comes from the **target** domain's
+ * pool: the addresses must be valid in the network where the virtual sender appears.
  *
- * Die NAT-Group-Nummern kommen aus einem gemeinsamen Allokator — sie gelten pro
- * Switch, und alle Domänen hängen an demselben Switch-Paar.
+ * NAT group numbers come from a shared allocator — they are per switch, and every
+ * domain hangs off the same pair of switches.
  */
 export class PoolManager {
   private readonly pools = new Map<DomainId, PoolAllocator>();
@@ -20,7 +20,7 @@ export class PoolManager {
 
   private poolFor(domainId: DomainId): PoolAllocator {
     const pool = this.pools.get(domainId);
-    if (!pool) throw new Error(`keine Domäne ${domainId} konfiguriert`);
+    if (!pool) throw new Error(`no domain ${domainId} configured`);
     return pool;
   }
 
@@ -31,13 +31,13 @@ export class PoolManager {
     try {
       natGroupId = this.natGroups.allocate();
     } catch (e) {
-      pool.release(pair.index); // Pärchen nicht verwaisen lassen
+      pool.release(pair.index); // don't orphan the pair
       throw e;
     }
     return { domainId: targetDomain, ...pair, natGroupId };
   }
 
-  /** Recovery aus dem persistierten State. */
+  /** Recovery from persisted state. */
   reserve(alloc: Allocation): Allocation {
     const pair = this.poolFor(alloc.domainId).reserve(alloc.index);
     this.natGroups.reserve(alloc.natGroupId);
@@ -59,8 +59,8 @@ export class PoolManager {
 }
 
 /**
- * Zwei Domänen mit überlappendem Pool sind nur dann harmlos, wenn es wirklich
- * getrennte Netze sind — prüfen kann das die Software nicht, warnen schon.
+ * Two domains with overlapping pools are harmless only if they really are separate
+ * networks — the software cannot verify that, but it can warn.
  */
 export function overlappingPools(domains: DomainConfig[]): [string, string][] {
   const hits: [string, string][] = [];

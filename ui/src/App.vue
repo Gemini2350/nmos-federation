@@ -8,7 +8,7 @@ import { RouterLink, RouterView } from 'vue-router';
     <nav>
       <RouterLink to="/channels">Channels</RouterLink>
       <RouterLink to="/devices">Devices</RouterLink>
-      <RouterLink to="/settings">Einstellungen</RouterLink>
+      <RouterLink to="/settings">Settings</RouterLink>
     </nav>
   </header>
   <main><RouterView /></main>

@@ -7,29 +7,29 @@ export interface AristaConfig {
   user: string;
   password: string;
   tls: boolean;
-  /** Join-Verfahren für Ingress und Egress. Die L3-Interfaces kommen je Channel
-   *  aus den beteiligten Domänen (FabricPlan.ingressInterface / egressInterface). */
+  /** Join method for ingress and egress. The L3 interfaces come per channel from
+   *  the domains involved (FabricPlan.ingressInterface / egressInterface). */
   join: 'igmpStatic' | 'pim' | 'none';
-  /** TLS-Zertifikat des Switches prüfen. In der Praxis meist selbstsigniert. */
+  /** Verify the switch's TLS certificate. Usually self-signed in practice. */
   verifyTls?: boolean;
 }
 
 /**
- * Kommando-Templates.
+ * Command templates.
  *
- * ACHTUNG — siehe docs/ARCHITECTURE.md, offener Punkt 1: Multicast-NAT ist bei EOS
- * plattform- und releaseabhängig. Ob die Destination-Regel auf das Ingress- oder
- * (im Twice-NAT-Fall) auf das Egress-Interface gehört, muss gegen die Zielhardware
- * verifiziert werden. Alle Switch-Kommandos stehen deshalb nur hier.
+ * CAUTION — see docs/ARCHITECTURE.md, open point 1: multicast NAT on EOS depends on
+ * platform and release. Whether the destination rule belongs on the ingress or (in
+ * the twice-NAT case) on the egress interface has to be verified against the target
+ * hardware. This is why every switch command lives here and nowhere else.
  *
- * Bekannt und belegt: Source- und Destination-Regel eines Übersetzungspaares müssen
- * dieselbe `group`-Nummer tragen, und bei Multicast-Gruppen installiert EOS keinen
- * Rückpfad in Hardware.
+ * Known and documented: a translation pair's source and destination rule must carry
+ * the same `group` number, and for multicast groups EOS installs no reverse path in
+ * hardware.
  */
 export function buildProgramCommands(plan: FabricPlan, cfg: AristaConfig): string[] {
   const cmds: string[] = ['enable', 'configure'];
 
-  // 1) Originalstrom in den Switch ziehen
+  // 1) pull the original stream into the switch
   if (cfg.join === 'igmpStatic') {
     cmds.push(`interface ${plan.ingressInterface}`);
     cmds.push(
@@ -40,7 +40,7 @@ export function buildProgramCommands(plan: FabricPlan, cfg: AristaConfig): strin
     cmds.push('exit');
   }
 
-  // 2) Übersetzung
+  // 2) translation
   cmds.push(`interface ${plan.ingressInterface}`);
   cmds.push(`ip nat destination static ${plan.origin.group} ${plan.translated.group} group ${plan.natGroupId}`);
   cmds.push('exit');
@@ -51,7 +51,7 @@ export function buildProgramCommands(plan: FabricPlan, cfg: AristaConfig): strin
     cmds.push('exit');
   }
 
-  // 3) Übersetzte Gruppe Richtung Fremdnetz ausgeben
+  // 3) emit the translated group towards the foreign network
   if (cfg.join === 'igmpStatic') {
     cmds.push(`interface ${plan.egressInterface}`);
     cmds.push(`ip igmp static-group ${plan.translated.group}`);
@@ -87,8 +87,8 @@ export class AristaEapiDriver implements SwitchDriver {
       id: `nmos-federation-${Date.now()}`,
     };
 
-    // TODO: undici Agent mit rejectUnauthorized: cfg.verifyTls !== false,
-    //       Timeout und Retry mit Backoff.
+    // TODO: undici agent with rejectUnauthorized: cfg.verifyTls !== false,
+    //       timeout and retry with backoff.
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Basic ${auth}` },
@@ -97,11 +97,11 @@ export class AristaEapiDriver implements SwitchDriver {
     if (!res.ok) throw new Error(`eAPI ${this.cfg.host}: HTTP ${res.status}`);
     const json = (await res.json()) as EapiResponse;
     if (json.error) {
-      // EOS bricht bei Fehler ab; der Index im data-Array zeigt, wie weit es kam.
+      // EOS aborts on error; the index in the data array shows how far it got.
       const failedAt = Array.isArray(json.error.data) ? json.error.data.length - 1 : -1;
       throw new Error(
         `eAPI ${this.cfg.host}: ${json.error.message}` +
-          (failedAt >= 0 ? ` (bei Kommando ${failedAt}: ${cmds[failedAt]})` : ''),
+          (failedAt >= 0 ? ` (at command ${failedAt}: ${cmds[failedAt]})` : ''),
       );
     }
     return json.result ?? [];
@@ -120,8 +120,8 @@ export class AristaEapiDriver implements SwitchDriver {
   }
 
   async readState(): Promise<SwitchState> {
-    // TODO: 'show running-config section ip nat' auswerten und NAT-Group-Nummern
-    //       extrahieren, damit der Reconciler verwaiste Regeln findet.
+    // TODO: parse 'show running-config section ip nat' and extract NAT group
+    //       numbers so the reconciler can spot orphaned rules.
     const result = await this.runCmds(['enable', 'show running-config section ip nat'], 'text');
     const text = String((result.at(-1) as { output?: string } | undefined)?.output ?? '');
     const lines = text.split('\n').filter((l) => l.trim());

@@ -1,275 +1,274 @@
-# NMOS Federation — Architektur
+# NMOS Federation — Architecture
 
-Stand 2026-08-24. Dieses Dokument ist die Referenz für Datenmodell, Abläufe und
-offene Entscheidungen. Code-Gerüst folgt dieser Struktur 1:1.
+This document is the reference for the data model, the workflows and the open
+questions. The code follows its structure one to one.
 
 ---
 
-## 1. Aufgabe
+## 1. The problem
 
-Mehrere voneinander getrennte ST-2110-Systeme mit **je eigener NMOS-Registry,
-eigenem Multicast-Adressplan und eigener PTP-Domain** sollen punktuell Signale
-austauschen. Kein Trunk, kein zusammengelegtes Netz — nur einzelne, kontrolliert
-freigegebene Ströme.
+Two or more separate ST 2110 systems, each with **its own NMOS registry, its own
+multicast address plan and its own PTP domain**, need to exchange individual signals.
+No trunk, no merged network — only single, deliberately released streams.
 
-Die Software ist dabei **Broker, nicht Medienpfad**:
+The software is a **broker, not a media path**:
 
-| Aufgabe | Wer macht es |
+| Task | Who does it |
 |---|---|
-| Signalisierung (IS-04/IS-05) | nmos-federation |
-| Adressvergabe aus Federation-Pool | nmos-federation |
-| Multicast-NAT, IGMP/PIM | Switch, konfiguriert per eAPI |
-| Essence-Transport | Switch-Hardware, wire-speed |
+| Signalling (IS-04/IS-05) | nmos-federation |
+| Address allocation from the federation pool | nmos-federation |
+| Multicast NAT, IGMP/PIM | the switch, configured over eAPI |
+| Essence transport | switch hardware, at wire speed |
 
-## 2. Grundbegriffe
+## 2. Terms
 
-- **Domäne** — ein Netz mit eigener Registry-Sicht: eigenes Interface, eigener
-  Federation-Pool, eigenes L3-Interface auf beiden Switches. Genau eine Domäne ist
-  die interne, dazu kommen **beliebig viele externe**.
-- **Registry** — gehört zu genau einer Domäne. Pro Domäne sind mehrere Registries
-  möglich und der Normalfall, wenn mehrere Partner im selben Netz hängen.
-- **Virtueller Receiver (vRX)** — NMOS-Receiver, den die Software in einer Domäne
-  registriert. Er ist der Bestellpunkt: der Anwender schaltet mit seinem gewohnten
-  Controller (z. B. NMOS-Crosspoint) eine echte Quelle darauf.
-- **Virtueller Sender (vTX)** — der aus dieser Schaltung entstehende Sender in der
-  Ziel-Domäne. Existiert nur, solange der vRX aktiv geschaltet ist.
-- **Federation Channel** — das Paar (vRX, vTX) samt Pool-Reservierung und
-  Switch-Programmierung. Der Channel ist die zentrale Zustandseinheit.
-- **Fabric** — `red` oder `blue`, die beiden ST-2022-7-Wege. Zwei getrennte Switches,
-  zwei getrennte NAT-Konfigurationen, eine gemeinsame Adress-Logik.
+- **Domain** — a network with its own registry view: its own interface, its own
+  federation pool, its own L3 interface on both switches. Exactly one domain is the
+  internal one, plus **any number of external ones**.
+- **Registry** — belongs to exactly one domain. Several registries per domain are
+  possible and are the normal case when several partners share a network.
+- **Virtual receiver (vRX)** — an NMOS receiver the software registers in a domain.
+  It is the ordering point: the operator uses their usual controller (for example
+  NMOS Crosspoint) to connect a real source to it.
+- **Virtual sender (vTX)** — the sender that connection produces in the target
+  domain. It exists only while the vRX is actively connected.
+- **Federation channel** — the (vRX, vTX) pair together with its pool reservation and
+  switch programming. The channel is the central unit of state.
+- **Fabric** — `red` or `blue`, the two ST 2022-7 paths. Two separate switches, two
+  separate NAT configurations, one shared addressing rule.
 
-### Warum Domänen und nicht "intern/extern"
+### Why domains rather than "internal/external"
 
-Ein einzelnes Begriffspaar trägt nur, solange alle Partner im selben Netz liegen.
-Sobald zwei Partnersysteme in **getrennten** Netzen hängen, braucht jedes ein eigenes
-Interface, einen eigenen Adress-Pool und ein eigenes Egress-Interface auf den
-Switches. Beides fällt mit dem Domänen-Modell zusammen:
+A single pair of terms only works while every partner sits in the same network. As
+soon as two partner systems are in **separate** networks, each needs its own
+interface, its own address pool and its own egress interface on the switches. The
+domain model collapses both cases into one:
 
-| Situation | Modellierung |
+| Situation | Modelled as |
 |---|---|
-| Mehrere Partner-Registries im selben Netz | **eine** externe Domäne, mehrere Registries |
-| Partner in getrennten Netzen | **mehrere** externe Domänen, je 1..n Registries |
+| Several partner registries in the same network | **one** external domain, several registries |
+| Partners in separate networks | **several** external domains, 1..n registries each |
 
-## 3. Richtung eines Channels
+## 3. Direction of a channel
 
-Ein Channel läuft immer von einer **Quell-Domäne** in eine **Ziel-Domäne**. Der vRX
-lebt in der Quell-Domäne, der vTX entsteht in der Ziel-Domäne, die Adressen kommen
-aus dem Pool der Ziel-Domäne.
+A channel always runs from a **source domain** into a **target domain**. The vRX
+lives in the source domain, the vTX appears in the target domain, and the addresses
+come from the target domain's pool.
 
 ```
-internal → partnerA     interne Quelle für Partner A freigeben
-partnerA → internal     Signal von Partner A ins eigene Haus holen
-partnerA → partnerB     Transit, technisch derselbe Fall
+internal → partnerA     release an internal source to partner A
+partnerA → internal     bring a signal from partner A into the building
+partnerA → partnerB     transit, technically the same case
 ```
 
-Ein **Federation Device** hat genau eine Quell- und eine Ziel-Domäne und darin eine
-beliebige Auswahl an Ziel-Registries. Fan-out in zwei **getrennte Netze** ist bewusst
-kein Device-Feature: das braucht zwei NAT-Übersetzungen, zwei Pool-Reservierungen und
-zwei Sender — also zwei Devices. Fan-out an mehrere Registries **im selben Netz** ist
-dagegen nur eine Mehrfachregistrierung desselben vTX und wird direkt unterstützt.
+A **federation device** has exactly one source and one target domain, and within that
+target domain any selection of registries. Fanning out into two **separate networks**
+is deliberately not a device feature: it needs two NAT translations, two pool
+reservations and two senders — so two devices. Fanning out to several registries **in
+the same network** is only a multiple registration of the same vTX and is supported
+directly.
 
-## 4. NMOS-Ressourcenmodell
+## 4. NMOS resource model
 
-Die Software ist ein NMOS-**Node pro Domäne**.
+The software is one NMOS **node per domain**.
 
 ```
 Node(internal)                        Node(partnerA)              Node(partnerB)
-  href = http://<int-ip>:8080           href = http://<extA>:8080   …
+  href = http://<int-ip>:8081           href = http://<extA>:8081   …
   ├─ Device "Federation IN"             ├─ Device "Federation IN ▸ mirror"
   │    └─ vRX 1..n                      │    └─ vTX 1..n
   └─ Device "Federation OUT ▸ mirror"   └─ Device "Federation OUT"
        └─ vTX 1..n                           └─ vRX 1..n
 ```
 
-Warum Node pro Domäne und nicht eine Node-UUID in allen Registries: `node.href`,
-`api.endpoints` und `interfaces` müssen **aus der jeweiligen Domäne erreichbar** sein.
-Ein externer Controller muss das Manifest (`/transportfile`) des vTX abrufen können,
-also über die IP dieser Domäne. Mehrere Registries **innerhalb** einer Domäne teilen
-sich dagegen denselben Node — sie sehen dasselbe Netz.
+Why one node per domain rather than a single node UUID in every registry: `node.href`,
+`api.endpoints` and `interfaces` must be **reachable from the respective domain**. An
+external controller has to fetch the vTX manifest (`/transportfile`), so over that
+domain's IP. Several registries **within** one domain do share a node — they see the
+same network.
 
 ### Devices
 
-Der Anwender legt Devices selbst an (Name, Quell-Domäne, Ziel-Domäne, Ziel-Registries,
-NAT ja/nein) und weist ihnen einzelne vRX zu. Zu jedem Device erzeugt die Software
-automatisch ein **Spiegel-Device in der Ziel-Domäne**, das die zugehörigen vTX trägt;
-der Name ist ableitbar und überschreibbar. So bleibt im Fremdsystem sichtbar, welche
-Signale zusammengehören.
+The operator creates devices (name, source domain, target domain, target registries,
+NAT on/off) and assigns individual vRX to them. For every device the software
+automatically creates a **mirror device in the target domain** carrying the matching
+vTX; its name is derived and can be overridden. That keeps it visible in the foreign
+system which signals belong together.
 
-### Ressourcen je Channel
+### Resources per channel
 
-Ein aktiver Channel erzeugt in der Ziel-Domäne `source` → `flow` → `sender`. Die
-Parameter (`format`, `media_type`, `frame_width/height`, `exactframerate`, `sampling`,
-`depth`, `colorimetry`, Audio: `channels`/`sample_rate`) werden aus dem eingehenden
-SDP abgeleitet, nicht geraten. Gelingt das Parsen nicht, geht der Channel in `failed`
-statt einen falsch beschriebenen Sender zu veröffentlichen.
+An active channel creates `source` → `flow` → `sender` in the target domain. The
+parameters (`format`, `media_type`, `frame_width/height`, `exactframerate`,
+`sampling`, `depth`, `colorimetry`; for audio `channels`/`sample_rate`) are derived
+from the incoming SDP, not guessed. If parsing fails the channel goes to `failed`
+rather than publishing a wrongly described sender.
 
-### Registrierung
+### Registration
 
-- IS-04 Registration API v1.3, POST `/x-nmos/registration/v1.3/resource`,
-  Heartbeat alle 5 s auf `/health/nodes/<id>`.
-- Registry-Adresse je Registry-Eintrag: **manuelle URL** (Regelfall extern) oder
-  Unicast-DNS-SD/mDNS (Regelfall intern).
-- Jede Registry hat **ihren eigenen Client mit eigenem Heartbeat**. Fällt eine von
-  drei externen Registries aus, laufen die anderen weiter; der Channel bleibt aktiv
-  und meldet im GUI, in welcher Registry er gerade nicht publiziert ist.
-- Heartbeat 404 → diese Registry wurde neu gestartet → nur dort alles neu registrieren.
-- Beim Start: Orphan-Cleanup je Registry — Ressourcen mit unserer Node-UUID, die
-  nicht im persistierten State stehen, werden gelöscht.
-- IDs sind **deterministisch und persistent** (UUIDv5 aus Node-UUID + logischem
-  Schlüssel), damit Controller-Zuordnungen einen Container-Neustart überleben. Ein
-  vTX trägt in allen Registries **derselben Domäne** dieselbe ID.
+- IS-04 registration API v1.3, POST `/x-nmos/registration/v1.3/resource`, heartbeat
+  every 5 s on `/health/nodes/<id>`.
+- Registry address per entry: **manual URL** (the normal case externally) or unicast
+  DNS-SD (the normal case internally).
+- Every registry gets **its own client with its own heartbeat**. If one of three
+  external registries fails, the others carry on; the channel stays active and the
+  GUI shows which registry it is currently not published in.
+- Heartbeat 404 → that registry restarted → re-register everything there only.
+- At startup: orphan cleanup per registry — resources carrying our node UUID that are
+  not in the persisted state are deleted.
+- IDs are **deterministic and persistent** (UUIDv5 from the node UUID plus a logical
+  key) so that controller bindings survive a container restart. A vTX carries the
+  same ID in every registry **of the same domain**.
 
 ### IS-05
 
-- **vRX**: vollständige Connection API v1.1 (`staged`, `active`, `constraints`,
-  `transporttype`, `bulk`). Aktivierung nimmt `transport_file` (SDP) entgegen —
-  das ist der Auslöser der gesamten Federation-Kette. `master_enable=false`
-  räumt ab.
-- **vTX**: `active`/`staged` read-mostly plus `/transportfile` mit dem
-  transformierten SDP. Ein externer Controller darf den vTX nicht umkonfigurieren;
-  Änderungsversuche werden mit 423/400 abgewiesen (Entscheidung, siehe offene Punkte).
+- **vRX**: full connection API v1.1 (`staged`, `active`, `constraints`,
+  `transporttype`, `bulk`). Activation takes a `transport_file` (SDP) — that is the
+  trigger for the whole federation chain. `master_enable=false` tears it down.
+  Only `activate_immediate` is implemented; scheduled modes answer 501.
+- **vTX**: `active`/`staged` are read-only, plus `/transportfile` with the rewritten
+  SDP. A foreign controller must not reconfigure the vTX; PATCH answers 423.
 
-## 5. Multicast-Pools
+## 5. Multicast pools
 
-**Ein Pool pro Domäne** — er beschreibt die Adressen, die vergeben werden, wenn ein
-Sender *in dieser Domäne* entsteht. Der frühere `toExternal`/`toInternal`-Schnitt geht
-darin auf: `internal.pool` ist das alte `toInternal`, jede externe Domäne bringt ihr
-eigenes ehemaliges `toExternal` mit.
+**One pool per domain** — it describes the addresses handed out when a sender is
+created *in that domain*. Every external domain brings its own.
 
-Vergabe **immer paarweise**, auch wenn die Quelle kein ST 2022-7 macht:
+Allocation is **always in pairs**, even when the source is not ST 2022-7 redundant:
 
 ```
-Pool-Basis 239.200.0.0, Pärchen-Index i
-  blue = base + 2i        (gerade)
-  red  = base + 2i + 1    (ungerade)
+pool base 239.200.0.0, pair index i
+  blue = base + 2i        (even)
+  red  = base + 2i + 1    (odd)
 ```
 
-- Pool-Start muss gerade sein; wird beim Speichern der Settings validiert.
-- Freigabe gibt das Pärchen komplett zurück; Neuvergabe nimmt den **niedrigsten
-  freien Index** ("nächste freie Adresse").
-- Bei einbeiniger Quelle wird nur die Adresse der Fabric belegt, auf der die Quelle
-  liegt; die andere bleibt reserviert und ungenutzt.
-- Fabric-Zuordnung eines SDP-Legs: primär über die Subnetze der Quell-Domäne,
-  hilfsweise über die Reihenfolge der `m=`-Zeilen (Leg 0 = red, Leg 1 = blue).
-- Überlappende Pools zweier Domänen sind eine **Warnung**, kein Fehler: bei wirklich
-  getrennten Netzen ist das zulässig, prüfen kann die Software es nicht.
+- The pool base must be even; this is validated when the settings are saved.
+- Releasing returns the whole pair; the next allocation takes the **lowest free
+  index** ("the next free address").
+- For a single-leg source only the address of the fabric the source is on is used;
+  the other stays reserved and unused.
+- Fabric assignment of an SDP leg: primarily from the source domain's subnets, else
+  from the order of the `m=` lines (leg 0 = red, leg 1 = blue).
+- Overlapping pools of two domains are a **warning**, not an error: with genuinely
+  separate networks that is legitimate, and the software cannot tell.
 
-### Source-NAT-Pool (optional, aber empfohlen)
+### Source NAT pool (optional, but recommended)
 
-Wird nur die Gruppe übersetzt, behält der Strom die Quell-IP aus dem Fremdnetz. Für
-SSM (`a=source-filter`) und für RPF/Routing auf der Zielseite ist das meist unbrauchbar.
-Deshalb je Domäne und Fabric ein **Unicast-Pool**, aus dem pro Channel eine übersetzte
-Quelladresse vergeben wird — deterministisch am selben Index wie das Gruppen-Pärchen.
+If only the group is translated, the stream keeps the source IP from the foreign
+network. For SSM (`a=source-filter`) and for RPF/routing on the target side that is
+usually unusable. Hence a **unicast pool per domain and fabric** from which one
+translated source address is handed out per channel — deterministically at the same
+index as the group pair.
 
-### NAT-Group-Nummern
+### NAT group numbers
 
-EOS verlangt, dass Source- und Destination-Regel eines Übersetzungspaares dieselbe
-`group`-Nummer tragen. Diese Nummern gelten **pro Switch, nicht pro Domäne** — alle
-Domänen hängen an demselben Switch-Paar. Sie kommen deshalb aus einem globalen
-Allokator, nicht aus dem Domänen-Pool. Der konfigurierte Bereich ist damit die harte
-Obergrenze für die Zahl gleichzeitiger Channels über alle Domänen hinweg.
+EOS requires that the source and destination rule of a translation pair carry the same
+`group` number. These numbers are **per switch, not per domain** — every domain hangs
+off the same pair of switches. They therefore come from a global allocator, not from
+the domain pool. The configured range is the hard upper bound on the number of
+simultaneous channels across all domains.
 
-## 6. Switch-Steuerung (Arista EOS via eAPI)
+## 6. Switch control (Arista EOS over eAPI)
 
-Zwei Switches, `red` und `blue`, mit je Host und Zugangsdaten. Die L3-Interfaces
-stehen **an den Domänen**, nicht am Switch: jede Domäne nennt ihr Interface je Fabric.
-Für einen Channel ist damit
+Two switches, `red` and `blue`, each with a host and credentials. The L3 interfaces
+live **on the domains**, not on the switch: every domain names its interface per
+fabric. For a channel that makes
 
-- **Ingress** = Interface der Quell-Domäne auf diesem Switch,
-- **Egress** = Interface der Ziel-Domäne auf diesem Switch.
+- **ingress** = the source domain's interface on that switch,
+- **egress** = the target domain's interface on that switch.
 
-Das ist der Grund, warum die Richtung keine Sonderbehandlung mehr braucht.
+This is why direction needs no special handling any more.
 
-Transport: JSON-RPC POST auf `https://<switch>/command-api`, Methode `runCmds`
-(`version: 1`, `format: json`), Kommandoliste beginnt mit `enable`, `configure`.
-Bricht ein Kommando ab, führt EOS die folgenden nicht mehr aus — die Fehlerantwort
-enthält Index und Meldung, darauf baut das Rollback auf.
+Transport: JSON-RPC POST to `https://<switch>/command-api`, method `runCmds`
+(`version: 1`, `format: json`), the command list starting with `enable`, `configure`.
+If a command fails EOS does not execute the rest — the error response carries the
+index and message, which is what the rollback builds on.
 
-Pro Channel und Fabric werden drei Dinge programmiert:
+Three things are programmed per channel and fabric:
 
-1. **Ingress-Join** — der Switch muss den Originalstrom überhaupt ziehen:
-   `ip igmp static-group <origGroup> [source <origSrc>]` auf dem Ingress-Interface.
-   Alternativ per PIM, wenn der Switch ohnehin Last-Hop ist → Konfig-Schalter
-   `join: igmpStatic | pim | none`.
-2. **NAT** — Gruppenübersetzung, optional zusätzlich Quellübersetzung:
+1. **Ingress join** — the switch has to pull the original stream at all:
+   `ip igmp static-group <origGroup> [source <origSrc>]` on the ingress interface.
+   Alternatively over PIM when the switch is last hop anyway — hence the
+   `join: igmpStatic | pim | none` setting.
+2. **NAT** — group translation, optionally source translation as well:
    ```
    ip nat destination static <origGroup> <fedGroup> group <N>
    ip nat source      static <origSrc>   <fedSrc>   group <N>
    ```
-3. **Egress** — die übersetzte Gruppe muss Richtung Ziel-Domäne ausgegeben werden:
-   `ip igmp static-group <fedGroup>` auf dem Egress-Interface, oder PIM/mroute,
-   wenn die Gegenseite selbst joint.
+3. **Egress** — the translated group has to be emitted towards the target domain:
+   `ip igmp static-group <fedGroup>` on the egress interface, or PIM/mroute when the
+   far side joins by itself.
 
-Das Driver-Interface (`switch/driver.ts`) kennt nur `program(fabricPlan)` /
-`unprogram(fabricPlan)` / `readState()`. Neben `arista-eapi` existiert ein
-`mock`-Treiber, der Kommandos nur protokolliert — damit ist die komplette
-Federation-Logik ohne Hardware testbar.
+The driver interface (`switch/driver.ts`) only knows `program(fabricPlan)`,
+`unprogram(fabricPlan)` and `readState()`. Next to `arista-eapi` there is a `mock`
+driver that only logs the commands — which makes the entire federation logic testable
+without hardware.
 
-### ⚠ Plattform-Voraussetzung
+### ⚠ Platform prerequisite
 
-**Multicast NAT ist bei Arista vermutlich kein Feature aller Plattformen.** Die
-TOI-Reihe nennt durchgehend nur die Trident3-Familie — das EOS-Handbuch selbst enthält
-allerdings *keine* Plattformliste für NAT, die Einordnung ist also Indizienlage:
+**Multicast NAT is probably not a feature of every Arista platform.** The TOI series
+consistently names only the Trident3 family — although the EOS manual itself contains
+*no* platform list for NAT, so this is circumstantial:
 
-| Feature | ab EOS | Plattformen |
+| Feature | since EOS | Platforms |
 |---|---|---|
 | Static NAT | 4.21.6F | 7050X3, 720XP, 720D |
 | **Multicast NAT** | **4.25.1F** | **7050X3, 720XP, 720D** |
 | NAT VRF | 4.27.0F | 7050X3, 720XP, 720D |
 | Static NAT | 4.35.0F | 7050X4, 7358X4 |
-| NAT Flow | 4.28.1F | 7170 |
+| NAT flow | 4.28.1F | 7170 |
 
-Die **7060er-Serie (Tomahawk/Tomahawk+) kommt in keinem NAT-TOI vor.**
+The **7060 series (Tomahawk/Tomahawk+) appears in no NAT TOI**.
 
-### Messstand auf einer DCS-7060SX2-48YC6 (EOS 4.35.1F)
+### Measurements on a DCS-7060SX2-48YC6 (EOS 4.35.1F)
 
-| Prüfung | Ergebnis |
+| Check | Result |
 |---|---|
-| `ip nat destination static 239.10.1.5 239.200.0.1 group 100` auf Vlan101 | **wird akzeptiert**, keine Fehlermeldung |
-| `show ip nat translation` direkt danach | **leer** — Header ohne Zeilen |
-| in Hardware programmiert? | **offen** |
-| Traffic-Test | **noch nicht gemacht** |
+| `ip nat destination static 239.10.1.5 239.200.0.1 group 100` on an SVI | **accepted**, no error |
+| `show ip nat translation` straight afterwards | **empty** — headers, no rows |
+| programmed in hardware? | **open** |
+| traffic test | **not done yet** |
 
-Die CLI-Annahme widerlegt "7060 kann gar kein NAT" als pauschale Aussage. Die leere
-Translation-Tabelle nach einer statischen Regel ist umgekehrt das typische Bild für
-"Konfiguration angenommen, Hardware nicht programmiert" — beweisend ist erst der
-Traffic-Test. Siehe offener Punkt 1.
+The CLI accepting it refutes "the 7060 cannot do NAT at all" as a blanket statement.
+Conversely, an empty translation table after a static rule is the typical picture for
+"configuration accepted, hardware not programmed" — only a traffic test decides. See
+open point 1.
 
-### Idempotenz und Reconciler
+### Idempotence and the reconciler
 
-Die Software führt einen persistierten Soll-Zustand (`state.json` im Volume). Ein
-Reconciler-Loop (Intervall + Trigger) vergleicht Soll gegen Ist:
+The software keeps a persisted desired state (`state.json` in the volume). A
+reconciler loop (interval plus triggers) compares desired against actual:
 
-- Switch-Ist über `show running-config section ip nat` bzw. `show ip nat translation`,
-- Registry-Ist je Registry über die eigene Buchführung plus Heartbeat-Antworten.
+- switch actual state from `show running-config section ip nat`,
+- registry actual state per registry from our own bookkeeping plus heartbeat replies.
 
-Abweichungen werden korrigiert, nicht nur geloggt. Damit übersteht das System
-Container-Neustart, Switch-Reload und Registry-Neustart ohne Handarbeit.
+Deviations are corrected, not just logged. That is what lets the system survive a
+container restart, a switch reload and a registry restart without hand-holding.
 
-## 7. SDP-Transformation
+## 7. SDP transformation
 
-Eingang: `transport_file` aus der IS-05-Aktivierung des vRX.
+Input: the `transport_file` from the vRX's IS-05 activation.
 
-| SDP-Element | Behandlung |
+| SDP element | Handling |
 |---|---|
-| `o=` Origin-Adresse | auf übersetzte Quelle bzw. eigene Node-IP setzen, `sess-version` hochzählen |
-| `c=IN IP4 <grp>/<ttl>` | Gruppe ersetzen, TTL aus Konfig (Default: übernehmen) |
-| `a=source-filter:incl IN IP4 <grp> <src>` | Gruppe **und** Quelle ersetzen |
-| `m=` Port/Payload | unverändert |
-| `a=fmtp:` | unverändert (Essence-Beschreibung) |
-| `a=group:DUP` / mehrere `m=` | jedes Leg bekommt sein Pool-Pendant |
-| `a=ts-refclk:ptp=…` | Default Passthrough, optional Override auf `ptpRefclk` der Ziel-Domäne |
-| `a=mediaclk:` | unverändert |
+| `o=` origin address | set to the translated source, bump `sess-version` |
+| `c=IN IP4 <grp>/<ttl>` | replace the group, keep the TTL |
+| `a=source-filter:incl IN IP4 <grp> <src>` | replace **both** group and source |
+| `m=` port/payload | unchanged |
+| `a=fmtp:` | unchanged (essence description) |
+| `a=group:DUP` / several `m=` | every leg gets its counterpart from the pool |
+| `a=ts-refclk:ptp=…` | passed through by default, optionally overridden with the target domain's `ptpRefclk` |
+| `a=mediaclk:` | unchanged |
 
-Bei **NAT disabled** entfällt die Transformation: das SDP wird 1:1 kopiert und der vTX
-verweist auf die Originaladressen. Das ist der Fall für bereits geroutete Netze.
+With **NAT disabled** there is no transformation: the SDP is copied verbatim and the
+vTX points at the original addresses. That is the case for networks that are already
+routed between the two houses.
 
-> Die PTP-Frage ist real: beide Häuser müssen auf dieselbe Zeit (TAI) gelockt sein,
-> sonst ist der Strom auf der Zielseite zwar da, aber die Zeitstempel passen nicht zum
-> lokalen GM. Der Override rettet nur die SDP-Plausibilitätsprüfung des Empfängers,
-> nicht die Physik.
+> The PTP question is real: both houses must be locked to the same time (TAI),
+> otherwise the stream arrives on the target side but its timestamps do not match the
+> local grandmaster. The override only rescues the receiver's SDP plausibility check,
+> not the physics.
 
-## 8. Channel-Lebenszyklus
+## 8. Channel lifecycle
 
 ```
         IS-05 activate (master_enable=true, transport_file)
@@ -278,28 +277,32 @@ idle ──────────────► allocating ──► programm
  │                       └──────────────┴───────────────┴──► failed  │
  │                                                                   │
  └── releasing ◄── unprogramming ◄── withdrawing ◄────────────────────┘
-                IS-05 deactivate / vRX disabled / Quelle verschwunden
+                IS-05 deactivate / vRX disabled / source gone
 ```
 
-- **allocating** — Pärchen aus dem Pool der Ziel-Domäne, Source-NAT-Adressen,
-  NAT-Group-Nummer aus dem globalen Allokator.
-- **programming** — beide Fabrics; schlägt eine fehl, wird die andere zurückgerollt.
-- **publishing** — `source`/`flow`/`sender` in allen Ziel-Registries des Devices.
-  Schlägt eine von mehreren Registries fehl, bleibt der Channel aktiv und die
-  fehlende Registrierung wird vom Reconciler nachgezogen.
-- **active** — Heartbeats laufen, Reconciler wacht.
-- **failed** — Grund wird im GUI und (später) über BCP-008-01 sichtbar gemacht;
-  belegte Ressourcen werden freigegeben.
+- **allocating** — a pair from the target domain's pool, source NAT addresses, a NAT
+  group number from the global allocator.
+- **programming** — both fabrics; if one fails the other is rolled back.
+- **publishing** — `source`/`flow`/`sender` into all of the device's target
+  registries. If one of several registries fails, the channel stays active and the
+  missing registration is caught up by the reconciler.
+- **active** — heartbeats running, reconciler watching.
+- **failed** — the reason is surfaced in the GUI (and later over BCP-008-01); any
+  reserved resources are released.
 
-Abbau ist streng die Umkehrung: erst den vTX **abmelden** (damit kein Controller mehr
-auf einen gleich toten Strom schaltet), dann NAT und Joins entfernen, dann Pool frei.
+Teardown is strictly the reverse: **unregister the vTX first** (so no controller can
+still connect to a stream that is about to die), then remove NAT and joins, then
+release the pool.
 
-## 9. Konfiguration (Übersicht)
+## 9. Configuration overview
 
 ```jsonc
 {
+  "port": 8080,        // GUI + REST, bound to 0.0.0.0
+  "nmosPort": 8081,    // node/connection API, one listener per domain IP
+
   "domains": [
-    { "id": "internal", "label": "Eigenes Haus", "kind": "internal",
+    { "id": "internal", "label": "Own facility", "kind": "internal",
       "iface": { "name": "eth0", "address": "10.1.0.10" },
       "fabricSubnets": { "red": "10.1.1.0/24", "blue": "10.1.2.0/24" },
       "switchInterface": { "red": "Vlan101", "blue": "Vlan102" },
@@ -318,19 +321,19 @@ auf einen gleich toten Strom schaltet), dann NAT und Joins entfernen, dann Pool 
     { "id": "partnerB", "label": "Partner B", "kind": "external", "…": "…" }
   ],
 
-  // Mehrere Registries pro Domäne sind der Normalfall, wenn Partner sich ein Netz teilen.
+  // Several registries per domain is the normal case when partners share a network.
   "registries": [
-    { "id": "int",   "label": "Interne Registry", "domainId": "internal",
+    { "id": "int",   "label": "Internal registry", "domainId": "internal",
       "mode": "dnssd",  "version": "v1.3", "enabled": true },
-    { "id": "regA1", "label": "Partner A primär",  "domainId": "partnerA",
+    { "id": "regA1", "label": "Partner A primary", "domainId": "partnerA",
       "mode": "manual", "url": "http://10.9.0.20:8235", "version": "v1.3", "enabled": true },
     { "id": "regA2", "label": "Partner A backup",  "domainId": "partnerA",
       "mode": "manual", "url": "http://10.9.0.21:8235", "version": "v1.3", "enabled": true }
   ],
 
   "nat": {
-    "enabled": true,
-    "driver": "arista-eapi",
+    "enabled": true,               // global switch; false = every SDP copied verbatim
+    "driver": "arista-eapi",       // or "mock" — logs commands instead of sending them
     "switches": {
       "red":  { "host": "10.0.0.11", "user": "…", "password": "…", "tls": true, "join": "igmpStatic" },
       "blue": { "host": "10.0.0.12", "user": "…", "password": "…", "tls": true, "join": "igmpStatic" }
@@ -341,69 +344,90 @@ auf einen gleich toten Strom schaltet), dann NAT und Joins entfernen, dann Pool 
   "devices": [
     { "id": "…", "label": "Federation OUT ▸ Partner A",
       "sourceDomain": "internal", "targetDomain": "partnerA",
-      "targetRegistries": ["regA1", "regA2"],   // leer = alle aktiven der Domäne
-      "nat": true, "receiverIds": ["…"] }
+      "targetRegistries": ["regA1", "regA2"],   // empty = all enabled ones of the domain
+      "nat": true,                              // per-device switch, on top of the global one
+      "receiverIds": ["…"] }
   ]
 }
 ```
 
-## 10. Stack und Betrieb
+### The NAT switch
 
-- **Backend** Node 22+/TypeScript. HTTP: `fastify` (REST + `/x-nmos/*` + WS).
-  Kein DB-Server; State als JSON im Volume, atomar geschrieben.
-- **Frontend** Vue 3 + Vite + TypeScript, gebaut ins Image, vom Backend ausgeliefert.
-- **Zwei Ports:** `port` (GUI/REST/WebSocket, an 0.0.0.0) und `nmosPort`
-  (Node/Connection API). Von der NMOS-API läuft **je Domäne ein eigener Listener**,
-  gebunden an die IP dieser Domäne — derselbe Port ist dadurch mehrfach nutzbar.
-  Liegen zwei Domänen auf derselben IP (Laboraufbau), nimmt die zweite den nächsten
-  freien Port, und `node.href` folgt dem.
-- **Docker** `network_mode: host` ist Pflicht: die Software braucht je Domäne ein
-  Interface mit echter IP (Node-href, Manifest-Abruf, mDNS). Alternative wäre
-  macvlan mit mehreren Netzen.
-- Konfiguration und State unter `/config` (Volume).
+NAT can be turned off at two levels, and both are live in the GUI:
+
+- **globally** (`nat.enabled`) — nothing is programmed on any switch, every SDP is
+  copied verbatim;
+- **per device** (`devices[].nat`) — only that device's channels bypass NAT.
+
+Changing either invalidates the affected channels: their addresses, switch rules and
+published sender were all derived from the old setting. The backend tears those
+channels down and rebuilds them from the stored IS-05 state, and reports how many
+were rebuilt and which failed.
+
+Running without NAT is a legitimate mode, not a degraded one — it is the right choice
+when the address plans of the houses involved do not collide and the networks are
+already routed.
+
+## 10. Stack and operation
+
+- **Backend** Node 22+/TypeScript, HTTP through `fastify`. No database server; state
+  is JSON in the volume, written atomically.
+- **Frontend** Vue 3 + Vite + TypeScript, built into the image and served by the
+  backend.
+- **Two ports:** `port` (GUI/REST/WebSocket on 0.0.0.0) and `nmosPort`
+  (node/connection API). The NMOS API runs **one listener per domain**, bound to that
+  domain's IP, which is what makes the same port usable several times. If two domains
+  share an IP (lab setup), the second takes the next free port and `node.href`
+  follows.
+- **Docker** `network_mode: host` is required: the software needs one interface with
+  a real IP per domain (node href, manifest fetch, mDNS). The alternative would be
+  macvlan with several networks.
+- Configuration and state live under `/config` (a volume).
 
 ## 11. Roadmap
 
-1. ✅ Kern: Pools je Domäne, NAT-Groups, SDP, Channel-Plan
-2. ✅ NMOS-Node je Domäne: IS-04-Registrierung, Node API, IS-05 vRX/vTX
-3. ⏳ Switch-Treiber: mock steht, arista-eapi geschrieben aber **nicht gegen Hardware
-   verifiziert** — blockiert durch offenen Punkt 1
-4. ✅ Persistenz + Recovery + Reconciler (in `engine.ts`, 30-s-Intervall)
-5. ✅ WebGUI: Domänen/Registries/Switches, Devices, Channel-Dashboard mit Live-Status
-6. BCP-008-01 (`NcReceiverMonitor` je vRX) — Muster liegt in Legacy2NMOS/Crosspoint
-7. Transit-Fall extern→extern produktiv, Failover bei mehreren Registries
-8. Optional: IS-09 System API, Authentifizierung (IS-10) für die externen Domänen
+1. ✅ Core: pools per domain, NAT groups, SDP, channel plan
+2. ✅ NMOS node per domain: IS-04 registration, node API, IS-05 vRX/vTX
+3. ⏳ Switch driver: the mock is done, arista-eapi is written but **not verified
+   against hardware** — blocked by open point 1
+4. ✅ Persistence, recovery and reconciler (in `engine.ts`, 30 s interval)
+5. ✅ Web GUI: domains/registries/switches, devices, live channel dashboard
+6. BCP-008-01 (`NcReceiverMonitor` per vRX)
+7. The external→external transit case in production, failover across several
+   registries
+8. Optional: IS-09 system API, authentication (IS-10) for the external domains
 
-## 12. Offene Punkte
+## 12. Open points
 
-1. **NAT-Plattform.** Stand der Verifikation auf der DCS-7060SX2-48YC6 (EOS 4.35.1F):
-   die Regel wird von der CLI **angenommen**, erscheint aber **nicht** in
-   `show ip nat translation`. Nächste Schritte in dieser Reihenfolge:
-   - `show running-config interfaces Vlan101` — persistiert die Regel überhaupt?
-   - `show logging last 10 minutes | grep -i nat` — meldet der NAT-Agent etwas?
-   - `show ip nat access-list interface` / `show ip nat pool` — kennt die Box die Regel?
-   - **Traffic-Test** (entscheidend): Quelle auf 239.10.1.5 in Vlan101 senden,
-     239.200.0.1 auf dem Egress-Interface joinen, Zähler prüfen.
-   Wenn der Traffic-Test negativ ist, drei Wege:
-   a) kleines 7050X3-/720XP-Paar als dedizierte Federation-NAT-Stufe zwischen die
-      Fabrics hängen — die Hauptswitches bleiben unangetastet;
-   b) Federation ohne NAT betreiben (`nat: false`), wenn sich die Adresspläne der
-      beteiligten Häuser nicht überschneiden — das ist bereits ein unterstützter Modus;
-   c) Linux-Gateway (nftables + smcroute) als Software-NAT, mit klarer
-      Durchsatzgrenze. Blockiert Roadmap-Punkt 3.
-2. **Exakte EOS-Syntax und Interface-Platzierung** (Ingress vs. Egress/Twice-NAT)
-   gegen die tatsächlich verwendete Plattform verifizieren.
-3. **PTP über Domänengrenzen** — Passthrough oder Override der `ts-refclk`?
-   Betrieblich zu klären, technisch beides vorbereitet.
-4. **Fremder Controller am vTX**: entschieden — read-only, PATCH auf `staged` eines
-   virtuellen Senders antwortet 423. Bei Bedarf umkehrbar, dann braucht es eine
-   Konfliktstrategie gegen unsere eigene Reconciliation.
-5. **IS-05-Aktivierungsmodi**: nur `activate_immediate`; `activate_scheduled_*`
-   antwortet 501. Für geplante Umschaltungen nachzurüsten.
-6. **Kollisionen im Zielnetz** — der Federation-Pool einer Domäne muss dort exklusiv
-   sein; die Software kann das nicht prüfen, nur dokumentieren und bei überlappenden
-   Pools warnen.
-7. **Bandbreiten-/Kapazitätsgrenze** — wieviele Channels pro Fabric? Begrenzt durch
-   NAT-TCAM der Plattform und durch den NAT-Group-Bereich.
-8. **Sicherheit der externen Domänen** — heute offene HTTP-APIs auf allen
-   Interfaces. Mindestens Bind-Adressen je Domäne trennen, mittelfristig IS-10.
+1. **NAT platform.** State of verification on the DCS-7060SX2-48YC6 (EOS 4.35.1F):
+   the CLI **accepts** the rule but it does **not** appear in
+   `show ip nat translation`. Next steps, in this order:
+   - `show running-config interfaces Vlan101` — does the rule persist at all?
+   - `show logging last 10 minutes | grep -i nat` — does the NAT agent complain?
+   - `show ip nat access-list interface` / `show ip nat pool` — does the box know it?
+   - **traffic test** (decisive): send to 239.10.1.5 in Vlan101, join 239.200.0.1 on
+     the egress interface, check the counters.
+
+   If the traffic test is negative, three ways out:
+   a) hang a small 7050X3 / 720XP pair between the fabrics as a dedicated federation
+      NAT stage — the main switches stay untouched;
+   b) run the federation without NAT (`nat: false`) when the address plans of the
+      houses involved do not collide — already a supported mode;
+   c) a Linux gateway (nftables + smcroute) as a software NAT, with a clear
+      throughput limit.
+
+   This blocks roadmap item 3.
+2. **The exact EOS syntax and interface placement** (ingress vs. egress/twice NAT)
+   needs verifying against the platform actually used.
+3. **PTP across domain boundaries** — pass `ts-refclk` through or override it? An
+   operational decision; both are prepared technically.
+4. **IS-05 activation modes**: only `activate_immediate`; `activate_scheduled_*`
+   answers 501. To be added for planned switchovers.
+5. **Collisions in the target network** — a domain's federation pool has to be
+   exclusive there; the software cannot verify that, it can only document it and warn
+   about overlapping pools.
+6. **Capacity limit** — how many channels per fabric? Bounded by the platform's NAT
+   TCAM and by the NAT group range.
+7. **Security of the external domains** — today the HTTP APIs are open on every
+   interface. At minimum separate the bind addresses per domain; IS-10 in the medium
+   term.
