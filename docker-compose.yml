@@ -1,0 +1,14 @@
+services:
+  nmos-federation:
+    build: .
+    image: gemini2350/nmos-federation:latest
+    container_name: nmos-federation
+    # Pflicht: die Software braucht beide 2110-Interfaces mit echten IPs
+    # (Node-href je Domäne, Manifest-Abruf, mDNS-Discovery der internen Registry).
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./config:/config
+    environment:
+      - PORT=8080
+      - LOG_LEVEL=info

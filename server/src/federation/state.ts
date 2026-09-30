@@ -1,0 +1,91 @@
+import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { Channel } from '../types.js';
+import { newSeed } from '../nmos/resources.js';
+import { log } from '../util/log.js';
+
+const DEFAULT_DIR = process.env.CONFIG_DIR ?? './config';
+
+/** IS-05-Zustand eines virtuellen Receivers. */
+export interface ConnectionState {
+  sender_id: string | null;
+  master_enable: boolean;
+  transport_file: { data: string | null; type: string | null };
+  transport_params: Record<string, unknown>[];
+}
+
+export const emptyConnection = (): ConnectionState => ({
+  sender_id: null,
+  master_enable: false,
+  transport_file: { data: null, type: null },
+  transport_params: [{}],
+});
+
+export interface PersistedState {
+  /** Namespace für alle deterministischen UUIDs. Einmal erzeugt, nie geändert. */
+  seed: string;
+  channels: Channel[];
+  /** IS-05 staged/active je virtuellem Receiver (unsere interne ID). */
+  connections: Record<string, { staged: ConnectionState; active: ConnectionState }>;
+}
+
+/** Laufzeit-State, getrennt von der Konfiguration: ein Settings-Reset darf die
+ *  Channel-Buchführung nicht mitnehmen. */
+export class StateStore {
+  private state: PersistedState = { seed: newSeed(), channels: [], connections: {} };
+  private writing: Promise<void> = Promise.resolve();
+
+  /** Verzeichnis für state.json; in Tests überschreibbar. */
+  constructor(private readonly dir: string = DEFAULT_DIR) {}
+
+  get current(): PersistedState {
+    return this.state;
+  }
+
+  async load(): Promise<PersistedState> {
+    try {
+      const raw = await readFile(join(this.dir, 'state.json'), 'utf8');
+      const parsed = JSON.parse(raw) as Partial<PersistedState>;
+      this.state = {
+        seed: parsed.seed ?? newSeed(),
+        channels: parsed.channels ?? [],
+        connections: parsed.connections ?? {},
+      };
+      log.info({ channels: this.state.channels.length }, 'State geladen');
+    } catch {
+      log.info({}, 'kein State gefunden, starte leer');
+      await this.save();
+    }
+    return this.state;
+  }
+
+  /** Schreibt atomar und serialisiert — nebenläufige Aufrufe überschreiben sich nicht. */
+  save(): Promise<void> {
+    this.writing = this.writing.then(async () => {
+      await mkdir(this.dir, { recursive: true });
+      const tmp = join(this.dir, 'state.json.tmp');
+      await writeFile(tmp, JSON.stringify(this.state, null, 2), 'utf8');
+      await rename(tmp, join(this.dir, 'state.json'));
+    });
+    return this.writing;
+  }
+
+  connection(receiverId: string): { staged: ConnectionState; active: ConnectionState } {
+    this.state.connections[receiverId] ??= { staged: emptyConnection(), active: emptyConnection() };
+    return this.state.connections[receiverId]!;
+  }
+
+  channelFor(receiverId: string): Channel | undefined {
+    return this.state.channels.find((c) => c.receiverId === receiverId);
+  }
+
+  upsertChannel(channel: Channel): void {
+    const i = this.state.channels.findIndex((c) => c.id === channel.id);
+    if (i >= 0) this.state.channels[i] = channel;
+    else this.state.channels.push(channel);
+  }
+
+  removeChannel(id: string): void {
+    this.state.channels = this.state.channels.filter((c) => c.id !== id);
+  }
+}
