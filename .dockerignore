@@ -5,5 +5,7 @@
 **/dist
 **/.git
 **/.DS_Store
-config/
+# Anchored: only the runtime config volume at the repo root. An unanchored "config/"
+# would also drop server/src/config, which is source code.
+/config/
 *.log
