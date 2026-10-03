@@ -33,10 +33,54 @@ export interface RegistryConfig {
   /** Domain this registry is reached through. */
   domainId: string;
   mode: 'dnssd' | 'manual';
-  /** Base URL when mode=manual, e.g. http://registry:8235 */
+  /** IP or hostname, for mode=manual. */
+  ip?: string;
+  /** Port of the registration API; nmos-cpp with a single `http_port` uses 8010. */
+  port?: number;
+  /** https instead of http. */
+  tls?: boolean;
+  /** DNS-SD search domain, for mode=dnssd. Empty = the host's own search domain. */
+  domain?: string;
+  /** Legacy: a full base URL. Migrated to ip/port/tls on load. */
   url?: string;
   version: 'v1.3' | 'v1.2';
   enabled: boolean;
+}
+
+export const DEFAULT_REGISTRY_PORT = 8010;
+
+/** Base URL of a manually configured registry, assembled from ip, port and tls. */
+export function registryUrl(cfg: RegistryConfig): string | null {
+  if (!cfg.ip) return null;
+  const scheme = cfg.tls ? 'https' : 'http';
+  const port = cfg.port ?? DEFAULT_REGISTRY_PORT;
+  const host = cfg.ip.includes(':') ? `[${cfg.ip}]` : cfg.ip; // IPv6 literal
+  const isDefaultPort = (cfg.tls && port === 443) || (!cfg.tls && port === 80);
+  return isDefaultPort ? `${scheme}://${host}` : `${scheme}://${host}:${port}`;
+}
+
+/**
+ * Accepts a configuration that still carries a full `url` and turns it into
+ * ip/port/tls, so an existing config.json keeps working after the upgrade.
+ */
+export function migrateRegistry(cfg: RegistryConfig): RegistryConfig {
+  if (!cfg.url || cfg.ip) {
+    const { url: _drop, ...rest } = cfg;
+    return cfg.ip ? (rest as RegistryConfig) : cfg;
+  }
+  try {
+    const parsed = new URL(cfg.url);
+    const tls = parsed.protocol === 'https:';
+    const { url: _drop, ...rest } = cfg;
+    return {
+      ...rest,
+      ip: parsed.hostname,
+      port: parsed.port ? Number(parsed.port) : tls ? 443 : 80,
+      tls,
+    } as RegistryConfig;
+  } catch {
+    return cfg; // unparseable — validation will complain about the missing ip
+  }
 }
 
 export interface NatConfig {

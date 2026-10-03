@@ -15,7 +15,8 @@ import type { AristaConfig } from '../switch/arista-eapi.js';
 /** Stub registry: accepts registrations and records them. */
 interface StubRegistry {
   server: Server;
-  url: string;
+  ip: string;
+  port: number;
   posts: { type: string; id: string; data: Record<string, unknown> }[];
   deletes: string[];
   heartbeats: number;
@@ -50,7 +51,7 @@ async function startStubRegistry(): Promise<StubRegistry> {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
-  return { ...(stub as StubRegistry), server, url: `http://127.0.0.1:${port}` };
+  return { ...(stub as StubRegistry), server, ip: '127.0.0.1', port };
 }
 
 const DUP_SDP = [
@@ -94,7 +95,7 @@ const domain = (id: string, kind: 'internal' | 'external', address: string, red:
 
 const sw = (): AristaConfig => ({ host: '10.0.0.11', user: 'x', password: 'y', tls: true, join: 'igmpStatic' });
 
-async function buildEngine(registryUrls: { internal: string; partnerA: string }, dir: string) {
+async function buildEngine(reg: { internal: StubRegistry; partnerA: StubRegistry }, dir: string) {
   const cfg: AppConfig = {
     ...structuredClone(DEFAULT_CONFIG),
     nat: { enabled: true, driver: 'mock', groupIdRange: [100, 199], switches: { red: sw(), blue: sw() } },
@@ -103,8 +104,8 @@ async function buildEngine(registryUrls: { internal: string; partnerA: string },
       domain('partnerA', 'external', '127.0.0.1', 'Vlan901', 'Vlan902', '239.200.0.0'),
     ],
     registries: [
-      { id: 'int', label: 'intern', domainId: 'internal', mode: 'manual', url: registryUrls.internal, version: 'v1.3', enabled: true },
-      { id: 'regA', label: 'Partner A', domainId: 'partnerA', mode: 'manual', url: registryUrls.partnerA, version: 'v1.3', enabled: true },
+      { id: 'int', label: 'internal', domainId: 'internal', mode: 'manual', ip: reg.internal.ip, port: reg.internal.port, version: 'v1.3', enabled: true },
+      { id: 'regA', label: 'Partner A', domainId: 'partnerA', mode: 'manual', ip: reg.partnerA.ip, port: reg.partnerA.port, version: 'v1.3', enabled: true },
     ],
     devices: [
       {
@@ -132,7 +133,7 @@ test('end to end: connecting to a virtual receiver creates NAT and a published s
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
-  const { engine, drivers, state } = await buildEngine({ internal: intReg.url, partnerA: extReg.url }, dir);
+  const { engine, drivers, state } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
 
   t.after(async () => {
     await engine.stop();
@@ -234,7 +235,7 @@ test('NAT off: the SDP is copied verbatim and the switch is left alone', async (
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
-  const { engine, drivers, cfg } = await buildEngine({ internal: intReg.url, partnerA: extReg.url }, dir);
+  const { engine, drivers, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
   cfg.devices[0]!.nat = false;
 
   t.after(async () => {
@@ -263,7 +264,7 @@ test('an unusable SDP fails before the switch is touched', async (t) => {
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
-  const { engine, drivers, state } = await buildEngine({ internal: intReg.url, partnerA: extReg.url }, dir);
+  const { engine, drivers, state } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
 
   t.after(async () => {
     await engine.stop();

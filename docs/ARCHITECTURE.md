@@ -107,8 +107,11 @@ rather than publishing a wrongly described sender.
 
 - IS-04 registration API v1.3, POST `/x-nmos/registration/v1.3/resource`, heartbeat
   every 5 s on `/health/nodes/<id>`.
-- Registry address per entry: **manual URL** (the normal case externally) or unicast
-  DNS-SD (the normal case internally).
+- Registry address per entry: **IP and port** (the normal case externally) or unicast
+  DNS-SD (the normal case internally). The URL is assembled from ip, port and a tls
+  flag rather than typed in; the port defaults to 8010, which is what nmos-cpp uses
+  when it is configured with a single `http_port`. A configuration that still carries
+  a full `url` is migrated on load.
 - Every registry gets **its own client with its own heartbeat**. If one of three
   external registries fails, the others carry on; the channel stays active and the
   GUI shows which registry it is currently not published in.
@@ -322,13 +325,14 @@ release the pool.
   ],
 
   // Several registries per domain is the normal case when partners share a network.
+  // The URL is derived from ip/port/tls — see "Registry addresses" below.
   "registries": [
     { "id": "int",   "label": "Internal registry", "domainId": "internal",
-      "mode": "dnssd",  "version": "v1.3", "enabled": true },
+      "mode": "dnssd", "domain": "", "version": "v1.3", "enabled": true },
     { "id": "regA1", "label": "Partner A primary", "domainId": "partnerA",
-      "mode": "manual", "url": "http://10.9.0.20:8235", "version": "v1.3", "enabled": true },
+      "mode": "manual", "ip": "10.9.0.20", "port": 8010, "version": "v1.3", "enabled": true },
     { "id": "regA2", "label": "Partner A backup",  "domainId": "partnerA",
-      "mode": "manual", "url": "http://10.9.0.21:8235", "version": "v1.3", "enabled": true }
+      "mode": "manual", "ip": "10.9.0.21", "port": 8010, "tls": false, "version": "v1.3", "enabled": true }
   ],
 
   "nat": {
@@ -350,6 +354,24 @@ release the pool.
   ]
 }
 ```
+
+### Registry addresses
+
+A manually configured registry is given an `ip` and a `port`, not a URL — the same
+shape NMOS Crosspoint uses for its static registries. The base URL is assembled from
+`ip`, `port` and `tls`:
+
+| Field | Meaning |
+|---|---|
+| `ip` | IP or hostname; an IPv6 literal is bracketed automatically |
+| `port` | registration API port; defaults to **8010** (nmos-cpp with one `http_port`) |
+| `tls` | `https` instead of `http`; the scheme's default port is then left out of the URL |
+| `domain` | DNS-SD search domain, only for `mode: "dnssd"` |
+
+Deriving the URL rather than storing it means there is one place that decides how an
+address is formed, and the GUI can show the result while it is being typed. A
+configuration that still carries a legacy `url` is parsed into these fields when it is
+loaded, so an existing deployment keeps working.
 
 ### The NAT switch
 

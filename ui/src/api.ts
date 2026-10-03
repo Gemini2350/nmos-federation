@@ -38,9 +38,28 @@ export interface Registry {
   label: string;
   domainId: string;
   mode: 'dnssd' | 'manual';
-  url?: string;
+  /** IP or hostname, for mode=manual. */
+  ip?: string;
+  /** Port of the registration API; nmos-cpp with a single http_port uses 8010. */
+  port?: number;
+  tls?: boolean;
+  /** DNS-SD search domain, for mode=dnssd. */
+  domain?: string;
   version: 'v1.3' | 'v1.2';
   enabled: boolean;
+}
+
+export const DEFAULT_REGISTRY_PORT = 8010;
+
+/** Mirrors the backend: the URL is derived, never typed in by hand. */
+export function registryUrl(r: Registry): string | null {
+  if (r.mode === 'dnssd') return null;
+  if (!r.ip) return null;
+  const scheme = r.tls ? 'https' : 'http';
+  const port = r.port ?? DEFAULT_REGISTRY_PORT;
+  const host = r.ip.includes(':') ? `[${r.ip}]` : r.ip;
+  const isDefaultPort = (r.tls && port === 443) || (!r.tls && port === 80);
+  return isDefaultPort ? `${scheme}://${host}` : `${scheme}://${host}:${port}`;
 }
 
 export interface Switch {

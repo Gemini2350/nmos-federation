@@ -1,5 +1,5 @@
 import { promises as dns } from 'node:dns';
-import type { RegistryConfig } from '../config/schema.js';
+import { registryUrl, type RegistryConfig } from '../config/schema.js';
 import { log } from '../util/log.js';
 
 export type ResourceType = 'node' | 'device' | 'source' | 'flow' | 'sender' | 'receiver';
@@ -57,8 +57,9 @@ export class RegistryClient {
   async resolve(): Promise<string> {
     if (this.base) return this.base;
     if (this.cfg.mode === 'manual') {
-      if (!this.cfg.url) throw new RegistryError(`registry ${this.cfg.id}: no URL configured`);
-      this.base = this.cfg.url.replace(/\/+$/, '');
+      const url = registryUrl(this.cfg);
+      if (!url) throw new RegistryError(`registry ${this.cfg.id}: no IP configured`);
+      this.base = url;
       return this.base;
     }
     this.base = await this.discover();
@@ -71,9 +72,10 @@ export class RegistryClient {
    * unicast DNS-SD or a manual URL is enough in practice.
    */
   private async discover(): Promise<string> {
-    const domains = [...new Set((dns.getServers().length ? ['local'] : []).concat(['']))];
-    const searchDomain = this.cfg.url ?? '';
-    const names = [`_nmos-register._tcp${searchDomain ? '.' + searchDomain : ''}`, ...domains.map((d) => `_nmos-register._tcp.${d}`)];
+    const searchDomain = this.cfg.domain?.replace(/^\.|\.$/g, '') ?? '';
+    const names = searchDomain
+      ? [`_nmos-register._tcp.${searchDomain}`]
+      : ['_nmos-register._tcp', '_nmos-register._tcp.local'];
     for (const name of names) {
       try {
         const srv = await dns.resolveSrv(name.replace(/\.$/, ''));

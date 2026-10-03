@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, type AppConfig } from './schema.js';
+import { DEFAULT_CONFIG, migrateRegistry, registryUrl, type AppConfig } from './schema.js';
 import { validatePool } from '../federation/pool.js';
 import { overlappingPools } from '../federation/pools.js';
 import { log } from '../util/log.js';
@@ -28,6 +28,8 @@ export class ConfigStore {
     try {
       const raw = await readFile(join(this.dir, 'config.json'), 'utf8');
       this.cfg = { ...structuredClone(DEFAULT_CONFIG), ...JSON.parse(raw) };
+      // Registries used to carry a full URL; keep those configurations working.
+      this.cfg.registries = this.cfg.registries.map(migrateRegistry);
       log.info({ dir: this.dir, domains: this.cfg.domains.length, registries: this.cfg.registries.length }, 'configuration loaded');
     } catch {
       log.warn({ dir: this.dir }, 'no configuration found, using defaults');
@@ -64,7 +66,13 @@ export class ConfigStore {
       if (registryIds.has(r.id)) err(`duplicate registry ID ${r.id}`);
       registryIds.add(r.id);
       if (!domainIds.has(r.domainId)) err(`registries.${r.id}: unknown domain ${r.domainId}`);
-      if (r.mode === 'manual' && !r.url) err(`registries.${r.id}: URL missing`);
+      if (r.mode === 'manual') {
+        if (!r.ip) err(`registries.${r.id}: IP or hostname missing`);
+        if (r.port !== undefined && (!Number.isInteger(r.port) || r.port < 1 || r.port > 65535)) {
+          err(`registries.${r.id}: port ${r.port} is not a valid port`);
+        }
+        if (r.ip && !registryUrl(r)) err(`registries.${r.id}: cannot assemble a URL from ip/port`);
+      }
     }
 
     for (const dev of cfg.devices) {

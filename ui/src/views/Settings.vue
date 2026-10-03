@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { api, type Config, type Issue } from '../api';
+import { api, registryUrl, DEFAULT_REGISTRY_PORT, type Config, type Issue } from '../api';
 
 const cfg = ref<Config | null>(null);
 const issues = ref<Issue[]>([]);
@@ -55,7 +55,9 @@ function addRegistry() {
     label: 'Registry',
     domainId: cfg.value.domains[0]?.id ?? '',
     mode: 'manual',
-    url: 'http://',
+    ip: '',
+    port: DEFAULT_REGISTRY_PORT,
+    tls: false,
     version: 'v1.3',
     enabled: true,
   });
@@ -129,18 +131,32 @@ onMounted(refresh);
 
     <section>
       <div class="head"><h3>Registries</h3><button @click="addRegistry">Add registry</button></div>
-      <p class="hint">Several registries per domain is the normal case when partners share a network.</p>
+      <p class="hint">
+        Several registries per domain is the normal case when partners share a network.
+        Enter IP and port — the URL is assembled from them.
+      </p>
       <table>
-        <thead><tr><th>ID</th><th>Name</th><th>Domain</th><th>Mode</th><th>URL</th><th>Version</th><th>Enabled</th><th></th></tr></thead>
+        <thead>
+          <tr>
+            <th>ID</th><th>Name</th><th>Domain</th><th>Mode</th><th>IP / hostname</th><th>Port</th>
+            <th>TLS</th><th>Version</th><th>Enabled</th><th>Address</th><th></th>
+          </tr>
+        </thead>
         <tbody>
           <tr v-for="(r, i) in cfg.registries" :key="i">
             <td><input v-model="r.id" /></td>
             <td><input v-model="r.label" /></td>
             <td><select v-model="r.domainId"><option v-for="d in cfg.domains" :key="d.id" :value="d.id">{{ d.id }}</option></select></td>
             <td><select v-model="r.mode"><option value="manual">manual</option><option value="dnssd">dnssd</option></select></td>
-            <td><input v-model="r.url" :disabled="r.mode === 'dnssd'" /></td>
+            <td>
+              <input v-if="r.mode === 'manual'" v-model="r.ip" placeholder="192.168.11.100" />
+              <input v-else v-model="r.domain" placeholder="search domain, empty = local" />
+            </td>
+            <td><input type="number" min="1" max="65535" v-model.number="r.port" :disabled="r.mode === 'dnssd'" :placeholder="String(DEFAULT_REGISTRY_PORT)" /></td>
+            <td><input type="checkbox" v-model="r.tls" :disabled="r.mode === 'dnssd'" /></td>
             <td><select v-model="r.version"><option value="v1.3">v1.3</option><option value="v1.2">v1.2</option></select></td>
             <td><input type="checkbox" v-model="r.enabled" /></td>
+            <td class="derived"><code>{{ registryUrl(r) ?? (r.mode === 'dnssd' ? 'via DNS-SD' : '—') }}</code></td>
             <td><button @click="cfg.registries.splice(i, 1)">×</button></td>
           </tr>
         </tbody>
@@ -190,6 +206,9 @@ label.check { flex-direction: row; align-items: center; gap: 0.35rem; }
 input, select { padding: 0.3rem 0.4rem; }
 input[type='number'] { width: 6rem; }
 td input, td select { width: 100%; box-sizing: border-box; }
+td input[type='number'] { width: 5.5rem; }
+td input[type='checkbox'] { width: auto; }
+.derived code { font-size: 0.8rem; opacity: 0.8; white-space: nowrap; }
 .del { margin-top: 0.5rem; }
 .issues { padding-left: 1.2rem; }
 .hint { font-size: 0.8rem; opacity: 0.7; }
