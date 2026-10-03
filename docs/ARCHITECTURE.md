@@ -115,6 +115,23 @@ rather than publishing a wrongly described sender.
 - Every registry gets **its own client with its own heartbeat**. If one of three
   external registries fails, the others carry on; the channel stays active and the
   GUI shows which registry it is currently not published in.
+- The GUI shows a **status per registry**: resolved address, state, how much of ours
+  that registry holds broken down by resource type, the age of the last successful
+  heartbeat, and the last error. `GET /api/registries` returns the same data, and
+  `POST /api/registries/<id>/probe` runs an on-demand reachability test — that is the
+  Test button, and it changes nothing on the registry.
+
+  | State | Meaning |
+  |---|---|
+  | `ok` | reachable, heartbeat current |
+  | `degraded` | reachable, but the heartbeat is overdue (3 intervals) or has failed |
+  | `down` | the last contact attempt failed |
+  | `unknown` | nothing tried yet |
+  | `disabled` | switched off in the configuration |
+
+  A registry that is configured but has no client yet — disabled, or added since the
+  last restart — is reported as such rather than omitted, so the GUI never silently
+  hides one.
 - Heartbeat 404 → that registry restarted → re-register everything there only.
 - At startup: orphan cleanup per registry — resources carrying our node UUID that are
   not in the persisted state are deleted.

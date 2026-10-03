@@ -18,6 +18,8 @@ import { log } from '../util/log.js';
  *   GET/POST /api/devices, PUT/DELETE /api/devices/:id
  *   POST     /api/devices/:id/receivers        create virtual receivers (count, name pattern)
  *   DELETE   /api/receivers/:id
+ *   GET      /api/registries                   per-registry status
+ *   POST     /api/registries/:id/probe          reachability test for one registry
  *   POST     /api/switch/:fabric/probe         connectivity test
  *   POST     /api/reconcile                    run desired/actual reconciliation now
  *   WS       /api/events                       channel and status changes
@@ -189,6 +191,14 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
   });
 
   // ---- Operations --------------------------------------------------------
+  app.get('/api/registries', async () => engine.registryStatus());
+
+  app.post<{ Params: { id: string } }>('/api/registries/:id/probe', async (req, reply) => {
+    const result = await engine.probeRegistry(req.params.id);
+    if (!result) return reply.code(404).send({ error: `no registry ${req.params.id}, or it is disabled` });
+    return result;
+  });
+
   app.post<{ Params: { fabric: string } }>('/api/switch/:fabric/probe', async (req, reply) => {
     const result = await engine.probeSwitch(req.params.fabric);
     if (!result) return reply.code(404).send({ error: `no such fabric: ${req.params.fabric}` });

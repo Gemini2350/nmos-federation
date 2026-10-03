@@ -35,7 +35,8 @@ export interface RegistryConfig {
   mode: 'dnssd' | 'manual';
   /** IP or hostname, for mode=manual. */
   ip?: string;
-  /** Port of the registration API; nmos-cpp with a single `http_port` uses 8010. */
+  /** Port of the registration API. Defaults to 80; nmos-cpp configured with a
+   *  single `http_port` typically listens on 8010. */
   port?: number;
   /** https instead of http. */
   tls?: boolean;
@@ -47,7 +48,7 @@ export interface RegistryConfig {
   enabled: boolean;
 }
 
-export const DEFAULT_REGISTRY_PORT = 8010;
+export const DEFAULT_REGISTRY_PORT = 80;
 
 /** Base URL of a manually configured registry, assembled from ip, port and tls. */
 export function registryUrl(cfg: RegistryConfig): string | null {

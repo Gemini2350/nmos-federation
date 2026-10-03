@@ -153,6 +153,19 @@ test('end to end: connecting to a virtual receiver creates NAT and a published s
   // Before the connection there is no sender.
   assert.equal(extReg.posts.filter((p) => p.type === 'sender').length, 0);
 
+  // Per-registry status: counted by type, and the heartbeat is current.
+  const intStatus = engine.registryStatus().find((r) => r.id === 'int')!;
+  assert.equal(intStatus.state, 'ok');
+  assert.equal(intStatus.url, `http://${intReg.ip}:${intReg.port}`);
+  assert.equal(intStatus.resources.node, 1);
+  assert.equal(intStatus.resources.device, 1);
+  assert.equal(intStatus.resources.receiver, 1);
+  assert.equal(intStatus.resources.sender, 0);
+  assert.equal(intStatus.resources.total, 3);
+
+  const offStatus = engine.registryStatus().find((r) => r.id === 'regA')!;
+  assert.equal(offStatus.domainId, 'partnerA');
+
   // --- the operator connects a real source to the virtual receiver ----------
   const channel = await engine.activate('vrx1', {
     sender_id: 'real-sender-uuid',
@@ -193,6 +206,14 @@ test('end to end: connecting to a virtual receiver creates NAT and a published s
   assert.match(String(sender!.data.manifest_href), /\/transportfile$/);
   // …and not in the internal one.
   assert.equal(intReg.posts.filter((p) => p.type === 'sender').length, 0);
+
+  // The target registry now holds source, flow and sender on top of node + device.
+  const tgtStatus = engine.registryStatus().find((r) => r.id === 'regA')!;
+  assert.equal(tgtStatus.state, 'ok');
+  assert.equal(tgtStatus.resources.sender, 1);
+  assert.equal(tgtStatus.resources.flow, 1);
+  assert.equal(tgtStatus.resources.source, 1);
+  assert.equal(tgtStatus.resources.receiver, 0, 'receivers belong to the source domain');
 
   // The virtual sender's SDP carries the pool addresses, not the originals.
   assert.match(channel.senderSdp!, /c=IN IP4 239\.200\.0\.1\/64/);

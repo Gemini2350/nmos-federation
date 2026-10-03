@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue';
 import { api, type Channel, type Status } from '../api';
+import RegistryStatusTable from '../components/RegistryStatusTable.vue';
 
 const channels = ref<Channel[]>([]);
 const status = ref<Status | null>(null);
@@ -52,17 +53,18 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
       <h3>Switch {{ fabric }}</h3>
       <span :class="sw.reachable ? 'ok' : 'bad'">{{ sw.reachable ? sw.version || 'reachable' : sw.error || 'unreachable' }}</span>
     </div>
-    <div class="card" v-for="reg in status.registries" :key="reg.id">
-      <h3>{{ reg.label }}</h3>
-      <span :class="reg.reachable ? 'ok' : 'bad'">{{ reg.reachable ? `${reg.resources} resources` : reg.error || 'unknown' }}</span>
-      <small>{{ reg.domainId }}</small>
-    </div>
     <div class="card" v-for="(pool, domainId) in status.pools" :key="domainId">
       <h3>Pool {{ domainId }}</h3>
       <span>{{ pool.free }} / {{ pool.total }} pairs free</span>
     </div>
   </section>
 
+  <section v-if="status" class="registries">
+    <h3>Registries</h3>
+    <RegistryStatusTable :registries="status.registries" show-test @probed="refresh" />
+  </section>
+
+  <h3 v-if="status">Channels</h3>
   <table v-if="channels.length">
     <thead>
       <tr>
@@ -113,5 +115,8 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
 .red { color: #d24b3e; font-weight: 600; }
 .blue { color: #3a78c9; font-weight: 600; }
 .actions { display: flex; gap: 0.4rem; }
+.registries { margin-bottom: 2rem; }
+.registries h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
+h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
 small { opacity: 0.65; }
 </style>

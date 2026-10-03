@@ -562,6 +562,40 @@ export class Engine {
     return this.deps.state.current.connections[vrxId]?.active ?? null;
   }
 
+  /** On-demand reachability test for one registry — the Test button in the settings. */
+  async probeRegistry(id: string) {
+    const client = this.registries.get(id);
+    if (!client) return null;
+    const result = await client.probe();
+    this.emit({ type: 'registry', registry: id, status: client.status() });
+    return result;
+  }
+
+  /**
+   * Status of every configured registry. Entries that have no client yet — disabled,
+   * or added since the last restart — are reported as such instead of being dropped,
+   * so the GUI never silently hides a registry.
+   */
+  registryStatus() {
+    return this.cfg.registries.map((reg) => {
+      const client = this.registries.get(reg.id);
+      if (client) return client.status();
+      return {
+        id: reg.id,
+        label: reg.label,
+        domainId: reg.domainId,
+        mode: reg.mode,
+        version: reg.version,
+        url: null,
+        reachable: false,
+        state: reg.enabled ? ('unknown' as const) : ('disabled' as const),
+        error: reg.enabled ? 'no client yet' : null,
+        resources: { total: 0, node: 0, device: 0, source: 0, flow: 0, sender: 0, receiver: 0 },
+        heartbeat: { lastOkAt: null, ageSeconds: null, failures: 0 },
+      };
+    });
+  }
+
   async probeSwitch(fabric: string) {
     const driver = this.deps.drivers[fabric];
     if (!driver) return null;
@@ -580,7 +614,7 @@ export class Engine {
     return {
       nat: { enabled: this.cfg.nat.enabled, driver: this.cfg.nat.driver },
       switches,
-      registries: [...this.registries.values()].map((c) => c.status()),
+      registries: this.registryStatus(),
       pools: this.deps.pools.status(),
       domains: this.cfg.domains.map((d) => ({
         id: d.id,

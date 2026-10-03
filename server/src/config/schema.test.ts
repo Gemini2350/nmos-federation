@@ -15,8 +15,13 @@ test('the URL is assembled from ip and port', () => {
   assert.equal(registryUrl({ ...base, ip: '192.168.11.100', port: 8010 }), 'http://192.168.11.100:8010');
 });
 
-test('without a port the nmos-cpp default is used', () => {
-  assert.equal(registryUrl({ ...base, ip: '10.0.0.5' }), `http://10.0.0.5:${DEFAULT_REGISTRY_PORT}`);
+test('without a port it falls back to the HTTP default, which is left out of the URL', () => {
+  assert.equal(DEFAULT_REGISTRY_PORT, 80);
+  assert.equal(registryUrl({ ...base, ip: '10.0.0.5' }), 'http://10.0.0.5');
+});
+
+test('an explicit nmos-cpp port is kept', () => {
+  assert.equal(registryUrl({ ...base, ip: '192.168.11.100', port: 8010 }), 'http://192.168.11.100:8010');
 });
 
 test('tls switches the scheme', () => {

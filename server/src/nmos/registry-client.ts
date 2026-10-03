@@ -7,6 +7,28 @@ export type ResourceType = 'node' | 'device' | 'source' | 'flow' | 'sender' | 'r
 /** Order in which IS-04 accepts resources — parents before children. */
 export const REGISTER_ORDER: ResourceType[] = ['node', 'device', 'source', 'flow', 'sender', 'receiver'];
 
+/** What the GUI shows per registry. */
+export interface RegistryStatus {
+  id: string;
+  label: string;
+  domainId: string;
+  mode: 'dnssd' | 'manual';
+  version: string;
+  /** Resolved base URL, null while it has never been resolved. */
+  url: string | null;
+  reachable: boolean;
+  /**
+   * ok        — reachable and the heartbeat is current
+   * degraded  — reachable, but the heartbeat is overdue or has failed
+   * down      — last contact attempt failed
+   * unknown   — nothing tried yet
+   */
+  state: 'ok' | 'degraded' | 'down' | 'unknown';
+  error: string | null;
+  resources: { total: number } & Record<ResourceType, number>;
+  heartbeat: { lastOkAt: string | null; ageSeconds: number | null; failures: number };
+}
+
 export class RegistryError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message);
@@ -20,7 +42,14 @@ async function request(url: string, init: RequestInit & { timeoutMs?: number } =
   try {
     return await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs) });
   } catch (e) {
-    throw new RegistryError(`${url}: ${(e as Error).message}`);
+    // Keep this short: it ends up in a table cell next to the address, so repeating
+    // the full URL and the runtime's wording adds nothing.
+    const err = e as Error;
+    const reason =
+      err.name === 'TimeoutError' || /aborted due to timeout/i.test(err.message)
+        ? `timeout after ${Math.round(timeoutMs / 1000)} s`
+        : (err.cause as { code?: string } | undefined)?.code ?? err.message;
+    throw new RegistryError(reason);
   }
 }
 
@@ -40,6 +69,9 @@ export class RegistryClient {
   private nodeId: string | null = null;
   reachable = false;
   lastError: string | null = null;
+  private lastHeartbeatOk: number | null = null;
+  private heartbeatFailures = 0;
+  private heartbeatIntervalMs = 5000;
   /** What this registry knows about, as far as we can tell. */
   readonly registered = new Set<string>();
 
@@ -105,7 +137,7 @@ export class RegistryClient {
     });
     if (res.status !== 200 && res.status !== 201) {
       this.reachable = false;
-      this.lastError = `register ${type} ${data.id}: HTTP ${res.status}`;
+      this.lastError = `register ${type}: HTTP ${res.status}`;
       throw new RegistryError(this.lastError, res.status);
     }
     this.reachable = true;
@@ -120,7 +152,7 @@ export class RegistryClient {
     const res = await request(`${this.apiBase(base)}/resource/${type}s/${id}`, { method: 'DELETE' });
     // 404 means it is already gone. Same outcome for us.
     if (res.status !== 204 && res.status !== 200 && res.status !== 404) {
-      this.lastError = `unregister ${type} ${id}: HTTP ${res.status}`;
+      this.lastError = `unregister ${type}: HTTP ${res.status}`;
       throw new RegistryError(this.lastError, res.status);
     }
     this.registered.delete(`${type}:${id}`);
@@ -138,6 +170,8 @@ export class RegistryClient {
     if (res.status === 200) {
       this.reachable = true;
       this.lastError = null;
+      this.lastHeartbeatOk = Date.now();
+      this.heartbeatFailures = 0;
       return;
     }
     if (res.status === 404) {
@@ -148,15 +182,18 @@ export class RegistryClient {
       return;
     }
     this.reachable = false;
+    this.heartbeatFailures++;
     this.lastError = `heartbeat: HTTP ${res.status}`;
   }
 
   startHeartbeat(nodeId: string, intervalMs = 5000): void {
     this.nodeId = nodeId;
     this.stopHeartbeat();
+    this.heartbeatIntervalMs = intervalMs;
     this.timer = setInterval(() => {
       this.heartbeat().catch((e) => {
         this.reachable = false;
+        this.heartbeatFailures++;
         this.lastError = (e as Error).message;
       });
     }, intervalMs);
@@ -198,15 +235,70 @@ export class RegistryClient {
     return removed;
   }
 
-  status() {
+  /**
+   * Checks reachability without changing anything: resolve the address and ask the
+   * registration API for its base resource list.
+   */
+  async probe(): Promise<{ reachable: boolean; url: string | null; error?: string; status?: number }> {
+    let base: string;
+    try {
+      base = await this.resolve();
+    } catch (e) {
+      this.reachable = false;
+      this.lastError = (e as Error).message;
+      return { reachable: false, url: null, error: this.lastError };
+    }
+    try {
+      const res = await request(`${this.apiBase(base)}/`);
+      const ok = res.status >= 200 && res.status < 400;
+      this.reachable = ok;
+      this.lastError = ok ? null : `HTTP ${res.status}`;
+      return { reachable: ok, url: base, status: res.status, ...(ok ? {} : { error: this.lastError! }) };
+    } catch (e) {
+      this.reachable = false;
+      this.lastError = (e as Error).message;
+      return { reachable: false, url: base, error: this.lastError };
+    }
+  }
+
+  private countResources(): { total: number } & Record<ResourceType, number> {
+    const counts = { total: 0, node: 0, device: 0, source: 0, flow: 0, sender: 0, receiver: 0 };
+    for (const key of this.registered) {
+      const type = key.split(':')[0] as ResourceType;
+      if (type in counts) counts[type]++;
+      counts.total++;
+    }
+    return counts;
+  }
+
+  status(): RegistryStatus {
+    const ageSeconds = this.lastHeartbeatOk === null ? null : Math.round((Date.now() - this.lastHeartbeatOk) / 1000);
+    // A heartbeat runs every 5 s; give it three intervals before calling it overdue.
+    const overdue = ageSeconds !== null && ageSeconds * 1000 > this.heartbeatIntervalMs * 3;
+    const tried = this.reachable || this.lastError !== null || this.lastHeartbeatOk !== null;
+
+    let state: RegistryStatus['state'];
+    if (!tried) state = 'unknown';
+    else if (!this.reachable) state = 'down';
+    else if (overdue || this.heartbeatFailures > 0) state = 'degraded';
+    else state = 'ok';
+
     return {
       id: this.cfg.id,
       label: this.cfg.label,
       domainId: this.cfg.domainId,
+      mode: this.cfg.mode,
+      version: this.cfg.version,
       url: this.base,
       reachable: this.reachable,
+      state,
       error: this.lastError,
-      resources: this.registered.size,
+      resources: this.countResources(),
+      heartbeat: {
+        lastOkAt: this.lastHeartbeatOk === null ? null : new Date(this.lastHeartbeatOk).toISOString(),
+        ageSeconds,
+        failures: this.heartbeatFailures,
+      },
     };
   }
 }

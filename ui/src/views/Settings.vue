@@ -1,16 +1,23 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { api, registryUrl, DEFAULT_REGISTRY_PORT, type Config, type Issue } from '../api';
+import { api, registryUrl, DEFAULT_REGISTRY_PORT, type Config, type Issue, type RegistryStatus } from '../api';
+import RegistryStatusTable from '../components/RegistryStatusTable.vue';
 
 const cfg = ref<Config | null>(null);
 const issues = ref<Issue[]>([]);
 const error = ref<string | null>(null);
 const saved = ref(false);
 const probe = ref<Record<string, string>>({});
+const registryStatus = ref<RegistryStatus[]>([]);
+
+async function loadRegistryStatus() {
+  registryStatus.value = await api.registries().catch(() => []);
+}
 
 async function refresh() {
   try {
     cfg.value = await api.config();
+    await loadRegistryStatus();
     error.value = null;
   } catch (e) {
     error.value = (e as Error).message;
@@ -161,6 +168,9 @@ onMounted(refresh);
           </tr>
         </tbody>
       </table>
+      <h4>Current status</h4>
+      <p class="hint">Reflects what is running — save first for a changed address to show up here.</p>
+      <RegistryStatusTable :registries="registryStatus" show-test @probed="loadRegistryStatus" />
     </section>
 
     <section>
@@ -212,6 +222,7 @@ td input[type='checkbox'] { width: auto; }
 .del { margin-top: 0.5rem; }
 .issues { padding-left: 1.2rem; }
 .hint { font-size: 0.8rem; opacity: 0.7; }
+h4 { margin: 1.25rem 0 0.25rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
 .ok { color: #2e9e4f; }
 .bad { color: #d24b3e; }
 .warn { color: #c08a2e; }

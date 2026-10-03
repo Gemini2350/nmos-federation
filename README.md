@@ -54,6 +54,10 @@ Then open `http://<host>:8080` and configure it under **Settings**:
    instead of sending them, which lets you see the whole federation in your
    controller without touching the network.
 
+The **Channels** page shows a status line per registry — resolved address, state,
+how many of our resources it holds, the age of the last heartbeat and the last error —
+plus a Test button that probes one registry without changing anything.
+
 Then create a **device** (source domain → target domain) and add virtual receivers to
 it. They appear in the registry immediately; connecting a source to one of them with
 your usual controller creates the virtual sender on the other side.

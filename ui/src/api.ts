@@ -40,7 +40,8 @@ export interface Registry {
   mode: 'dnssd' | 'manual';
   /** IP or hostname, for mode=manual. */
   ip?: string;
-  /** Port of the registration API; nmos-cpp with a single http_port uses 8010. */
+  /** Port of the registration API. Defaults to 80; nmos-cpp with a single
+   *  http_port typically listens on 8010. */
   port?: number;
   tls?: boolean;
   /** DNS-SD search domain, for mode=dnssd. */
@@ -49,7 +50,7 @@ export interface Registry {
   enabled: boolean;
 }
 
-export const DEFAULT_REGISTRY_PORT = 8010;
+export const DEFAULT_REGISTRY_PORT = 80;
 
 /** Mirrors the backend: the URL is derived, never typed in by hand. */
 export function registryUrl(r: Registry): string | null {
@@ -116,10 +117,27 @@ export interface Channel {
   updatedAt: string;
 }
 
+export type RegistryState = 'ok' | 'degraded' | 'down' | 'unknown' | 'disabled';
+
+export interface RegistryStatus {
+  id: string;
+  label: string;
+  domainId: string;
+  mode: 'dnssd' | 'manual';
+  version: string;
+  /** Resolved base URL, null while it has never been resolved. */
+  url: string | null;
+  reachable: boolean;
+  state: RegistryState;
+  error: string | null;
+  resources: { total: number; node: number; device: number; source: number; flow: number; sender: number; receiver: number };
+  heartbeat: { lastOkAt: string | null; ageSeconds: number | null; failures: number };
+}
+
 export interface Status {
   nat: { enabled: boolean; driver: string };
   switches: Record<string, { reachable: boolean; version?: string; error?: string }>;
-  registries: { id: string; label: string; domainId: string; url: string | null; reachable: boolean; error: string | null; resources: number }[];
+  registries: RegistryStatus[];
   pools: Record<string, { free: number; total: number; used: number[] }>;
   domains: { id: string; label: string; kind: string; nodeId: string; registries: string[] }[];
   channels: number;
@@ -149,6 +167,9 @@ export const api = {
   channels: () => req<Channel[]>('/channels'),
   dropChannel: (receiverId: string) => req<{ ok: boolean }>(`/channels/${receiverId}`, { method: 'DELETE' }),
   retryChannel: (receiverId: string) => req<Channel>(`/channels/${receiverId}/retry`, { method: 'POST' }),
+  registries: () => req<RegistryStatus[]>('/registries'),
+  probeRegistry: (id: string) =>
+    req<{ reachable: boolean; url: string | null; error?: string; status?: number }>(`/registries/${id}/probe`, { method: 'POST' }),
   probeSwitch: (fabric: 'red' | 'blue') => req<{ reachable: boolean; version?: string; error?: string }>(`/switch/${fabric}/probe`, { method: 'POST' }),
   reconcile: () => req<{ ok: boolean }>('/reconcile', { method: 'POST' }),
   events: () => new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/events`),
