@@ -4,6 +4,7 @@ import type { Engine } from '../federation/engine.js';
 import type { AppConfig } from '../config/schema.js';
 import type { FederationDevice, VirtualReceiver } from '../types.js';
 import { randomUUID } from 'node:crypto';
+import type { MirrorEntry } from '../config/schema.js';
 import { log } from '../util/log.js';
 
 /**
@@ -21,6 +22,10 @@ import { log } from '../util/log.js';
  *   GET      /api/registries                   per-registry status
  *   POST     /api/registries/:id/probe          reachability test for one registry
  *   POST     /api/switch/:fabric/probe         connectivity test
+ *   GET      /api/registries/:id/browse         list a registry's senders and receivers
+ *   GET/POST /api/mirrors                      registry-to-registry copies
+ *   DELETE   /api/mirrors/:id                  remove a copy and tear it down
+ *   POST     /api/mirrors/:id/refresh          re-read the origin and rebuild
  *   POST     /api/reconcile                    run desired/actual reconciliation now
  *   WS       /api/events                       channel and status changes
  */
@@ -203,6 +208,171 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     const result = await engine.probeSwitch(req.params.fabric);
     if (!result) return reply.code(404).send({ error: `no such fabric: ${req.params.fabric}` });
     return result;
+  });
+
+  // ---- Registry browsing and copies --------------------------------------
+  /**
+   * Lists what a registry holds, annotated with whether we already copied it.
+   * Resources that belong to one of our own nodes are marked so the GUI can keep the
+   * operator from copying a copy.
+   */
+  app.get<{ Params: { id: string } }>('/api/registries/:id/browse', async (req, reply) => {
+    const query = engine.queryClient(req.params.id);
+    if (!query) return reply.code(404).send({ error: `no registry ${req.params.id}, or it is disabled` });
+    try {
+      const [senders, receivers, devices, flows] = await Promise.all([
+        query.senders(),
+        query.receivers(),
+        query.devices(),
+        query.flows().catch(() => []),
+      ]);
+      const deviceById = new Map(devices.map((d) => [d.id, d]));
+      const flowById = new Map(flows.map((f) => [f.id, f]));
+      const ourNodes = new Set(store.current.domains.map((d) => engine.nodeId(d.id)));
+      const copied = new Set(store.current.mirrors.map((m) => `${m.registryId}:${m.originId}`));
+
+      const annotate = (r: { id: string; device_id: string }) => {
+        const device = deviceById.get(r.device_id);
+        return {
+          deviceLabel: device?.label ?? r.device_id,
+          nodeId: device?.node_id ?? null,
+          ours: device ? ourNodes.has(device.node_id) : false,
+          copied: copied.has(`${req.params.id}:${r.id}`),
+          controllable: !!device?.controls?.some((c) => c.type.startsWith('urn:x-nmos:control:sr-ctrl/')),
+        };
+      };
+
+      return {
+        senders: senders.map((s) => ({
+          ...s,
+          ...annotate(s),
+          flow: s.flow_id ? (flowById.get(s.flow_id) ?? null) : null,
+        })),
+        receivers: receivers.map((r) => ({ ...r, ...annotate(r) })),
+      };
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
+  });
+
+  app.get('/api/mirrors', async () => {
+    const channels = engine.channels();
+    return store.current.mirrors.map((m) => {
+      const key = m.kind === 'sender' ? `mirror-${m.id}` : (store.current.receivers.find((r) => r.proxyFor?.mirrorId === m.id)?.id ?? '');
+      const channel = channels.find((c) => c.receiverId === key) ?? null;
+      const device = store.current.devices.find((d) => d.id === m.deviceId) ?? null;
+      return {
+        ...m,
+        proxyReceiverId: m.kind === 'receiver' ? key || null : null,
+        device: device ? { id: device.id, label: device.label, sourceDomain: device.sourceDomain, targetDomain: device.targetDomain, nat: device.nat } : null,
+        channel,
+      };
+    });
+  });
+
+  app.post<{ Body: Partial<MirrorEntry> & { format?: 'video' | 'audio' | 'data' } }>('/api/mirrors', async (req, reply) => {
+    const b = req.body ?? {};
+    if (b.kind !== 'sender' && b.kind !== 'receiver') return reply.code(400).send({ error: 'kind must be sender or receiver' });
+    if (!b.deviceId || !b.registryId || !b.originId || !b.originDeviceId) {
+      return reply.code(400).send({ error: 'deviceId, registryId, originId and originDeviceId are required' });
+    }
+    const cfg = structuredClone(store.current);
+    const device = cfg.devices.find((d) => d.id === b.deviceId);
+    if (!device) return reply.code(404).send({ error: 'unknown device' });
+    if (cfg.mirrors.some((m) => m.registryId === b.registryId && m.originId === b.originId)) {
+      return reply.code(409).send({ error: 'this resource is already copied' });
+    }
+
+    const mirror: MirrorEntry = {
+      id: randomUUID(),
+      kind: b.kind,
+      deviceId: device.id,
+      registryId: b.registryId,
+      originId: b.originId,
+      originDeviceId: b.originDeviceId,
+      originLabel: b.originLabel ?? b.originId,
+      ...(b.label ? { label: b.label } : {}),
+      enabled: b.enabled ?? true,
+    };
+    cfg.mirrors.push(mirror);
+
+    // A receiver copy needs a proxy receiver to exist as an ordering point. A sender
+    // copy needs nothing extra — its channel is created right away.
+    if (mirror.kind === 'receiver') {
+      const vrxId = randomUUID();
+      cfg.receivers.push({
+        id: vrxId,
+        label: mirror.label || `${mirror.originLabel} (proxy)`,
+        deviceId: device.id,
+        format: b.format ?? 'video',
+        enabled: true,
+        proxyFor: {
+          registryId: mirror.registryId,
+          receiverId: mirror.originId,
+          deviceId: mirror.originDeviceId,
+          mirrorId: mirror.id,
+        },
+      });
+      device.receiverIds.push(vrxId);
+    }
+
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+
+    if (mirror.kind === 'sender' && mirror.enabled) {
+      try {
+        const channel = await engine.copySender(mirror.id);
+        return { ...mirror, channel };
+      } catch (e) {
+        return reply.code(502).send({ ...mirror, error: (e as Error).message });
+      }
+    }
+    return mirror;
+  });
+
+  app.post<{ Params: { id: string } }>('/api/mirrors/:id/refresh', async (req, reply) => {
+    const mirror = store.current.mirrors.find((m) => m.id === req.params.id);
+    if (!mirror) return reply.code(404).send({ error: 'unknown copy' });
+    if (mirror.kind !== 'sender') {
+      return reply.code(409).send({ error: 'a receiver proxy follows its own connection — nothing to refresh' });
+    }
+    try {
+      return await engine.copySender(mirror.id);
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/mirrors/:id', async (req, reply) => {
+    const cfg = structuredClone(store.current);
+    const mirror = cfg.mirrors.find((m) => m.id === req.params.id);
+    if (!mirror) return reply.code(404).send({ error: 'unknown copy' });
+
+    // Tear the channel down before the configuration forgets about it, otherwise the
+    // pool reservation and the switch rules are orphaned.
+    if (mirror.kind === 'sender') {
+      await engine.deactivate(`mirror-${mirror.id}`);
+    } else {
+      const proxy = cfg.receivers.find((r) => r.proxyFor?.mirrorId === mirror.id);
+      if (proxy) {
+        await engine.deactivate(proxy.id);
+        cfg.receivers = cfg.receivers.filter((r) => r.id !== proxy.id);
+        for (const d of cfg.devices) d.receiverIds = d.receiverIds.filter((id) => id !== proxy.id);
+      }
+    }
+    cfg.mirrors = cfg.mirrors.filter((m) => m.id !== req.params.id);
+
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+      return { ok: true };
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
   });
 
   app.post('/api/reconcile', async () => {

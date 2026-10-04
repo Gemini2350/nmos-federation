@@ -1,6 +1,8 @@
 import type { AppConfig, DomainConfig } from '../config/schema.js';
 import { domainById, registriesOf } from '../config/schema.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
+import { QueryClient } from '../nmos/query-client.js';
+import { Is05Client } from '../nmos/is05-client.js';
 import {
   MEDIA_TYPES,
   buildDevice,
@@ -17,6 +19,7 @@ import {
 import { assignFabrics, parseSdp, rewriteSdp } from '../nmos/sdp.js';
 import { programChannel, unprogramChannel, type SwitchDriver } from '../switch/driver.js';
 import type { Channel, FederationDevice, VirtualReceiver } from '../types.js';
+import type { MirrorEntry } from '../config/schema.js';
 import { buildChannelPlan } from './channel.js';
 import type { PoolManager } from './pools.js';
 import type { ConnectionState, StateStore } from './state.js';
@@ -52,6 +55,8 @@ interface Resource {
  */
 export class Engine {
   readonly registries = new Map<string, RegistryClient>();
+  private readonly queries = new Map<string, QueryClient>();
+  private readonly is05 = new Map<string, Is05Client>();
   private readonly listeners = new Set<(e: EngineEvent) => void>();
   private reconcileTimer: NodeJS.Timeout | null = null;
   /** Node API port actually bound per domain — may differ from the configured one
@@ -213,7 +218,12 @@ export class Engine {
           const essence = this.essenceOf(channel);
           if (!essence) continue;
           const vrxId = channel.receiverId;
-          const label = essence.label ?? this.cfg.receivers.find((r) => r.id === vrxId)?.label ?? vrxId;
+          const label =
+            this.cfg.receivers.find((r) => r.id === vrxId)?.label ??
+            this.mirrorOf(vrxId)?.label ??
+            this.mirrorOf(vrxId)?.originLabel ??
+            essence.label ??
+            vrxId;
           const sourceId = this.sourceNmosId(vrxId, domainId);
           const flowId = this.flowNmosId(vrxId, domainId);
           const senderId = this.senderNmosId(vrxId, domainId);
@@ -342,12 +352,31 @@ export class Engine {
   private buildRegistryClients(): void {
     for (const client of this.registries.values()) client.stopHeartbeat();
     this.registries.clear();
+    this.queries.clear();
+    this.is05.clear();
     for (const reg of this.cfg.registries.filter((r) => r.enabled)) {
       const client = new RegistryClient(reg, (c) => {
         this.syncRegistry(c).catch(() => {});
       });
       this.registries.set(reg.id, client);
+      const query = new QueryClient(reg);
+      this.queries.set(reg.id, query);
+      this.is05.set(reg.id, new Is05Client(query));
     }
+  }
+
+  /** Query API of a registry — for browsing existing resources. */
+  queryClient(registryId: string): QueryClient | null {
+    return this.queries.get(registryId) ?? null;
+  }
+
+  /** Our key for a sender copy's channel; receiver proxies key on their vRX id. */
+  static mirrorKey(mirrorId: string): string {
+    return `mirror-${mirrorId}`;
+  }
+
+  mirrorOf(key: string): MirrorEntry | undefined {
+    return this.cfg.mirrors.find((m) => Engine.mirrorKey(m.id) === key);
   }
 
   /** After a settings change: rebuild the clients, establish the desired state. */
@@ -398,18 +427,67 @@ export class Engine {
     if (!device) throw new Error(`receiver ${vrxId} is not attached to a device`);
     const sdp = conn.transport_file.data;
     if (!sdp) throw new Error('activation without a transport_file');
+    return this.runChannel({
+      key: vrxId,
+      device,
+      sdp,
+      originSenderId: conn.sender_id,
+      ...(vrx.proxyFor ? { proxy: vrx.proxyFor } : {}),
+    });
+  }
 
-    await this.deactivate(vrxId); // switching over = tear the old federation down cleanly
+  /**
+   * Copies an existing sender from one registry into another. Same machinery as an
+   * IS-05 activation — the only difference is where the origin SDP comes from: the
+   * sender's own manifest instead of a controller's PATCH.
+   */
+  async copySender(mirrorId: string): Promise<Channel> {
+    const mirror = this.cfg.mirrors.find((m) => m.id === mirrorId && m.kind === 'sender');
+    if (!mirror) throw new Error(`unknown sender copy ${mirrorId}`);
+    const device = this.cfg.devices.find((d) => d.id === mirror.deviceId);
+    if (!device) throw new Error(`sender copy ${mirrorId} is not attached to a device`);
+    const query = this.queries.get(mirror.registryId);
+    if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
+
+    const sender = await query.sender(mirror.originId);
+    const sdp = await query.transportFile(sender);
+    log.info({ mirrorId, origin: sender.label, registry: mirror.registryId }, 'copying sender');
+
+    return this.runChannel({
+      key: Engine.mirrorKey(mirrorId),
+      device,
+      sdp,
+      originSenderId: sender.id,
+      mirrorId,
+    });
+  }
+
+  /**
+   * The shared path: parse, allocate, program the switch, rewrite, publish — and for a
+   * proxy receiver, drive the original receiver afterwards.
+   */
+  private async runChannel(opts: {
+    key: string;
+    device: FederationDevice;
+    sdp: string;
+    originSenderId: string | null;
+    mirrorId?: string;
+    proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
+  }): Promise<Channel> {
+    const { key, device, sdp } = opts;
+
+    await this.deactivate(key); // switching over = tear the old federation down cleanly
 
     const channel: Channel = {
-      id: `ch-${vrxId}`,
-      receiverId: vrxId,
+      id: `ch-${key}`,
+      receiverId: key,
       deviceId: device.id,
+      ...(opts.mirrorId ? { mirrorId: opts.mirrorId } : {}),
       sourceDomain: device.sourceDomain,
       targetDomain: device.targetDomain,
       state: 'allocating',
       originSdp: sdp,
-      originSenderId: conn.sender_id,
+      originSenderId: opts.originSenderId,
       legs: [],
       allocation: null,
       senderSdp: null,
@@ -465,6 +543,34 @@ export class Engine {
       await this.deps.state.save();
       await this.syncRegistries(channel.publishedIn);
 
+      // A proxy receiver only becomes useful here: the original receiver in the
+      // target domain is pointed at the sender we just published.
+      if (opts.proxy) {
+        const is05 = this.is05.get(opts.proxy.registryId);
+        const senderId = this.senderNmosId(key, device.targetDomain);
+        channel.remoteReceiver = {
+          registryId: opts.proxy.registryId,
+          receiverId: opts.proxy.receiverId,
+          connected: false,
+          error: null,
+        };
+        if (!is05) {
+          channel.remoteReceiver.error = `registry ${opts.proxy.registryId} is not enabled`;
+        } else {
+          try {
+            await is05.connect(opts.proxy.receiverId, opts.proxy.deviceId, senderId, channel.senderSdp!);
+            channel.remoteReceiver.connected = true;
+          } catch (e) {
+            // The stream exists and is published; only the remote receiver did not
+            // take it. That is worth reporting, not worth tearing everything down.
+            channel.remoteReceiver.error = (e as Error).message;
+            log.warn({ channel: channel.id, err: channel.remoteReceiver.error }, 'remote receiver not connected');
+          }
+        }
+        this.deps.state.upsertChannel(channel);
+        await this.deps.state.save();
+      }
+
       log.info(
         {
           channel: channel.id,
@@ -473,6 +579,7 @@ export class Engine {
           groups: channel.allocation?.groups,
           natGroupId: channel.allocation?.natGroupId,
           registries: channel.publishedIn,
+          ...(channel.remoteReceiver ? { remoteReceiver: channel.remoteReceiver.connected } : {}),
         },
         'channel active',
       );
@@ -505,6 +612,18 @@ export class Engine {
     const channel = this.deps.state.channelFor(vrxId);
     if (!channel) return;
 
+    // A proxied receiver is released before our sender disappears — otherwise it sits
+    // subscribed to a stream that is about to stop.
+    if (channel.remoteReceiver?.connected) {
+      const is05 = this.is05.get(channel.remoteReceiver.registryId);
+      const proxy = this.cfg.receivers.find((r) => r.id === channel.receiverId)?.proxyFor;
+      if (is05 && proxy) {
+        await is05
+          .disconnect(channel.remoteReceiver.receiverId, proxy.deviceId)
+          .catch((e) => log.warn({ channel: channel.id, err: String(e) }, 'remote receiver not released'));
+      }
+    }
+
     const registries = channel.publishedIn.length ? channel.publishedIn : undefined;
     channel.state = 'withdrawing';
     channel.updatedAt = new Date().toISOString();
@@ -533,6 +652,17 @@ export class Engine {
   /** Desired/actual reconciliation: catch registries up, verify switch rules. */
   async reconcile(): Promise<void> {
     await this.syncRegistries();
+
+    // An enabled sender copy with no channel at all has never run, or its channel was
+    // lost. Bring it up. A channel in `failed` is left alone — retrying it every
+    // interval would just hammer an unreachable registry; that is the Retry button.
+    for (const mirror of this.cfg.mirrors) {
+      if (mirror.kind !== 'sender' || !mirror.enabled) continue;
+      if (this.deps.state.channelFor(Engine.mirrorKey(mirror.id))) continue;
+      await this.copySender(mirror.id).catch((e) =>
+        log.warn({ mirror: mirror.id, origin: mirror.originLabel, err: String(e) }, 'sender copy failed'),
+      );
+    }
 
     for (const [fabric, driver] of Object.entries(this.deps.drivers)) {
       let state;

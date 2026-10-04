@@ -38,6 +38,9 @@ export interface RegistryConfig {
   /** Port of the registration API. Defaults to 80; nmos-cpp configured with a
    *  single `http_port` typically listens on 8010. */
   port?: number;
+  /** Port of the query API, if it differs from the registration port. nmos-cpp only
+   *  shares one port when configured with a single `http_port`. */
+  queryPort?: number;
   /** https instead of http. */
   tls?: boolean;
   /** DNS-SD search domain, for mode=dnssd. Empty = the host's own search domain. */
@@ -94,6 +97,39 @@ export interface NatConfig {
   driver: 'arista-eapi' | 'mock';
 }
 
+/**
+ * A direct copy of an existing resource from one registry into another — the second
+ * operating mode next to federation. There is no connection event to wait for: the
+ * copy is created on request.
+ *
+ * Both kinds hang off a federation device, which supplies the direction, the target
+ * registries and the NAT setting. That keeps a copy and a federation channel the same
+ * thing internally.
+ *
+ *  - `sender`:   the original lives in the device's SOURCE domain, the copy appears in
+ *                its TARGET domain. The origin SDP comes from the sender's manifest.
+ *  - `receiver`: the original lives in the device's TARGET domain, and a proxy
+ *                receiver appears in its SOURCE domain. Connecting a stream to the
+ *                proxy drives the original receiver over IS-05.
+ */
+export interface MirrorEntry {
+  id: string;
+  kind: 'sender' | 'receiver';
+  /** Federation device the copy belongs to. */
+  deviceId: string;
+  /** Registry the original was read from. */
+  registryId: string;
+  /** The original resource's NMOS id. */
+  originId: string;
+  /** The original's device id — needed to find its connection API. */
+  originDeviceId: string;
+  /** Label at the time of copying, for display when the origin is unreachable. */
+  originLabel: string;
+  /** Overrides the label of the copy; empty = the origin's label. */
+  label?: string;
+  enabled: boolean;
+}
+
 export interface AppConfig {
   /** REST + WebSocket + GUI, bound to 0.0.0.0. */
   port: number;
@@ -105,6 +141,8 @@ export interface AppConfig {
   nat: NatConfig;
   devices: FederationDevice[];
   receivers: VirtualReceiver[];
+  /** Direct registry-to-registry copies. */
+  mirrors: MirrorEntry[];
 }
 
 const emptyPool = (base: string): PoolConfig => ({ base, pairs: 64, sourceNat: null });
@@ -139,6 +177,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   devices: [],
   receivers: [],
+  mirrors: [],
 };
 
 export function internalDomain(cfg: AppConfig): DomainConfig {

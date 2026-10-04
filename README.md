@@ -62,6 +62,22 @@ Then create a **device** (source domain → target domain) and add virtual recei
 it. They appear in the registry immediately; connecting a source to one of them with
 your usual controller creates the virtual sender on the other side.
 
+## Copying existing resources
+
+The **Copy** page is the second operating mode: browse a registry and copy what is
+already there, without going through a virtual receiver.
+
+- **Sender copy** — reads the original's SDP from its manifest, NATs the stream into
+  the target domain and publishes the copy there. *Refresh* re-reads the manifest if
+  the origin changed.
+- **Receiver proxy** — creates a proxy receiver in the source domain. Connect a stream
+  to it and the original receiver in the other registry is driven over IS-05, so the
+  essence actually arrives. The original has to advertise an `sr-ctrl` control;
+  receivers that do not are shown as not controllable.
+
+Both hang off a device, which supplies the direction, the target registries and the NAT
+setting.
+
 `network_mode: host` is required — the software needs one interface with a real IP
 per domain (node href, manifest fetch, mDNS). Configuration and state live in
 `./config`.

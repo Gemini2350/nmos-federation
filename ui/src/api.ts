@@ -101,6 +101,52 @@ export interface Config {
   receivers: VirtualReceiver[];
 }
 
+export interface BrowseSender {
+  id: string;
+  label: string;
+  device_id: string;
+  deviceLabel: string;
+  nodeId: string | null;
+  manifest_href: string | null;
+  transport: string;
+  /** Belongs to one of our own nodes — copying a copy is rarely what you want. */
+  ours: boolean;
+  copied: boolean;
+  controllable: boolean;
+  flow: { media_type: string; frame_width?: number; frame_height?: number; grain_rate?: { numerator: number; denominator?: number } } | null;
+}
+
+export interface BrowseReceiver {
+  id: string;
+  label: string;
+  device_id: string;
+  deviceLabel: string;
+  nodeId: string | null;
+  format: string;
+  transport: string;
+  caps?: { media_types?: string[] };
+  subscription?: { sender_id: string | null; active: boolean };
+  ours: boolean;
+  copied: boolean;
+  /** Advertises an sr-ctrl control, so it can be driven over IS-05. */
+  controllable: boolean;
+}
+
+export interface Mirror {
+  id: string;
+  kind: 'sender' | 'receiver';
+  deviceId: string;
+  registryId: string;
+  originId: string;
+  originDeviceId: string;
+  originLabel: string;
+  label?: string;
+  enabled: boolean;
+  proxyReceiverId: string | null;
+  device: { id: string; label: string; sourceDomain: string; targetDomain: string; nat: boolean } | null;
+  channel: Channel | null;
+}
+
 export interface Channel {
   id: string;
   receiverId: string;
@@ -113,6 +159,8 @@ export interface Channel {
   allocation: { index: number; groups: Fabric2<string>; sources: Fabric2<string> | null; natGroupId: number } | null;
   senderSdp: string | null;
   publishedIn: string[];
+  mirrorId?: string;
+  remoteReceiver?: { registryId: string; receiverId: string; connected: boolean; error: string | null };
   error: string | null;
   updatedAt: string;
 }
@@ -172,5 +220,18 @@ export const api = {
     req<{ reachable: boolean; url: string | null; error?: string; status?: number }>(`/registries/${id}/probe`, { method: 'POST' }),
   probeSwitch: (fabric: 'red' | 'blue') => req<{ reachable: boolean; version?: string; error?: string }>(`/switch/${fabric}/probe`, { method: 'POST' }),
   reconcile: () => req<{ ok: boolean }>('/reconcile', { method: 'POST' }),
+  browse: (registryId: string) => req<{ senders: BrowseSender[]; receivers: BrowseReceiver[] }>(`/registries/${registryId}/browse`),
+  mirrors: () => req<Mirror[]>('/mirrors'),
+  createMirror: (body: {
+    kind: 'sender' | 'receiver';
+    deviceId: string;
+    registryId: string;
+    originId: string;
+    originDeviceId: string;
+    originLabel: string;
+    format?: 'video' | 'audio' | 'data';
+  }) => req<Mirror>('/mirrors', { method: 'POST', body: JSON.stringify(body) }),
+  refreshMirror: (id: string) => req<Channel>(`/mirrors/${id}/refresh`, { method: 'POST' }),
+  deleteMirror: (id: string) => req<{ ok: boolean }>(`/mirrors/${id}`, { method: 'DELETE' }),
   events: () => new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/events`),
 };

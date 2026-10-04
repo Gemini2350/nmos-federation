@@ -148,6 +148,67 @@ rather than publishing a wrongly described sender.
 - **vTX**: `active`/`staged` are read-only, plus `/transportfile` with the rewritten
   SDP. A foreign controller must not reconfigure the vTX; PATCH answers 423.
 
+## 4a. Direct copies between registries
+
+Next to federation there is a second operating mode: copying a resource that already
+exists in one registry straight into another, without a virtual receiver to connect to.
+A copy is created on request rather than by waiting for an IS-05 activation.
+
+Both kinds hang off a **federation device**, which supplies the direction, the target
+registries and the NAT setting — so internally a copy is the same thing as a
+federation channel, only with a different trigger.
+
+### Sender copy
+
+```
+sender S in the device's SOURCE domain
+  → read S's SDP from its manifest_href
+  → allocate a pair from the TARGET domain's pool, program NAT on both fabrics
+  → publish source/flow/sender with the rewritten SDP in the target registries
+```
+
+The origin SDP comes from the sender's own manifest instead of a controller's PATCH;
+everything after that is the ordinary channel path. `POST /api/mirrors/<id>/refresh`
+re-reads the manifest and rebuilds — that is how a changed origin SDP is picked up,
+since nothing notifies us.
+
+### Receiver proxy
+
+A copied receiver is a real ordering point, not a decorative IS-04 entry:
+
+```
+receiver R in the device's TARGET domain
+  → create a proxy receiver P in the device's SOURCE domain (an ordinary vRX)
+  → someone connects a local stream to P
+  → the normal channel path runs: NAT into the target domain, publish the sender
+  → PATCH R over IS-05 to subscribe to the sender we just published
+```
+
+So a proxy receiver is a virtual receiver that additionally drives a remote one. The
+published sender is not redundant work: it gives the stream a first-class identity in
+the target domain, and R's `subscription.sender_id` then points at something a
+controller over there can actually see.
+
+R must advertise an `urn:x-nmos:control:sr-ctrl/*` control on its device, otherwise it
+cannot be driven and the GUI marks it as not controllable.
+
+**If the IS-05 patch fails the channel stays active.** The stream exists and is
+published; only the remote receiver did not take it. That is reported per channel
+(`remoteReceiver.error`) rather than torn down, because tearing down a working stream
+because the far end was briefly unreachable is worse than leaving it running.
+
+On teardown the remote receiver is released **before** our sender disappears — the same
+ordering rule as everywhere else.
+
+### What is deliberately not done
+
+- Copies are re-homed under **our** node in the target domain, with our own IDs. The
+  alternative — replaying the foreign resource verbatim — would need us to heartbeat a
+  node we do not own, and the target registry would garbage-collect it the moment we
+  stopped.
+- Resources belonging to one of our own nodes are marked `ours` when browsing, so the
+  operator does not copy a copy.
+
 ## 5. Multicast pools
 
 **One pool per domain** — it describes the addresses handed out when a sender is
@@ -384,6 +445,7 @@ shape NMOS Crosspoint uses for its static registries. The base URL is assembled 
 | `port` | registration API port; defaults to **8010** (nmos-cpp with one `http_port`) |
 | `tls` | `https` instead of `http`; the scheme's default port is then left out of the URL |
 | `domain` | DNS-SD search domain, only for `mode: "dnssd"` |
+| `queryPort` | port of the query API, if it differs from the registration port — nmos-cpp only shares one when configured with a single `http_port` |
 
 Deriving the URL rather than storing it means there is one place that decides how an
 address is formed, and the GUI can show the result while it is being typed. A
@@ -431,10 +493,11 @@ already routed.
    against hardware** — blocked by open point 1
 4. ✅ Persistence, recovery and reconciler (in `engine.ts`, 30 s interval)
 5. ✅ Web GUI: domains/registries/switches, devices, live channel dashboard
-6. BCP-008-01 (`NcReceiverMonitor` per vRX)
-7. The external→external transit case in production, failover across several
+6. ✅ Direct registry-to-registry copies: sender copies and receiver proxies
+7. BCP-008-01 (`NcReceiverMonitor` per vRX)
+8. The external→external transit case in production, failover across several
    registries
-8. Optional: IS-09 system API, authentication (IS-10) for the external domains
+9. Optional: IS-09 system API, authentication (IS-10) for the external domains
 
 ## 12. Open points
 

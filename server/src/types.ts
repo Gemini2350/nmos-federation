@@ -78,6 +78,10 @@ export interface Channel {
   senderSdp: string | null;
   /** Registry IDs the virtual sender is published in. */
   publishedIn: string[];
+  /** Set for a direct sender copy: which MirrorEntry produced this channel. */
+  mirrorId?: string;
+  /** Set once a proxied remote receiver has been connected over IS-05. */
+  remoteReceiver?: { registryId: string; receiverId: string; connected: boolean; error: string | null };
   error: string | null;
   updatedAt: string;
 }
@@ -106,4 +110,10 @@ export interface VirtualReceiver {
   deviceId: string;
   format: 'video' | 'audio' | 'data';
   enabled: boolean;
+  /**
+   * Set when this receiver is a proxy for a real receiver in the target domain: once
+   * a stream is connected here, the original is driven over IS-05 so the essence
+   * actually arrives there. Created through a receiver copy, see MirrorEntry.
+   */
+  proxyFor?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
 }

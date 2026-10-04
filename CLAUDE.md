@@ -28,6 +28,8 @@ server/src/
   nmos/sdp.ts               SDP parsing (incl. rtpmap/fmtp) + group/source rewrite
   nmos/resources.ts         IS-04 resources, essence from SDP, deterministic UUIDv5
   nmos/registry-client.ts   IS-04 registration + heartbeat + DNS-SD
+  nmos/query-client.ts      IS-04 query API, read-only — browsing a registry
+  nmos/is05-client.ts       drives a FOREIGN receiver (receiver proxies)
   nmos/node-api.ts          IS-04 node API, IS-05 vRX/vTX, /transportfile
   switch/driver.ts          driver interface program/unprogram/readState
   switch/arista-eapi.ts     eAPI runCmds, command templates
@@ -35,7 +37,7 @@ server/src/
   tools/switch-preview.ts   prints a channel's EOS commands
   config/                   domains, registries, NAT, validation
   api/rest.ts               REST + WebSocket for the GUI
-ui/                         Vue 3 + Vite: channels, devices, settings
+ui/                         Vue 3 + Vite: channels, devices, copy, settings
 ```
 
 Everything is testable without hardware: `switch/mock.ts` logs the commands and
@@ -57,6 +59,11 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
   own heartbeat per registry; the reconciler catches up on what is missing.
 - **Release pool entries only through the PoolManager**, never by editing state.
 - **Switch commands belong in `switch/arista-eapi.ts`** and nowhere else.
+- **A copy is a channel.** Sender copies and receiver proxies go through
+  `Engine.runChannel`, the same path as an IS-05 activation — only the trigger and the
+  source of the origin SDP differ. Do not grow a second pipeline for them.
+- **A failed IS-05 patch to a remote receiver does not fail the channel.** The stream
+  is published and working; the miss is reported in `channel.remoteReceiver.error`.
 - **The configuration is a provider, not a snapshot.** `Engine` receives
   `config: () => store.current`; a `store.save()` replaces the object. Holding the
   config by reference means never seeing settings changes — that exact bug made
