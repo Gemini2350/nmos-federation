@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { QueryClient } from './query-client.js';
+import { QueryClient, REQUESTED_PAGE_LIMIT } from './query-client.js';
 import type { RegistryConfig } from '../config/schema.js';
 
 /**
@@ -23,8 +23,17 @@ interface PagingStub {
 const TOTAL = 25;
 const LIMIT = 10;
 
-async function startPagingStub(opts: { total?: number; limitHeader?: boolean } = {}): Promise<PagingStub> {
+/**
+ * Like nmos-cpp: a default page of 10, a requested paging.limit honoured up to the
+ * registry's own maximum, and the applied value reported in X-Paging-Limit. `maxLimit`
+ * defaults to 10 so the walk itself stays exercised; `rejectLimit` simulates a registry
+ * that answers an unwanted limit with 400 instead of capping it.
+ */
+async function startPagingStub(
+  opts: { total?: number; limitHeader?: boolean; maxLimit?: number; rejectLimit?: boolean; linkNextOnNewest?: boolean } = {},
+): Promise<PagingStub> {
   const total = opts.total ?? TOTAL;
+  const maxLimit = opts.maxLimit ?? LIMIT;
   // Oldest first in storage; version 1000:0 .. 1000+total-1:0
   const all = Array.from({ length: total }, (_, i) => ({
     id: `s${String(i + 1).padStart(2, '0')}`,
@@ -45,12 +54,18 @@ async function startPagingStub(opts: { total?: number; limitHeader?: boolean } =
     const until = url.searchParams.get('paging.until');
     const since = url.searchParams.get('paging.since');
     const hasLimitParam = url.searchParams.has('paging.limit');
+    if (hasLimitParam && opts.rejectLimit) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return res.end('{"code":400,"error":"paging.limit not accepted"}');
+    }
+    const requested = hasLimitParam ? Number(url.searchParams.get('paging.limit')) : LIMIT;
+    const applied = Math.min(requested, maxLimit);
 
     let pool = descending;
     if (until) pool = descending.filter((r) => vnum(r.version) <= vnum(until)); // inclusive on purpose
     else if (since) pool = descending.filter((r) => vnum(r.version) >= vnum(since));
 
-    const page = pool.slice(0, LIMIT);
+    const page = pool.slice(0, applied);
     const oldestInPage = page.length ? page[page.length - 1]!.version : '0:0';
     const newestInPage = page.length ? page[0]!.version : '0:0';
     const olderExist = pool.length > page.length;
@@ -58,10 +73,10 @@ async function startPagingStub(opts: { total?: number; limitHeader?: boolean } =
 
     const rels: string[] = [];
     if (olderExist) rels.push('prev');
-    if (newerExist) rels.push('next');
+    if (newerExist || (opts.linkNextOnNewest && !until && !since)) rels.push('next');
 
     const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (opts.limitHeader !== false) headers['x-paging-limit'] = String(LIMIT);
+    if (opts.limitHeader !== false) headers['x-paging-limit'] = String(applied);
     // The bogus cursor only appears when no paging parameter was given at all.
     headers['x-paging-since'] = !hasLimitParam && !until && !since ? '0:0' : oldestInPage;
     headers['x-paging-until'] = newestInPage;
@@ -138,13 +153,45 @@ test('cursors are sent unencoded — a percent-encoded colon breaks a real regis
   }
 });
 
-test('the limit is restated on every request, so a bogus parameterless cursor is bypassed', async (t) => {
+test('no request goes out without a limit, so a bogus parameterless cursor never appears', async (t) => {
   const stub = await startPagingStub();
   t.after(() => stub.server.close());
   await new QueryClient(stub.cfg).getAll('senders');
-  // The first request is the bare probe; everything after it carries paging.limit.
-  assert.equal(stub.queries[0], '');
-  for (const q of stub.queries.slice(1)) assert.match(q, /paging\.limit=10/);
+  assert.ok(stub.queries.length > 0);
+  for (const q of stub.queries) {
+    assert.match(q, new RegExp(`paging\\.limit=${REQUESTED_PAGE_LIMIT}`), `request without the large limit: "${q}"`);
+  }
+});
+
+test('a registry that allows larger pages answers the whole collection in one request', async (t) => {
+  // nmos-cpp caps at 100: everything here fits, so there is nothing to walk.
+  const stub = await startPagingStub({ maxLimit: 100 });
+  t.after(() => stub.server.close());
+  const result = await new QueryClient(stub.cfg).getAll<{ id: string }>('senders');
+  assert.equal(result.items.length, TOTAL);
+  assert.equal(result.limit, 100, 'the applied limit is what the registry reports, not what we asked for');
+  assert.equal(stub.queries.length, 1, `expected one request, got ${stub.queries.length}: ${stub.queries.join(' | ')}`);
+});
+
+test('the newest page is not followed forwards, even when the registry links rel="next"', async (t) => {
+  // nmos-cpp links rel="next" on the newest page; following it always returned nothing.
+  const stub = await startPagingStub({ maxLimit: 100, linkNextOnNewest: true });
+  t.after(() => stub.server.close());
+  await new QueryClient(stub.cfg).getAll('senders');
+  assert.ok(stub.queries.every((q) => !q.includes('paging.since')), `walked forwards: ${stub.queries.join(' | ')}`);
+  assert.equal(stub.queries.length, 1);
+});
+
+test('a registry that rejects the limit is asked again without one', async (t) => {
+  const stub = await startPagingStub({ total: 6, rejectLimit: true });
+  t.after(() => stub.server.close());
+  const client = new QueryClient(stub.cfg);
+  const result = await client.getAll<{ id: string }>('senders');
+  assert.equal(result.items.length, 6);
+  // And it remembers: the next collection does not try the limit again.
+  stub.queries.length = 0;
+  await client.getAll('senders');
+  assert.ok(stub.queries.every((q) => !q.includes('paging.limit')));
 });
 
 test('a registry without a page limit still works in one request', async (t) => {

@@ -52,6 +52,14 @@ export interface QueryFlow {
 const TIMEOUT_MS = 5000;
 /** Hard stop for pagination, so a registry with an odd cursor cannot loop us forever. */
 const MAX_PAGES = 100;
+/**
+ * The page size we ask for. IS-04 lets a client request a limit; the registry caps it to
+ * its own maximum and reports what it applied in X-Paging-Limit. Asking high instead of
+ * walking the registry's default of 10 turns a few dozen round trips into a handful.
+ */
+export const REQUESTED_PAGE_LIMIT = 1000;
+/** The cursor a registry reports when there is nothing further in that direction. */
+const EMPTY_CURSOR = '0:0';
 
 export class QueryError extends Error {}
 
@@ -109,8 +117,8 @@ export interface PagedResult<T> {
 }
 
 export class QueryClient {
-  /** The registry's own page limit, learned once and reused for every collection. */
-  private pageLimit: number | null | undefined;
+  /** False once the registry refused a requested limit; then we go without one. */
+  private limitAccepted = true;
 
   /**
    * @param resolveRegistry resolves the registration API's base URL — the registry
@@ -182,37 +190,40 @@ export class QueryClient {
     let pages = 0;
     let truncated = false;
 
-    // The registry's page limit has to be learned from a parameterless request: one
-    // registry returns a self-contradictory `X-Paging-Since: 0:0` ("nothing older
-    // exists") for such a request while older pages do exist, and answers correctly as
-    // soon as paging.limit is stated at all. The limit is a property of the registry,
-    // not of the collection, so it is learned once and reused — browsing four
-    // collections used to pay for that probe four times over.
-    if (this.pageLimit === undefined) {
-      const probe = await getRaw(base);
-      if (!probe.ok) throw new QueryError(`HTTP ${probe.status}`);
-      const header = probe.headers.get('x-paging-limit');
-      this.pageLimit = header ? Number(header) : null;
-      pages++;
-    }
-    const limit = this.pageLimit;
-    const baseUrl = limit ? withParams(base, { 'paging.limit': limit }) : base;
-
+    // Always state a limit, and a large one. That does two things at once: the registry
+    // hands back as much per page as it allows — 100 instead of 10 on nmos-cpp — and no
+    // request ever goes out without a limit, which matters because one registry answers a
+    // parameterless request with a self-contradictory `X-Paging-Since: 0:0` while older
+    // pages exist. The probe that used to learn the registry's default is gone with it.
+    let baseUrl = this.limitAccepted ? withParams(base, { 'paging.limit': REQUESTED_PAGE_LIMIT }) : base;
+    let limit: number | null = null;
     // Fetch the first page once and walk outwards from it. Running each direction from
     // scratch fetched the base twice per collection, which on a registry that answers in
     // a few hundred milliseconds is time spent on a page already in hand.
-    const first = await getRaw(baseUrl);
+    let first = await getRaw(baseUrl);
+    // A registry should cap a limit it does not like, but one that rejects it outright
+    // still deserves an answer: retry once without a limit and remember it.
+    if (first.status === 400 && this.limitAccepted) {
+      this.limitAccepted = false;
+      baseUrl = base;
+      first = await getRaw(baseUrl);
+    }
     if (!first.ok) throw new QueryError(`HTTP ${first.status}`);
+    const applied = first.headers.get('x-paging-limit');
+    limit = applied ? Number(applied) : null;
     const firstItems = (await first.json()) as T[];
     pages++;
     for (const item of firstItems) byId.set(item.id, item);
     const firstRels = linkRels(first.headers.get('link'));
 
-    const walk = async (rel: 'next' | 'prev', cursorHeader: string, param: string, from: Response) => {
+    const walk = async (rel: 'prev', cursorHeader: string, param: string, from: Response) => {
       let cursor = from.headers.get(cursorHeader);
       let lastCursor: string | null = null;
       for (let i = 0; i < MAX_PAGES; i++) {
-        if (!cursor || cursor === lastCursor) return;
+        // "0:0" means nothing further that way. Safe to trust here: it is only bogus on a
+        // parameterless request, and every request states a limit (unless the registry
+        // refused one, in which case we keep walking to be safe).
+        if (!cursor || cursor === lastCursor || (cursor === EMPTY_CURSOR && this.limitAccepted)) return;
         lastCursor = cursor;
         const res = await getRaw(withParams(baseUrl, { [param]: cursor }));
         if (!res.ok) throw new QueryError(`HTTP ${res.status}`);
@@ -227,11 +238,12 @@ export class QueryClient {
       truncated = true;
     };
 
-    // Older first: that is the direction that actually yields anything from a base
-    // response defined as the most recent resources. Newer is only walked when the
-    // registry says there is something there.
+    // Only older. The base response is defined as the most recently updated resources,
+    // so nothing newer exists at that moment — yet nmos-cpp advertises rel="next" on that
+    // page anyway, and following it returned an empty page every time: one request per
+    // collection for nothing. A resource updated after the first page is a race no walk
+    // closes, so skipping it loses no guarantee.
     if (firstRels.has('prev')) await walk('prev', 'x-paging-since', 'paging.until', first);
-    if (firstRels.has('next')) await walk('next', 'x-paging-until', 'paging.since', first);
 
     return { items: [...byId.values()], pages, truncated, limit };
   }

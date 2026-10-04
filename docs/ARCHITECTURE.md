@@ -277,10 +277,11 @@ one silently truncates or corrupts the result if skipped — all five are implem
 
 1. **A registry may cap a page.** A default cap of 10 exists in the field. Trusting the
    first response loses everything past the boundary.
-2. **Both directions have to be walked.** The parameterless base response is defined as
-   the most recently updated resources in descending order, so `rel="next"` — toward
-   newer — is a dead end from there: nothing is newer than "most recent". A large,
-   mostly stable registry's older majority only appears walking `rel="prev"`.
+2. **Only `rel="prev"` is walked.** The base response is defined as the most recently
+   updated resources in descending order, so nothing newer exists from there. nmos-cpp
+   advertises `rel="next"` on that page anyway, and following it returns an empty page
+   every time — one wasted request per collection. A large, mostly stable registry's
+   older majority only appears walking `rel="prev"`.
 3. **The next URL is built from the `X-Paging-*` cursors, not taken from the `Link`
    header.** A real registry emits a malformed Link header, missing the `?` before its
    query string, which 404s if followed verbatim. The header's `rel` names are still
@@ -292,11 +293,16 @@ one silently truncates or corrupts the result if skipped — all five are implem
    reappear as the first item of the next page, for instance when two resources share a
    version timestamp, so results are collected into a map keyed by id.
 
-On top of that, the bare collection is probed once to read `X-Paging-Limit` and that
-limit is then restated on every request: one registry returns a self-contradictory
-`X-Paging-Since: 0:0` — "nothing older exists" — for a parameterless request while
-older pages do exist, and answers correctly as soon as `paging.limit` is stated at all.
-Two requests to the base is the price of a correct walk.
+On top of that, every request states `paging.limit=1000`. The spec lets a registry cap
+that, and it reports the limit it applied in `X-Paging-Limit`; nmos-cpp applies 100 where
+its unstated default is 10, so a typical registry answers each collection in a single
+request (measured live: 4 requests for senders, receivers, devices and flows, down from
+22). Stating a limit also matters for correctness: the same registry returns a
+self-contradictory `X-Paging-Since: 0:0` — "nothing older exists" — for a parameterless
+request while older pages do exist, and answers correctly as soon as `paging.limit` is
+stated at all. With a limit stated, `0:0` is therefore taken as the end. A registry that
+refuses the parameter with 400 is asked again without it, and that is remembered for the
+client's lifetime.
 
 The paging statistics reach the GUI, so a registry whose pagination outruns the page
 cap is visible rather than quietly returning a short list.
