@@ -105,6 +105,30 @@ target registries and the NAT setting.
 per domain (node href, manifest fetch, mDNS). Configuration and state live in
 `./config`.
 
+### Autostart
+
+The container already comes back after a reboot (`restart: unless-stopped`), as long as
+Docker itself starts at boot: `sudo systemctl enable docker`.
+
+To also **update** at boot — `git pull`, then rebuild and restart — install the systemd
+unit:
+
+```bash
+sudo deploy/install-autostart.sh            # update + start at every boot
+sudo deploy/install-autostart.sh --nightly  # additionally every night at 04:00
+sudo deploy/install-autostart.sh --remove   # uninstall
+```
+
+It runs as the user owning the checkout (who must be in the `docker` group), waits for
+the network and the Docker daemon, and treats a failed pull as non-fatal — with no network
+at boot the container still starts on the version already checked out. `--ff-only` means
+local changes on the host never turn into a merge commit. Log: `journalctl -u
+nmos-federation-update`.
+
+Be aware what this means: whatever is on `main` deploys itself on the next boot. For a
+gateway in a running facility, consider checking out a tag you have tested instead of
+`main`, so an update only happens when you move it.
+
 ## Starting over
 
 Configuration and state live in `./config`, mounted into the container at `/config`.

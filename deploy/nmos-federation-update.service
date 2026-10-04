@@ -1,0 +1,26 @@
+# Updates and starts NMOS Federation: git pull, then rebuild and (re)start the container.
+# Installed by deploy/install-autostart.sh, which fills in @REPO@, @USER@ and @DOCKER@.
+
+[Unit]
+Description=Update and start NMOS Federation
+# The pull needs the network, and compose needs the Docker daemon.
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+# The leading "-" makes a failed pull non-fatal: with no network at boot the container
+# still starts on the version already checked out, instead of not starting at all.
+# --ff-only refuses to merge, so local changes on the host never produce a merge commit.
+ExecStart=-/usr/bin/git pull --ff-only
+# Idempotent: without new commits the build is served from cache and takes seconds.
+ExecStart=@DOCKER@ compose up -d --build --remove-orphans
+RemainAfterExit=yes
+# A rebuild after a pull runs npm install for server and UI; give it room.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
