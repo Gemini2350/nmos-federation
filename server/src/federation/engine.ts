@@ -688,12 +688,49 @@ export class Engine {
     const query = this.queries.get(mirror.registryId);
     if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
 
-    const sender = await query.sender(mirror.originId);
-    const sdp = await query.transportFile(sender);
+    const key = Engine.mirrorKey(mirrorId);
+    let sender: Awaited<ReturnType<typeof query.sender>>;
+    let sdp: string;
+    try {
+      sender = await query.sender(mirror.originId);
+      sdp = await query.transportFile(sender);
+    } catch (e) {
+      // Reading the origin is the one step that talks to an end device. If it fails
+      // before a channel exists, nothing records the failure — and the reconciler, which
+      // only skips copies that *have* a channel, would fetch that device's manifest again
+      // every 30 seconds for as long as it stays unreachable. Record it as failed so it is
+      // left alone until someone presses Retry or Refresh.
+      //
+      // Only when there is no channel yet: if a working copy exists and a refresh fails,
+      // the stream keeps running untouched.
+      if (!this.deps.state.channelFor(key)) {
+        const failed: Channel = {
+          id: `ch-${key}`,
+          receiverId: key,
+          deviceId: device.id,
+          mirrorId,
+          sourceDomain: bridge.sourceDomain,
+          targetDomain: bridge.targetDomain,
+          state: 'failed',
+          originSdp: null,
+          originSenderId: mirror.originId,
+          legs: [],
+          allocation: null,
+          senderSdp: null,
+          publishedIn: [],
+          error: `cannot read the original sender: ${(e as Error).message}`,
+          updatedAt: new Date().toISOString(),
+        };
+        this.deps.state.upsertChannel(failed);
+        await this.deps.state.save();
+        this.emit({ type: 'channel', channel: failed });
+      }
+      throw e;
+    }
     log.info({ mirrorId, origin: sender.label, registry: mirror.registryId }, 'copying sender');
 
     return this.runChannel({
-      key: Engine.mirrorKey(mirrorId),
+      key,
       device,
       bridge,
       sdp,

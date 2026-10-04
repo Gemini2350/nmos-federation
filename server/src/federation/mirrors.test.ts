@@ -50,10 +50,12 @@ interface Stub {
   posts: { type: string; id: string; data: Record<string, unknown> }[];
   deletes: string[];
   patches: { receiverId: string; body: Record<string, unknown> }[];
+  manifestHits: number;
+  manifestDown?: boolean;
 }
 
 async function startStub(): Promise<Stub> {
-  const stub: Partial<Stub> = { posts: [], deletes: [], patches: [] };
+  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false } as unknown as Stub;
   const server = createServer((req, res) => {
     const url = req.url ?? '';
     const json = (code: number, body: unknown) => {
@@ -63,6 +65,11 @@ async function startStub(): Promise<Stub> {
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
     if (req.method === 'GET' && url === '/manifest.sdp') {
+      stub.manifestHits++;
+      if (stub.manifestDown) {
+        res.writeHead(503);
+        return res.end();
+      }
       res.writeHead(200, { 'content-type': 'application/sdp' });
       return res.end(SDP);
     }
@@ -104,7 +111,7 @@ async function startStub(): Promise<Stub> {
       req.on('data', (c) => (body += c));
       return req.on('end', () => {
         const receiverId = url.split('/single/receivers/')[1]!.split('/')[0]!;
-        stub.patches!.push({ receiverId, body: JSON.parse(body) });
+        stub.patches.push({ receiverId, body: JSON.parse(body) });
         json(200, JSON.parse(body));
       });
     }
@@ -114,19 +121,22 @@ async function startStub(): Promise<Stub> {
       req.on('data', (c) => (body += c));
       return req.on('end', () => {
         const parsed = JSON.parse(body) as { type: string; data: Record<string, unknown> };
-        stub.posts!.push({ type: parsed.type, id: String(parsed.data.id), data: parsed.data });
+        stub.posts.push({ type: parsed.type, id: String(parsed.data.id), data: parsed.data });
         json(201, parsed.data);
       });
     }
     if (req.method === 'DELETE') {
-      stub.deletes!.push(url);
+      stub.deletes.push(url);
       res.writeHead(204);
       return res.end();
     }
     json(404, {});
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { ...(stub as Stub), server, ip: '127.0.0.1', port: (server.address() as { port: number }).port };
+  stub.server = server;
+  stub.ip = '127.0.0.1';
+  stub.port = (server.address() as { port: number }).port;
+  return stub;
 }
 
 const domain = (id: string, kind: 'internal' | 'external', red: string, blue: string, base: string): DomainConfig => ({
@@ -353,4 +363,53 @@ test('a proxy stays usable when the original receiver refuses the patch', async 
   assert.equal(channel.remoteReceiver?.connected, false);
   assert.match(channel.remoteReceiver!.error!, /not enabled/);
   assert.ok(partner.posts.some((p) => p.type === 'sender'));
+});
+
+test('an unreachable origin is fetched once, not every reconcile', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, state } = await build(internal, partner, dir, {
+    mirrors: [
+      {
+        id: mirrorId,
+        kind: 'sender',
+        deviceId: 'dev1',
+        registryId: 'int',
+        originId: ORIGIN_SENDER,
+        originDeviceId: ORIGIN_DEVICE,
+        originLabel: 'CAM07 Video',
+        enabled: true,
+      },
+    ],
+  });
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // The end device's connection API is down.
+  internal.manifestDown = true;
+  await engine.start();
+  await engine.reconcile();
+  const afterFirst = internal.manifestHits;
+  assert.ok(afterFirst >= 1, 'the origin must have been tried');
+
+  // The reconciler runs every 30 s. It used to fetch the manifest again each time, because
+  // a failure before the channel existed left nothing behind to say "leave this alone".
+  await engine.reconcile();
+  await engine.reconcile();
+  assert.equal(internal.manifestHits, afterFirst, 'an end device must not be polled');
+
+  const channel = state.current.channels.find((c) => c.mirrorId === mirrorId)!;
+  assert.equal(channel.state, 'failed');
+  assert.match(channel.error!, /cannot read the original sender/);
+
+  // Retry once it is back.
+  internal.manifestDown = false;
+  const rebuilt = await engine.copySender(mirrorId);
+  assert.equal(rebuilt.state, 'active');
 });

@@ -293,6 +293,28 @@ cap is visible rather than quietly returning a short list.
 > Worth reading — it solves the half of this problem we do not (metadata consistency
 > without touching the fabric), and declares multicast NAT an explicit non-goal.
 
+### End devices are never polled
+
+The periodic work talks to registries (heartbeat every 5 s, a sync that only sends what
+changed, a probe of registries no bridge uses) and to the two switches (`show
+running-config section ip nat` every 30 s). It never talks to an end device.
+
+End devices are contacted only on an event: a sender copy reads the origin's
+`manifest_href` when it is created and when *Refresh* is pressed, and a receiver proxy
+patches the original receiver's `/staged` when a stream is connected to it or removed.
+
+One path used to break that rule. If the origin could not be read when a copy was
+created, the failure happened before any channel existed, so nothing recorded it — and
+the reconciler, which only skips copies that have a channel, fetched that device's
+manifest again every 30 seconds for as long as it stayed unreachable. A failed read now
+records a failed channel, which the reconciler leaves alone until Retry or Refresh. If a
+working copy already exists and a refresh fails, the running stream is left untouched.
+
+The flip side: a changed SDP on the origin is not noticed by itself. That is what Refresh
+is for. The event-driven alternative would be to subscribe to the registry's query API
+WebSocket and re-read a manifest only when that sender's resource changes — still without
+polling the device.
+
 ### What is deliberately not done
 
 - Copies are re-homed under **our** node in the target domain, with our own IDs. The
