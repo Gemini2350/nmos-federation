@@ -193,6 +193,9 @@ moment they are built, and nothing re-registers an altered body under an old sta
   last restart — is reported as such rather than omitted, so the GUI never silently
   hides one.
 - Heartbeat 404 → that registry restarted → re-register everything there only.
+- A fresh or just-reset configuration has its registry **disabled**. A container that
+  has only just started must not announce itself into whatever registry it happens to
+  discover; the operator enables it once the domain's address is right.
 - At startup and after every settings change: **orphan cleanup** per registry. The
   record of what was registered lives only in memory, so after a restart the software
   cannot unregister what an earlier run left behind — it has to ask the query API for
@@ -566,8 +569,16 @@ shape NMOS Crosspoint uses for its static registries. The base URL is assembled 
 | `ip` | IP or hostname; an IPv6 literal is bracketed automatically |
 | `port` | registration API port; defaults to **8010** (nmos-cpp with one `http_port`) |
 | `tls` | `https` instead of `http`; the scheme's default port is then left out of the URL |
-| `domain` | DNS-SD search domain, only for `mode: "dnssd"` |
 | `queryPort` | port of the query API, if it differs from the registration port — nmos-cpp only shares one when configured with a single `http_port` |
+
+A DNS-SD registry carries no address at all: it is resolved through discovery, and the
+query API used for browsing resolves through the **same** resolver. Looking only at
+`ip`/`port` there is what made browsing a discovered registry fail with "no IP
+configured" — true, and useless.
+
+There is no search-domain setting. The host's own search domains are used, which under
+`network_mode: host` are the ones DHCP handed out, and that is the answer in every real
+deployment.
 
 Deriving the URL rather than storing it means there is one place that decides how an
 address is formed, and the GUI can show the result while it is being typed. A
@@ -591,9 +602,9 @@ DNS-SD is harder than it looks, and three separate things have to be right:
 Both service names are queried: `_nmos-register._tcp` and the pre-v1.3
 `_nmos-registration._tcp`, which is what nmos-cpp still advertises.
 
-**The search domain comes from the host.** With no domain configured, the `search` and
-`domain` lines of `/etc/resolv.conf` are used — under `network_mode: host` those are
-the ones DHCP handed out. A domain set in the configuration overrides them.
+**The search domains come from the host**: the `search` and `domain` lines of
+`/etc/resolv.conf`, which under `network_mode: host` are the ones DHCP handed out. There
+is nothing to configure.
 
 #### Two things that bite in practice
 

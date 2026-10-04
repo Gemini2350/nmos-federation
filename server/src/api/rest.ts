@@ -464,11 +464,16 @@ export function registerRestApi(
     await onConfigChange();
     const removed = await engine.cleanupOrphans().catch(() => []);
 
+    // The nodes go last but still before the state is wiped: their ids derive from the
+    // seed, and a new seed would leave them in the registries as resources nobody can
+    // identify any more.
+    const unregistered = await engine.unregisterEverything().catch(() => 0);
+
     await state.reset();
     await store.reset();
     await onConfigChange();
-    log.warn({ ...plan }, 'factory reset completed');
-    return { confirmed: true, removed, wasRemoved: plan };
+    log.warn({ ...plan, unregistered }, 'factory reset completed');
+    return { confirmed: true, removed, unregistered, wasRemoved: plan };
   });
 
   app.post('/api/reconcile', async () => {

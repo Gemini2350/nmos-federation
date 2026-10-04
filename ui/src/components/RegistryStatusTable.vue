@@ -54,6 +54,10 @@ async function test(r: RegistryStatus) {
 
 <template>
   <table class="registries">
+    <colgroup>
+      <col style="width: 18%" /><col style="width: 8%" /><col style="width: 22%" /><col style="width: 11%" />
+      <col style="width: 11%" /><col style="width: 13%" /><col /><col v-if="props.showTest" style="width: 8%" />
+    </colgroup>
     <thead>
       <tr>
         <th>Registry</th><th>Domain</th><th>Address</th><th>Status</th>
@@ -85,7 +89,12 @@ async function test(r: RegistryStatus) {
 </template>
 
 <style scoped>
+/* Fixed, so a status flipping between "never" and "12 s ago · 3 failed since" does not
+   resize the columns under the operator's eyes. */
+.registries { table-layout: fixed; }
 .registries td small { display: block; opacity: 0.6; }
+.registries td { overflow-wrap: anywhere; }
+.registries th { white-space: nowrap; }
 .registries code { font-size: 0.8rem; }
 .dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; margin-right: 0.45rem; vertical-align: middle; }
 .dot.ok { background: #2e9e4f; }

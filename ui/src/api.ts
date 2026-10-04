@@ -43,8 +43,6 @@ export interface Registry {
    *  http_port typically listens on 8010. */
   port?: number;
   tls?: boolean;
-  /** DNS-SD search domain, for mode=dnssd. */
-  domain?: string;
   version: 'v1.3' | 'v1.2';
   enabled: boolean;
 }
@@ -266,12 +264,7 @@ export const api = {
       wasRemoved?: Record<string, number>;
       removed?: { registry: string; removed: string[] }[];
     }>('/reset', { method: 'POST', body: JSON.stringify({ confirm }) }),
-  discover: (opts: { domain?: string; version?: string } = {}) => {
-    const q = new URLSearchParams();
-    if (opts.domain) q.set('domain', opts.domain);
-    if (opts.version) q.set('version', opts.version);
-    return req<DiscoveryResult>(`/discovery${q.size ? `?${q}` : ''}`);
-  },
+  discover: () => req<DiscoveryResult>('/discovery'),
   refreshDiscovery: () => req<{ ok: boolean }>('/discovery/refresh', { method: 'POST' }),
   browse: (registryId: string) =>
     req<{ paging: { limit: number | null; pages: number; truncated: boolean }; senders: BrowseSender[]; receivers: BrowseReceiver[] }>(

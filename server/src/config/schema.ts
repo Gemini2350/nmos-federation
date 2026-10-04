@@ -55,8 +55,6 @@ export interface RegistryConfig {
   queryPort?: number;
   /** https instead of http. */
   tls?: boolean;
-  /** DNS-SD search domain, for mode=dnssd. Empty = the host's own search domain. */
-  domain?: string;
   /** Legacy: a full base URL. Migrated to ip/port/tls on load. */
   url?: string;
   version: 'v1.3' | 'v1.2';
@@ -204,7 +202,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
   ],
   registries: [
-    { id: '1', label: 'Internal registry', domainId: '1', mode: 'dnssd', version: 'v1.3', enabled: true },
+    // Disabled on purpose. A freshly started or just-reset container must not announce
+    // itself into whatever registry it happens to discover — the operator enables it
+    // once the domain's address is right.
+    { id: '1', label: 'Internal registry', domainId: '1', mode: 'dnssd', version: 'v1.3', enabled: false },
   ],
   nat: {
     enabled: false,

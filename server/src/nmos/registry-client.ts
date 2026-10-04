@@ -108,16 +108,13 @@ export class RegistryClient {
   }
 
   /**
-   * DNS-SD. The search domain comes from the configuration, or — when none is set —
-   * from the host's resolv.conf, which under `network_mode: host` is what DHCP handed
-   * out. Both unicast and mDNS are tried; see nmos/discovery.ts for why that needs two
-   * different mechanisms.
+   * DNS-SD. The search domains come from the host's resolv.conf — under
+   * `network_mode: host` those are the ones DHCP handed out, which is the answer in
+   * every real deployment, so there is nothing to configure. Both unicast and mDNS are
+   * tried; see nmos/discovery.ts for why that needs two different mechanisms.
    */
   private async discover(): Promise<string> {
-    const result = await discoverRegistries({
-      ...(this.cfg.domain ? { domain: this.cfg.domain } : {}),
-      version: this.cfg.version,
-    });
+    const result = await discoverRegistries({ version: this.cfg.version });
     this.lastDiscovery = result.found;
     const best = result.found[0];
     if (best) {

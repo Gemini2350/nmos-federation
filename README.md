@@ -55,11 +55,14 @@ Then open `http://<host>:8080` and configure it under **Settings**:
    **DNS-SD**. The URL is assembled for you and shown next to the fields; the port
    defaults to 80. Several registries per domain are fine.
 
-   For DNS-SD, leave the search domain empty to use the host's — under
-   `network_mode: host` those are the ones DHCP handed out. *Discover now* shows what
-   was found, which search domains the host has and every name that was queried, so a
-   miss is diagnosable. Both unicast DNS-SD and mDNS (`.local`) are tried, and both the
-   current `_nmos-register._tcp` and the older `_nmos-registration._tcp` service name.
+   DNS-SD needs no address and no search domain: the host's own search domains are used,
+   which under `network_mode: host` are the ones DHCP handed out. *Discover now* shows
+   what was found and every name that was queried, so a miss is diagnosable. Both unicast
+   DNS-SD and mDNS (`.local`) are tried, and both the current `_nmos-register._tcp` and
+   the older `_nmos-registration._tcp` service name.
+
+   A fresh install starts with its registry **disabled**, so nothing is announced until
+   you have checked the domain's address and switched it on.
 3. **NAT**, at the bottom of the page — this is where the plant is described: host and
    credentials per switch, and per domain its **L3 interface on each switch**, which
    fabric the **first `m=` line** of an incoming SDP belongs to, and the multicast

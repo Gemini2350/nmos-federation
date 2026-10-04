@@ -162,6 +162,37 @@ test('an empty collection is not an error', async (t) => {
   assert.deepEqual(result.items, []);
 });
 
+test('a DNS-SD registry is browsed at the address discovery found for it', async (t) => {
+  const stub = await startPagingStub({ total: 3 });
+  t.after(() => stub.server.close());
+  // No ip/port at all — exactly the shape of a discovered registry, which used to fail
+  // with "no IP configured" because the query client only ever looked at ip/port.
+  const cfg: RegistryConfig = { ...stub.cfg, mode: 'dnssd', ip: undefined, port: undefined };
+  const resolved = `http://${stub.cfg.ip}:${stub.cfg.port}`;
+  const client = new QueryClient(cfg, async () => resolved);
+  assert.equal(await client.base(), `${resolved}/x-nmos/query/v1.3`);
+  assert.equal((await client.getAll('senders')).items.length, 3);
+});
+
+test('a DNS-SD registry without a resolver says so instead of blaming a missing IP', async (t) => {
+  const stub = await startPagingStub({ total: 1 });
+  t.after(() => stub.server.close());
+  const client = new QueryClient({ ...stub.cfg, mode: 'dnssd', ip: undefined, port: undefined });
+  await assert.rejects(() => client.base(), /no resolver available/);
+});
+
+test('queryPort overrides the port, for a registry that does not share one', async (t) => {
+  const stub = await startPagingStub({ total: 1 });
+  t.after(() => stub.server.close());
+  const manual = new QueryClient({ ...stub.cfg, queryPort: 4242 });
+  assert.equal(await manual.base(), 'http://127.0.0.1:4242/x-nmos/query/v1.3');
+  const discovered = new QueryClient(
+    { ...stub.cfg, mode: 'dnssd', ip: undefined, port: undefined, queryPort: 4242 },
+    async () => 'http://registry.example:8010',
+  );
+  assert.equal(await discovered.base(), 'http://registry.example:4242/x-nmos/query/v1.3');
+});
+
 test('a failing collection surfaces the status instead of an empty list', async (t) => {
   const stub = await startPagingStub();
   t.after(() => stub.server.close());

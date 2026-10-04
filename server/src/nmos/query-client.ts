@@ -109,20 +109,46 @@ export interface PagedResult<T> {
 }
 
 export class QueryClient {
-  constructor(private readonly cfg: RegistryConfig) {}
+  /**
+   * @param resolveRegistry resolves the registration API's base URL — the registry
+   *   client's own resolver, which is the only thing that knows where a DNS-SD registry
+   *   actually lives. Without it a discovered registry has no `ip` to build on and
+   *   browsing it fails with "no IP configured", which is true and useless.
+   */
+  constructor(
+    private readonly cfg: RegistryConfig,
+    private readonly resolveRegistry?: () => Promise<string>,
+  ) {}
 
-  /** Base of the query API. Falls back to the registration address. */
-  base(): string {
-    const port = this.cfg.queryPort ?? this.cfg.port;
-    const url = registryUrl({ ...this.cfg, port });
-    if (!url) throw new QueryError(`registry ${this.cfg.id}: no IP configured`);
-    return `${url}/x-nmos/query/${this.cfg.version}`;
+  /** Base of the query API. */
+  async base(): Promise<string> {
+    let root: string | null;
+    if (this.cfg.mode === 'dnssd') {
+      if (!this.resolveRegistry) {
+        throw new QueryError(`registry ${this.cfg.id}: set to DNS-SD but no resolver available`);
+      }
+      root = await this.resolveRegistry();
+    } else {
+      root = registryUrl(this.cfg);
+      if (!root) throw new QueryError(`registry ${this.cfg.id}: no IP configured`);
+    }
+
+    // The query API may sit on a different port than registration — nmos-cpp only
+    // shares one when it is configured with a single http_port.
+    if (this.cfg.queryPort) {
+      root = root.replace(/^(https?:\/\/(?:\[[^\]]+\]|[^/:]+))(?::\d+)?$/, `$1:${this.cfg.queryPort}`);
+    }
+    return `${root}/x-nmos/query/${this.cfg.version}`;
   }
 
   senders = async () => (await this.getAll<QuerySender>('senders')).items;
   receivers = async () => (await this.getAll<QueryReceiver>('receivers')).items;
   devices = async () => (await this.getAll<QueryDevice>('devices')).items;
   flows = async () => (await this.getAll<QueryFlow>('flows')).items;
+
+  sender = async (id: string) => getJson<QuerySender>(`${await this.base()}/senders/${id}`);
+  receiver = async (id: string) => getJson<QueryReceiver>(`${await this.base()}/receivers/${id}`);
+  device = async (id: string) => getJson<QueryDevice>(`${await this.base()}/devices/${id}`);
 
   /**
    * Fetches a complete resource collection, following IS-04 query API pagination.
@@ -148,7 +174,7 @@ export class QueryClient {
    *     one flaky boundary cannot duplicate a resource everywhere downstream.
    */
   async getAll<T extends { id: string }>(resourcePath: string): Promise<PagedResult<T>> {
-    const base = `${this.base()}/${resourcePath}`;
+    const base = `${await this.base()}/${resourcePath}`;
     const byId = new Map<string, T>();
     let pages = 0;
     let truncated = false;
@@ -193,10 +219,6 @@ export class QueryClient {
     return { items: [...byId.values()], pages, truncated, limit };
   }
 
-  sender = (id: string) => getJson<QuerySender>(`${this.base()}/senders/${id}`);
-  receiver = (id: string) => getJson<QueryReceiver>(`${this.base()}/receivers/${id}`);
-  device = (id: string) => getJson<QueryDevice>(`${this.base()}/devices/${id}`);
-
   /**
    * Fetches a sender's SDP from its manifest. This is the origin SDP for a sender
    * copy — the same input an IS-05 activation would hand us.
@@ -217,7 +239,7 @@ export class QueryClient {
 
   async probe(): Promise<{ reachable: boolean; base: string | null; error?: string }> {
     try {
-      const base = this.base();
+      const base = await this.base();
       await getJson<unknown>(`${base}/`);
       return { reachable: true, base };
     } catch (e) {

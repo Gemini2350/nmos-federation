@@ -22,7 +22,6 @@ const registryStatus = ref<RegistryStatus[]>([]);
 const hostInterfaces = ref<HostInterface[]>([]);
 const discovery = ref<DiscoveryResult | null>(null);
 const discovering = ref(false);
-const discoveryDomain = ref('');
 
 /** Addresses this host actually holds — with network_mode: host, the real ones. */
 const usable = () => hostInterfaces.value.filter((i) => !i.internal);
@@ -199,7 +198,7 @@ async function doReset() {
 async function runDiscovery() {
   discovering.value = true;
   try {
-    discovery.value = await api.discover(discoveryDomain.value ? { domain: discoveryDomain.value } : {});
+    discovery.value = await api.discover();
     error.value = null;
   } catch (e) {
     error.value = (e as Error).message;
@@ -263,7 +262,11 @@ onMounted(refresh);
         </h3>
         <button @click="addDomain">Add domain</button>
       </div>
-      <table>
+      <table class="grid">
+        <colgroup>
+          <col style="width: 22%" /><col style="width: 15%" /><col style="width: 31%" />
+          <col style="width: 16%" /><col style="width: 9%" /><col style="width: 7%" />
+        </colgroup>
         <thead>
           <tr>
             <th>Name<InfoHint text="Free to change at any time. What a device refers to is a number assigned behind the scenes, so renaming never detaches anything." /></th>
@@ -302,7 +305,7 @@ onMounted(refresh);
             <td>
               <select :value="d.iface.address" @change="pickInterface(i, ($event.target as HTMLSelectElement).value)">
                 <option v-for="h in usable()" :key="h.address" :value="h.address">
-                  {{ h.address }}{{ h.cidr ? ` (${h.cidr})` : '' }} — {{ h.name }}
+                  {{ h.address }} — {{ h.name }}
                 </option>
                 <option v-if="d.iface.address && !usable().some((h) => h.address === d.iface.address)" :value="d.iface.address">
                   {{ d.iface.address }} (not on this host)
@@ -330,7 +333,12 @@ onMounted(refresh);
         </h3>
         <button @click="addRegistry">Add registry</button>
       </div>
-      <table>
+      <table class="grid">
+        <colgroup>
+          <col style="width: 14%" /><col style="width: 11%" /><col style="width: 11%" /><col style="width: 15%" />
+          <col style="width: 7%" /><col style="width: 5%" /><col style="width: 10%" /><col style="width: 9%" />
+          <col style="width: 14%" /><col style="width: 4%" />
+        </colgroup>
         <thead>
           <tr>
             <th>Name</th>
@@ -352,7 +360,7 @@ onMounted(refresh);
             <td><select v-model="r.mode"><option value="manual">manual</option><option value="dnssd">dnssd</option></select></td>
             <td>
               <input v-if="r.mode === 'manual'" v-model="r.ip" placeholder="192.168.11.100" />
-              <input v-else v-model="r.domain" placeholder="search domain, empty = from the host" />
+              <span v-else class="muted">found by DNS-SD</span>
             </td>
             <td><input type="number" min="1" max="65535" v-model.number="r.port" :disabled="r.mode === 'dnssd'" :placeholder="String(DEFAULT_REGISTRY_PORT)" /></td>
             <td><input type="checkbox" v-model="r.tls" :disabled="r.mode === 'dnssd'" /></td>
@@ -375,15 +383,12 @@ onMounted(refresh);
         <InfoHint wide>
           Both unicast DNS-SD and mDNS (<code>.local</code>) are queried, and both the current
           <code>_nmos-register._tcp</code> and the older <code>_nmos-registration._tcp</code> service name.
-          Leave the search domain empty to use the host's — under <code>network_mode: host</code> those are
-          the ones DHCP handed out. The result lists every name that was queried, so a miss is diagnosable.
+          The search domains come from the host — under <code>network_mode: host</code> those are the ones
+          DHCP handed out, so there is nothing to configure. The result lists every name that was queried,
+          so a miss is diagnosable.
         </InfoHint>
       </h4>
       <div class="row">
-        <label>
-          <span>Search domain</span>
-          <input v-model="discoveryDomain" :placeholder="discovery?.searchDomains.join(', ') || 'from the host (DHCP)'" />
-        </label>
         <button :disabled="discovering" @click="runDiscovery">{{ discovering ? 'searching…' : 'Discover now' }}</button>
         <button :disabled="discovering" @click="api.refreshDiscovery().then(loadRegistryStatus)" title="drop cached addresses so the next contact resolves again">
           Re-resolve
@@ -392,7 +397,6 @@ onMounted(refresh);
       <template v-if="discovery">
         <p class="hint">
           Host search domains: <code>{{ discovery.searchDomains.join(', ') || 'none in resolv.conf' }}</code>
-          <template v-if="discovery.usedDomain"> · used: <code>{{ discovery.usedDomain }}</code></template>
         </p>
         <table v-if="discovery.found.length">
           <thead><tr><th>Instance</th><th>Address</th><th>Versions</th><th>pri</th><th>Via</th><th></th></tr></thead>
@@ -479,7 +483,11 @@ onMounted(refresh);
           the switch, and why direction needs no special case.
         </InfoHint>
       </h4>
-      <table>
+      <table class="grid">
+        <colgroup>
+          <col style="width: 18%" /><col style="width: 14%" /><col style="width: 14%" />
+          <col style="width: 16%" /><col style="width: 14%" /><col style="width: 9%" /><col style="width: 15%" />
+        </colgroup>
         <thead>
           <tr>
             <th>Domain</th>
@@ -586,11 +594,17 @@ label.check { flex-direction: row; align-items: center; gap: 0.35rem; }
 label > span { display: inline-flex; align-items: center; white-space: nowrap; }
 input, select { padding: 0.3rem 0.4rem; }
 input[type='number'] { width: 6rem; }
-td input, td select { width: 100%; box-sizing: border-box; }
-td input[type='number'] { width: 5rem; }
+/* Fixed layout, or every keystroke reflows the table: with the default auto layout a
+   column is sized from its content, so typing a longer name silently moves every field
+   in the row — and the name column of the NAT table below with it. */
+table.grid { table-layout: fixed; }
+table.grid th { white-space: nowrap; }
+td input, td select { width: 100%; box-sizing: border-box; min-width: 0; }
 td input[type='checkbox'] { width: auto; }
+td { overflow-wrap: anywhere; }
 td small { display: block; opacity: 0.55; }
 .ro { opacity: 0.6; background: #8881; cursor: not-allowed; }
+.muted { opacity: 0.55; font-size: 0.8rem; }
 .snat { display: flex; gap: 0.3rem; align-items: center; }
 .snat input { width: 7rem; }
 .derived code { font-size: 0.8rem; opacity: 0.8; white-space: nowrap; }

@@ -430,6 +430,30 @@ export class Engine {
     return results;
   }
 
+  /**
+   * Removes everything we have in every registry, node included.
+   *
+   * Needed before the state is wiped: the node ids derive from the persisted seed, so a
+   * new seed makes the old node unrecognisable — not ours any more, not cleanable, and
+   * left in the registry until its heartbeat lapses. Unregistering has to happen while
+   * the ids are still known.
+   */
+  async unregisterEverything(): Promise<number> {
+    let removed = 0;
+    for (const client of this.registries.values()) {
+      for (const type of [...REGISTER_ORDER].reverse()) {
+        for (const key of [...client.registered]) {
+          const [t, id] = key.split(':') as [ResourceType, string];
+          if (t !== type) continue;
+          await client.unregister(t, id).catch((e) => log.warn({ key, err: String(e) }, 'unregister failed'));
+          removed++;
+        }
+      }
+    }
+    if (removed) log.info({ removed }, 'unregistered everything');
+    return removed;
+  }
+
   async syncRegistries(registryIds?: string[]): Promise<void> {
     const ids = registryIds ?? [...this.registries.keys()];
     for (const id of ids) {
@@ -449,7 +473,9 @@ export class Engine {
         this.syncRegistry(c).catch(() => {});
       });
       this.registries.set(reg.id, client);
-      const query = new QueryClient(reg);
+      // The query client borrows the registry client's resolver, so a DNS-SD registry
+      // can be browsed at the address discovery found for it.
+      const query = new QueryClient(reg, () => client.resolve());
       this.queries.set(reg.id, query);
       this.is05.set(reg.id, new Is05Client(query));
     }
