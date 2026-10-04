@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { api, registryUrl, DEFAULT_REGISTRY_PORT, type Config, type Issue, type RegistryStatus } from '../api';
+import { api, registryUrl, DEFAULT_REGISTRY_PORT, type Config, type DiscoveryResult, type Issue, type RegistryStatus } from '../api';
 import RegistryStatusTable from '../components/RegistryStatusTable.vue';
 
 const cfg = ref<Config | null>(null);
@@ -9,6 +9,47 @@ const error = ref<string | null>(null);
 const saved = ref(false);
 const probe = ref<Record<string, string>>({});
 const registryStatus = ref<RegistryStatus[]>([]);
+const discovery = ref<DiscoveryResult | null>(null);
+const discovering = ref(false);
+const discoveryDomain = ref('');
+
+/**
+ * Discovery is worth showing in full: which search domain was used, which names were
+ * queried and what came back. "DNS-SD found nothing" on its own is not actionable.
+ */
+async function runDiscovery() {
+  discovering.value = true;
+  try {
+    discovery.value = await api.discover(discoveryDomain.value ? { domain: discoveryDomain.value } : {});
+    error.value = null;
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    discovering.value = false;
+  }
+}
+
+function useDiscovered(url: string) {
+  if (!cfg.value) return;
+  try {
+    const parsed = new URL(url);
+    const tls = parsed.protocol === 'https:';
+    cfg.value.registries.push({
+      id: `reg${cfg.value.registries.length}`,
+      label: parsed.hostname,
+      domainId: cfg.value.domains[0]?.id ?? '',
+      mode: 'manual',
+      ip: parsed.hostname,
+      port: parsed.port ? Number(parsed.port) : tls ? 443 : 80,
+      tls,
+      version: 'v1.3',
+      enabled: true,
+    });
+    saved.value = false;
+  } catch {
+    error.value = `cannot parse ${url}`;
+  }
+}
 
 async function loadRegistryStatus() {
   registryStatus.value = await api.registries().catch(() => []);
@@ -171,6 +212,56 @@ onMounted(refresh);
       <h4>Current status</h4>
       <p class="hint">Reflects what is running — save first for a changed address to show up here.</p>
       <RegistryStatusTable :registries="registryStatus" show-test @probed="loadRegistryStatus" />
+
+      <h4>DNS-SD</h4>
+      <div class="row">
+        <label>Search domain
+          <input v-model="discoveryDomain" :placeholder="discovery?.searchDomains.join(', ') || 'from the host (DHCP)'" />
+        </label>
+        <button :disabled="discovering" @click="runDiscovery">{{ discovering ? 'searching…' : 'Discover now' }}</button>
+        <button :disabled="discovering" @click="api.refreshDiscovery().then(loadRegistryStatus)" title="drop cached addresses so the next contact resolves again">
+          Re-resolve
+        </button>
+      </div>
+      <p class="hint">
+        Leave the domain empty to use the host's search domains — under
+        <code>network_mode: host</code> those are the ones DHCP handed out. Both unicast
+        DNS-SD and mDNS (<code>.local</code>) are queried.
+      </p>
+
+      <template v-if="discovery">
+        <p class="hint">
+          Host search domains: <code>{{ discovery.searchDomains.join(', ') || 'none in resolv.conf' }}</code>
+          <template v-if="discovery.usedDomain"> · used: <code>{{ discovery.usedDomain }}</code></template>
+        </p>
+        <table v-if="discovery.found.length">
+          <thead><tr><th>Instance</th><th>Address</th><th>Versions</th><th>pri</th><th>Via</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="d in discovery.found" :key="d.instance + d.url">
+              <td>{{ d.instance }}<small>{{ d.serviceType }} in {{ d.domain }}</small></td>
+              <td>
+                <code>{{ d.url }}</code>
+                <small v-if="d.addressSource === 'instance-name'" class="warn">
+                  announced {{ d.host }}, which does not resolve — address taken from the instance name
+                </small>
+                <small v-else-if="d.host !== d.address && d.address">announced {{ d.host }}</small>
+              </td>
+              <td>{{ d.versions.join(', ') || '—' }}</td>
+              <td>{{ d.priority }}</td>
+              <td>{{ d.via }}</td>
+              <td><button @click="useDiscovered(d.url)">Add as registry</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="warn">Nothing found.</p>
+        <details v-if="discovery.tried.length || discovery.notes.length">
+          <summary>What was queried</summary>
+          <ul class="queried">
+            <li v-for="(t, n) in discovery.tried" :key="'t' + n"><code>{{ t }}</code></li>
+            <li v-for="(n2, n) in discovery.notes" :key="'n' + n" class="warn">{{ n2 }}</li>
+          </ul>
+        </details>
+      </template>
     </section>
 
     <section>
@@ -222,6 +313,10 @@ td input[type='checkbox'] { width: auto; }
 .del { margin-top: 0.5rem; }
 .issues { padding-left: 1.2rem; }
 .hint { font-size: 0.8rem; opacity: 0.7; }
+details { font-size: 0.85rem; margin-top: 0.5rem; }
+summary { cursor: pointer; opacity: 0.75; }
+.queried { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+.queried li { opacity: 0.8; }
 h4 { margin: 1.25rem 0 0.25rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
 .ok { color: #2e9e4f; }
 .bad { color: #d24b3e; }

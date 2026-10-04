@@ -1,5 +1,5 @@
-import { promises as dns } from 'node:dns';
 import { registryUrl, type RegistryConfig } from '../config/schema.js';
+import { discoverRegistries, type DiscoveredRegistry } from './discovery.js';
 import { log } from '../util/log.js';
 
 export type ResourceType = 'node' | 'device' | 'source' | 'flow' | 'sender' | 'receiver';
@@ -27,6 +27,8 @@ export interface RegistryStatus {
   error: string | null;
   resources: { total: number } & Record<ResourceType, number>;
   heartbeat: { lastOkAt: string | null; ageSeconds: number | null; failures: number };
+  /** How many candidates the last DNS-SD run returned; null for a manual registry. */
+  discovered?: number | null;
 }
 
 export class RegistryError extends Error {
@@ -70,6 +72,8 @@ export class RegistryClient {
   reachable = false;
   lastError: string | null = null;
   private lastHeartbeatOk: number | null = null;
+  /** Candidates from the last discovery run, for the status display. */
+  lastDiscovery: DiscoveredRegistry[] = [];
   private heartbeatFailures = 0;
   private heartbeatIntervalMs = 5000;
   /** What this registry knows about, as far as we can tell. */
@@ -83,6 +87,11 @@ export class RegistryClient {
 
   get id(): string {
     return this.cfg.id;
+  }
+
+  /** Forces the next resolve() to look again — a DNS-SD result is not permanent. */
+  forgetAddress(): void {
+    this.base = null;
   }
 
   /** Base URL of the registration API, without a trailing slash. */
@@ -99,29 +108,30 @@ export class RegistryClient {
   }
 
   /**
-   * Unicast DNS-SD: _nmos-register._tcp in the host's search domain. mDNS is left
-   * out on purpose — it does not help across domain boundaries, and internally
-   * unicast DNS-SD or a manual URL is enough in practice.
+   * DNS-SD. The search domain comes from the configuration, or — when none is set —
+   * from the host's resolv.conf, which under `network_mode: host` is what DHCP handed
+   * out. Both unicast and mDNS are tried; see nmos/discovery.ts for why that needs two
+   * different mechanisms.
    */
   private async discover(): Promise<string> {
-    const searchDomain = this.cfg.domain?.replace(/^\.|\.$/g, '') ?? '';
-    const names = searchDomain
-      ? [`_nmos-register._tcp.${searchDomain}`]
-      : ['_nmos-register._tcp', '_nmos-register._tcp.local'];
-    for (const name of names) {
-      try {
-        const srv = await dns.resolveSrv(name.replace(/\.$/, ''));
-        const best = srv.sort((a, b) => a.priority - b.priority)[0];
-        if (best) {
-          const url = `http://${best.name.replace(/\.$/, '')}:${best.port}`;
-          log.info({ registry: this.cfg.id, url, via: name }, 'registry found via DNS-SD');
-          return url;
-        }
-      } catch {
-        /* next candidate */
-      }
+    const result = await discoverRegistries({
+      ...(this.cfg.domain ? { domain: this.cfg.domain } : {}),
+      version: this.cfg.version,
+    });
+    this.lastDiscovery = result.found;
+    const best = result.found[0];
+    if (best) {
+      log.info(
+        { registry: this.cfg.id, url: best.url, instance: best.instance, via: best.via, pri: best.priority },
+        'registry found via DNS-SD',
+      );
+      return best.url;
     }
-    throw new RegistryError(`registry ${this.cfg.id}: DNS-SD found nothing — configure a URL`);
+    // Make the failure diagnosable: say what was queried, not just that nothing came back.
+    const detail = [result.notes.join('; '), result.tried.length ? `queried: ${result.tried.join(', ')}` : '']
+      .filter(Boolean)
+      .join(' — ');
+    throw new RegistryError(`DNS-SD found no registry${detail ? ` (${detail})` : ''}`);
   }
 
   private apiBase(base: string): string {
@@ -294,6 +304,7 @@ export class RegistryClient {
       state,
       error: this.lastError,
       resources: this.countResources(),
+      discovered: this.cfg.mode === 'dnssd' ? this.lastDiscovery.length : null,
       heartbeat: {
         lastOkAt: this.lastHeartbeatOk === null ? null : new Date(this.lastHeartbeatOk).toISOString(),
         ageSeconds,

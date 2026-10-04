@@ -22,6 +22,8 @@ import { log } from '../util/log.js';
  *   GET      /api/registries                   per-registry status
  *   POST     /api/registries/:id/probe          reachability test for one registry
  *   POST     /api/switch/:fabric/probe         connectivity test
+ *   GET      /api/discovery                     run DNS-SD now, with what was queried
+ *   POST     /api/discovery/refresh             drop cached DNS-SD addresses
  *   GET      /api/registries/:id/browse         list a registry's senders and receivers
  *   GET/POST /api/mirrors                      registry-to-registry copies
  *   DELETE   /api/mirrors/:id                  remove a copy and tear it down
@@ -208,6 +210,20 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     const result = await engine.probeSwitch(req.params.fabric);
     if (!result) return reply.code(404).send({ error: `no such fabric: ${req.params.fabric}` });
     return result;
+  });
+
+  // ---- Discovery ----------------------------------------------------------
+  app.get<{ Querystring: { domain?: string; version?: string } }>('/api/discovery', async (req) =>
+    engine.discover({
+      ...(req.query.domain ? { domain: req.query.domain } : {}),
+      ...(req.query.version ? { version: req.query.version } : {}),
+    }),
+  );
+
+  app.post('/api/discovery/refresh', async () => {
+    engine.rediscover();
+    await engine.syncRegistries();
+    return { ok: true };
   });
 
   // ---- Registry browsing and copies --------------------------------------

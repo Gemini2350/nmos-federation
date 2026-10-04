@@ -18,9 +18,11 @@
     "@fastify/static": "^8.3.0",
     "@fastify/websocket": "^11.3.1",
     "fastify": "^5.2.0",
+    "multicast-dns": "^7.2.5",
     "undici": "^7.2.0"
   },
   "devDependencies": {
+    "@types/multicast-dns": "^7.2.4",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"

@@ -132,6 +132,33 @@ export interface BrowseReceiver {
   controllable: boolean;
 }
 
+export interface Discovered {
+  instance: string;
+  url: string;
+  /** Host as announced in SRV — may be an unresolvable .local name. */
+  host: string;
+  address: string | null;
+  /** Where the address came from; an instance-name guess is shown as such. */
+  addressSource: 'a-record' | 'instance-name' | null;
+  port: number;
+  proto: 'http' | 'https';
+  versions: string[];
+  priority: number;
+  via: 'unicast' | 'mdns';
+  serviceType: string;
+  domain: string;
+}
+
+export interface DiscoveryResult {
+  found: Discovered[];
+  /** Every name that was queried — what makes a failure diagnosable. */
+  tried: string[];
+  notes: string[];
+  /** Search domains the host has, i.e. what DHCP handed out. */
+  searchDomains: string[];
+  usedDomain: string | null;
+}
+
 export interface Mirror {
   id: string;
   kind: 'sender' | 'receiver';
@@ -220,6 +247,13 @@ export const api = {
     req<{ reachable: boolean; url: string | null; error?: string; status?: number }>(`/registries/${id}/probe`, { method: 'POST' }),
   probeSwitch: (fabric: 'red' | 'blue') => req<{ reachable: boolean; version?: string; error?: string }>(`/switch/${fabric}/probe`, { method: 'POST' }),
   reconcile: () => req<{ ok: boolean }>('/reconcile', { method: 'POST' }),
+  discover: (opts: { domain?: string; version?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.domain) q.set('domain', opts.domain);
+    if (opts.version) q.set('version', opts.version);
+    return req<DiscoveryResult>(`/discovery${q.size ? `?${q}` : ''}`);
+  },
+  refreshDiscovery: () => req<{ ok: boolean }>('/discovery/refresh', { method: 'POST' }),
   browse: (registryId: string) => req<{ senders: BrowseSender[]; receivers: BrowseReceiver[] }>(`/registries/${registryId}/browse`),
   mirrors: () => req<Mirror[]>('/mirrors'),
   createMirror: (body: {

@@ -107,11 +107,10 @@ rather than publishing a wrongly described sender.
 
 - IS-04 registration API v1.3, POST `/x-nmos/registration/v1.3/resource`, heartbeat
   every 5 s on `/health/nodes/<id>`.
-- Registry address per entry: **IP and port** (the normal case externally) or unicast
-  DNS-SD (the normal case internally). The URL is assembled from ip, port and a tls
-  flag rather than typed in; the port defaults to 8010, which is what nmos-cpp uses
-  when it is configured with a single `http_port`. A configuration that still carries
-  a full `url` is migrated on load.
+- Registry address per entry: **IP and port** (the normal case externally) or
+  **DNS-SD** (the normal case internally). The URL is assembled from ip, port and a tls
+  flag rather than typed in; the port defaults to 80. A configuration that still
+  carries a full `url` is migrated on load. See "Discovery" below.
 - Every registry gets **its own client with its own heartbeat**. If one of three
   external registries fails, the others carry on; the channel stays active and the
   GUI shows which registry it is currently not published in.
@@ -451,6 +450,48 @@ Deriving the URL rather than storing it means there is one place that decides ho
 address is formed, and the GUI can show the result while it is being typed. A
 configuration that still carries a legacy `url` is parsed into these fields when it is
 loaded, so an existing deployment keeps working.
+
+### Discovery
+
+DNS-SD is harder than it looks, and three separate things have to be right:
+
+1. **It is a two-step lookup.** The service name carries a PTR record pointing at
+   instance names; SRV and TXT hang off the *instance*. Asking for SRV directly on
+   `_nmos-register._tcp.<domain>` finds nothing on a correctly configured server.
+2. **`.local` is mDNS and cannot go through `node:dns` at all** — that resolver does
+   unicast only. The multicast path needs its own socket, so both mechanisms are
+   implemented and both are queried.
+3. **TXT decides the outcome.** `api_proto` picks http vs https, `api_ver` says whether
+   the registry speaks our version, and `pri` orders candidates — lower wins, and
+   `>= 100` means "not for production", which is filtered out.
+
+Both service names are queried: `_nmos-register._tcp` and the pre-v1.3
+`_nmos-registration._tcp`, which is what nmos-cpp still advertises.
+
+**The search domain comes from the host.** With no domain configured, the `search` and
+`domain` lines of `/etc/resolv.conf` are used — under `network_mode: host` those are
+the ones DHCP handed out. A domain set in the configuration overrides them.
+
+#### Two things that bite in practice
+
+- **mDNS is missed on the first try.** Responders suppress duplicate questions and a
+  freshly started process routinely gets nothing back — which is exactly the situation
+  at server startup. The query is therefore sent three times, staggered across the
+  listening window.
+- **An announcement can name a host you cannot resolve.** When an mDNS reflector
+  carries announcements across a subnet boundary it forwards the service records but
+  not the host's A record, and the host does not answer an A query either because it is
+  not on your link. The SRV target is then a `.local` name that will only ever time out.
+  Three fallbacks, in order: the A record from the announcement; an explicit A query;
+  and finally the address embedded in the instance name, which nmos-cpp provides as
+  `nmos-cpp_registration_<ip-with-dashes>_<port>`. The last one is a guess and is
+  labelled as such in the GUI. If none works, the candidate is reported with a note
+  saying to configure ip/port instead.
+
+`GET /api/discovery` runs discovery on demand and returns the candidates, the host's
+search domains **and every name that was queried** — a discovery failure is only
+actionable if you can see what was asked for. `POST /api/discovery/refresh` drops
+cached addresses so the next contact resolves again.
 
 ### The NAT switch
 

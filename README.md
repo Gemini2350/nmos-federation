@@ -45,10 +45,15 @@ Then open `http://<host>:8080` and configure it under **Settings**:
 1. **Domains** — one internal, one per partner network. Each needs an interface name,
    the IP its node API is reachable on, the red/blue source subnets, the L3 interface
    per switch, and a multicast pool whose base address is **even**.
-2. **Registries** — assign each to a domain and give it an **IP and port** (or use
-   DNS-SD). The URL is assembled for you and shown next to the fields; the port
-   defaults to 8010, which is what nmos-cpp uses with a single `http_port`. Several
-   registries per domain are fine.
+2. **Registries** — assign each to a domain and give it an **IP and port**, or use
+   **DNS-SD**. The URL is assembled for you and shown next to the fields; the port
+   defaults to 80. Several registries per domain are fine.
+
+   For DNS-SD, leave the search domain empty to use the host's — under
+   `network_mode: host` those are the ones DHCP handed out. *Discover now* shows what
+   was found, which search domains the host has and every name that was queried, so a
+   miss is diagnosable. Both unicast DNS-SD and mDNS (`.local`) are tried, and both the
+   current `_nmos-register._tcp` and the older `_nmos-registration._tcp` service name.
 3. **NAT and switches** — host and credentials per fabric, plus the NAT group range.
    Leave the driver on `mock` at first: the software then logs the switch commands
    instead of sending them, which lets you see the whole federation in your

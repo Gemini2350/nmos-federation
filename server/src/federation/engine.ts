@@ -2,6 +2,7 @@ import type { AppConfig, DomainConfig } from '../config/schema.js';
 import { domainById, registriesOf } from '../config/schema.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
+import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
 import { Is05Client } from '../nmos/is05-client.js';
 import {
   MEDIA_TYPES,
@@ -724,6 +725,27 @@ export class Engine {
         heartbeat: { lastOkAt: null, ageSeconds: null, failures: 0 },
       };
     });
+  }
+
+  /**
+   * Runs DNS-SD on demand and reports what was found *and* what was queried — a
+   * discovery failure is only actionable if you can see the names that were tried and
+   * which search domain they came from.
+   */
+  async discover(opts: { domain?: string; version?: string } = {}) {
+    const searchDomains = await hostSearchDomains();
+    const result = await discoverRegistries({
+      ...(opts.domain ? { domain: opts.domain } : {}),
+      ...(opts.version ? { version: opts.version } : {}),
+    });
+    return { ...result, searchDomains, usedDomain: opts.domain || null };
+  }
+
+  /** Drops cached DNS-SD addresses so the next contact resolves again. */
+  rediscover(): void {
+    for (const client of this.registries.values()) {
+      if (client.cfg.mode === 'dnssd') client.forgetAddress();
+    }
   }
 
   async probeSwitch(fabric: string) {
