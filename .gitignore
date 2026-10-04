@@ -3,3 +3,4 @@ dist/
 /config/
 *.log
 .DS_Store
+server/public/

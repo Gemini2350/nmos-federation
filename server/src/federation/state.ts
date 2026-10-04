@@ -70,6 +70,13 @@ export class StateStore {
     return this.writing;
   }
 
+  /** Back to empty, with a fresh seed — all deterministic IDs change with it. */
+  async reset(): Promise<void> {
+    this.state = { seed: newSeed(), channels: [], connections: {} };
+    await this.save();
+    log.info({}, 'state reset');
+  }
+
   connection(receiverId: string): { staged: ConnectionState; active: ConnectionState } {
     this.state.connections[receiverId] ??= { staged: emptyConnection(), active: emptyConnection() };
     return this.state.connections[receiverId]!;

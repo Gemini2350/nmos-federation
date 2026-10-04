@@ -84,7 +84,7 @@ async function main() {
   // --- GUI + REST ----------------------------------------------------------
   const gui = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
   await gui.register(fastifyWebsocket);
-  registerRestApi(gui, store, engine, async () => {
+  registerRestApi(gui, store, engine, state, async () => {
     // Configuration changes take effect immediately: rebuild the drivers (hosts and
     // credentials), rebuild the pools only while nothing is running — live
     // reservations must not vanish.

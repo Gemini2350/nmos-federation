@@ -258,6 +258,14 @@ export const api = {
     req<{ reachable: boolean; url: string | null; error?: string; status?: number }>(`/registries/${id}/probe`, { method: 'POST' }),
   probeSwitch: (fabric: 'red' | 'blue') => req<{ reachable: boolean; version?: string; error?: string }>(`/switch/${fabric}/probe`, { method: 'POST' }),
   reconcile: () => req<{ ok: boolean }>('/reconcile', { method: 'POST' }),
+  cleanup: () => req<{ registries: { registry: string; removed: string[] }[] }>('/cleanup', { method: 'POST' }),
+  reset: (confirm: boolean) =>
+    req<{
+      confirmed: boolean;
+      wouldRemove?: Record<string, number>;
+      wasRemoved?: Record<string, number>;
+      removed?: { registry: string; removed: string[] }[];
+    }>('/reset', { method: 'POST', body: JSON.stringify({ confirm }) }),
   discover: (opts: { domain?: string; version?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.domain) q.set('domain', opts.domain);

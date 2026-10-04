@@ -379,6 +379,57 @@ export class Engine {
     this.emit({ type: 'registry', registry: client.id, status: client.status() });
   }
 
+  /**
+   * Removes resources that are still in a registry but no longer wanted.
+   *
+   * `RegistryClient.registered` is in-memory only, so after a restart the software has
+   * no record of what it previously put into a registry and `syncRegistry` cannot
+   * unregister it — which is why resources from an earlier run used to stay there
+   * forever. This finds them the only way that works across a restart: ask the query
+   * API for everything belonging to one of our nodes, and delete whatever the current
+   * plan does not contain.
+   *
+   * Only resources under OUR node ids are ever touched. Those ids are derived from the
+   * persisted seed, so they survive a restart; if the state file itself is deleted the
+   * old ids are unknowable here and the registry's own garbage collection takes care of
+   * them once the heartbeat stops.
+   */
+  async cleanupOrphans(registryIds?: string[]): Promise<{ registry: string; removed: string[] }[]> {
+    const ourNodes = new Set(this.cfg.domains.map((d) => this.nodeId(d.id)));
+    const plan = this.registrationPlan();
+    const results: { registry: string; removed: string[] }[] = [];
+
+    for (const id of registryIds ?? [...this.registries.keys()]) {
+      const client = this.registries.get(id);
+      const query = this.queries.get(id);
+      if (!client || !query) continue;
+      const desired = new Set((plan.get(id) ?? []).map((r) => `${r.type}:${r.data.id}`));
+      const removed: string[] = [];
+
+      // Children before parents, so a registry never sees a dangling reference.
+      for (const type of [...REGISTER_ORDER].reverse()) {
+        let items: { id: string; node_id?: string }[];
+        try {
+          items = (await query.getAll<{ id: string; node_id?: string }>(`${type}s`)).items;
+        } catch (e) {
+          log.debug({ registry: id, type, err: String(e) }, 'orphan scan skipped');
+          continue;
+        }
+        for (const item of items) {
+          const mine = type === 'node' ? ourNodes.has(item.id) : !!item.node_id && ourNodes.has(item.node_id);
+          if (!mine) continue; // someone else's resource — hands off
+          const key = `${type}:${item.id}`;
+          if (desired.has(key)) continue;
+          await client.unregister(type, item.id).catch((e) => log.warn({ registry: id, key, err: String(e) }, 'orphan removal failed'));
+          removed.push(key);
+        }
+      }
+      if (removed.length) log.info({ registry: id, removed }, 'removed resources left over from an earlier run');
+      results.push({ registry: id, removed });
+    }
+    return results;
+  }
+
   async syncRegistries(registryIds?: string[]): Promise<void> {
     const ids = registryIds ?? [...this.registries.keys()];
     for (const id of ids) {
@@ -422,6 +473,9 @@ export class Engine {
   async restartRegistries(): Promise<void> {
     this.buildRegistryClients();
     await this.syncRegistries();
+    // A domain or device that just disappeared leaves resources behind that the
+    // in-memory bookkeeping of the fresh clients knows nothing about.
+    await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
       client.startHeartbeat(this.nodeId(client.cfg.domainId));
     }
@@ -444,6 +498,8 @@ export class Engine {
     }
 
     await this.syncRegistries();
+    // Anything a previous run left behind is only findable through the query API.
+    await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
       client.startHeartbeat(this.nodeId(client.cfg.domainId));
     }

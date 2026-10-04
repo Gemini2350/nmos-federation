@@ -90,6 +90,29 @@ setting.
 per domain (node href, manifest fetch, mDNS). Configuration and state live in
 `./config`.
 
+## Starting over
+
+Configuration and state live in `./config`, mounted into the container at `/config`.
+A clean installation is:
+
+```bash
+docker compose down
+rm -rf config
+docker compose up -d --build
+```
+
+That leaves whatever this installation registered behind in the registries, because
+nothing is there to unregister it any more. Two things clear it up: the registry's own
+garbage collection removes a node once its heartbeat stops, and **Settings → Maintenance
+→ Factory reset** does it properly — it tears down every channel, removes everything this
+installation put into the registries, and only then wipes configuration and state.
+
+**Remove leftovers**, next to it, is the narrower tool: it asks each registry for
+everything belonging to our nodes and deletes whatever the current configuration does not
+call for. That is the only way resources from an earlier run can be found at all — the
+record of what was registered is not kept across a restart, so they have to be identified
+by querying the registry.
+
 ## Ports
 
 | Port | Purpose |

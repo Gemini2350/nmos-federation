@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, ref } from 'vue';
 import {
   api,
   registryUrl,
@@ -11,6 +11,7 @@ import {
   type RegistryStatus,
 } from '../api';
 import RegistryStatusTable from '../components/RegistryStatusTable.vue';
+import InfoHint from '../components/InfoHint.vue';
 
 const cfg = ref<Config | null>(null);
 const issues = ref<Issue[]>([]);
@@ -27,14 +28,14 @@ const discoveryDomain = ref('');
 const usable = () => hostInterfaces.value.filter((i) => !i.internal);
 
 /**
- * IDs are keys: devices, registries and copies refer to them, so changing one detaches
- * everything pointing at it. They are derived from the name while an entry is new and
- * read-only once saved.
+ * IDs are opaque keys — devices and registries refer to them, so they must never change
+ * once something points at one. New entries get the next free number; the field is not
+ * shown at all, because the only thing an operator could do with it is break a reference.
  */
-const savedDomainIds = ref<Set<string>>(new Set());
-const savedRegistryIds = ref<Set<string>>(new Set());
-const isNewDomain = (id: string) => !savedDomainIds.value.has(id);
-const isNewRegistry = (id: string) => !savedRegistryIds.value.has(id);
+function nextId(existing: string[]): string {
+  const used = new Set(existing);
+  for (let n = 1; ; n++) if (!used.has(String(n))) return String(n);
+}
 
 function slug(label: string, taken: Set<string>, fallback: string): string {
   const base =
@@ -50,45 +51,7 @@ function slug(label: string, taken: Set<string>, fallback: string): string {
   return candidate;
 }
 
-watch(
-  () => cfg.value?.domains.map((d) => `${d.id}\u0000${d.label}`).join('|'),
-  () => {
-    if (!cfg.value) return;
-    const taken = new Set(cfg.value.domains.map((d) => d.id));
-    for (const d of cfg.value.domains) {
-      if (!isNewDomain(d.id)) continue;
-      taken.delete(d.id);
-      const next = slug(d.label, taken, 'domain');
-      taken.add(next);
-      if (next === d.id) continue;
-      for (const r of cfg.value.registries) if (r.domainId === d.id) r.domainId = next;
-      for (const dev of cfg.value.devices) {
-        if (dev.sourceDomain === d.id) dev.sourceDomain = next;
-        if (dev.targetDomain === d.id) dev.targetDomain = next;
-      }
-      d.id = next;
-    }
-  },
-);
 
-watch(
-  () => cfg.value?.registries.map((r) => `${r.id}\u0000${r.label}`).join('|'),
-  () => {
-    if (!cfg.value) return;
-    const taken = new Set(cfg.value.registries.map((r) => r.id));
-    for (const r of cfg.value.registries) {
-      if (!isNewRegistry(r.id)) continue;
-      taken.delete(r.id);
-      const next = slug(r.label, taken, 'registry');
-      taken.add(next);
-      if (next === r.id) continue;
-      for (const dev of cfg.value.devices) {
-        dev.targetRegistries = dev.targetRegistries.map((x) => (x === r.id ? next : x));
-      }
-      r.id = next;
-    }
-  },
-);
 
 async function loadRegistryStatus() {
   registryStatus.value = await api.registries().catch(() => []);
@@ -97,8 +60,6 @@ async function loadRegistryStatus() {
 async function refresh() {
   try {
     cfg.value = await api.config();
-    savedDomainIds.value = new Set(cfg.value.domains.map((d) => d.id));
-    savedRegistryIds.value = new Set(cfg.value.registries.map((r) => r.id));
     hostInterfaces.value = await api.interfaces().catch(() => []);
     await loadRegistryStatus();
     error.value = null;
@@ -141,7 +102,7 @@ function addDomain() {
   // tries to fetch a transport file.
   const free = usable().find((i) => !cfg.value!.domains.some((d) => d.iface.address === i.address)) ?? usable()[0];
   cfg.value.domains.push({
-    id: `partner${cfg.value.domains.length}`,
+    id: nextId(cfg.value.domains.map((d) => d.id)),
     label: 'Partner',
     kind: 'external',
     iface: { name: free?.name ?? 'eth1', address: free?.address ?? '' },
@@ -155,7 +116,7 @@ function addDomain() {
 function addRegistry() {
   if (!cfg.value) return;
   cfg.value.registries.push({
-    id: `reg${cfg.value.registries.length}`,
+    id: nextId(cfg.value.registries.map((r) => r.id)),
     label: 'Registry',
     domainId: cfg.value.domains[0]?.id ?? '',
     mode: 'manual',
@@ -182,6 +143,59 @@ async function probeSwitch(fabric: 'red' | 'blue') {
   }
 }
 
+const cleanupResult = ref<string | null>(null);
+const resetPlan = ref<Record<string, number> | null>(null);
+const busy = ref(false);
+
+/** Removes what an earlier run left in the registries — see POST /api/cleanup. */
+async function runCleanup() {
+  busy.value = true;
+  try {
+    const res = await api.cleanup();
+    const total = res.registries.reduce((n, r) => n + r.removed.length, 0);
+    cleanupResult.value = total
+      ? `Removed ${total}: ${res.registries.filter((r) => r.removed.length).map((r) => `${r.registry} (${r.removed.length})`).join(', ')}`
+      : 'Nothing left over — the registries match the configuration.';
+    error.value = null;
+    await loadRegistryStatus();
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** Two steps on purpose: the first only reports what a reset would remove. */
+async function askReset() {
+  busy.value = true;
+  try {
+    const res = await api.reset(false);
+    resetPlan.value = res.wouldRemove ?? null;
+    error.value = null;
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function doReset() {
+  busy.value = true;
+  try {
+    const res = await api.reset(true);
+    const removed = (res.removed ?? []).reduce((n, r) => n + r.removed.length, 0);
+    cleanupResult.value = `Reset done — ${removed} registry resource(s) removed.`;
+    resetPlan.value = null;
+    issues.value = [];
+    error.value = null;
+    await refresh();
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function runDiscovery() {
   discovering.value = true;
   try {
@@ -200,7 +214,7 @@ function useDiscovered(url: string) {
     const parsed = new URL(url);
     const tls = parsed.protocol === 'https:';
     cfg.value.registries.push({
-      id: `reg${cfg.value.registries.length}`,
+      id: nextId(cfg.value.registries.map((r) => r.id)),
       label: parsed.hostname,
       domainId: cfg.value.domains[0]?.id ?? '',
       mode: 'manual',
@@ -237,22 +251,48 @@ onMounted(refresh);
     <!-- ── Domains: identity and reachability only. Everything NAT-related lives in
          the NAT section at the bottom, where the plant is described. ── -->
     <section>
-      <div class="head"><h3>Domains</h3><button @click="addDomain">Add domain</button></div>
+      <div class="head">
+        <h3>
+          Domains
+          <InfoHint wide>
+            A domain is one network with its own registry view. One for your own facility, one per partner.
+            Everything about how a domain hangs on the switches — its L3 interfaces, its fabric order and its
+            multicast pool — is configured further down under <strong>NAT</strong>, because that describes the
+            plant rather than the domain's identity.
+          </InfoHint>
+        </h3>
+        <button @click="addDomain">Add domain</button>
+      </div>
       <table>
         <thead>
-          <tr><th>Name</th><th>ID</th><th>Role</th><th>Our IP in this network</th><th>Interface</th><th>Enabled</th><th></th></tr>
+          <tr>
+            <th>Name<InfoHint text="Free to change at any time. What a device refers to is a number assigned behind the scenes, so renaming never detaches anything." /></th>
+            <th>
+              Role
+              <InfoHint>
+                Marks which domain is your own house. It only drives the defaults when creating a device, and
+                the check that there is exactly one of them — the engine never branches on it. Direction comes
+                solely from a device's source and target domain.
+              </InfoHint>
+            </th>
+            <th>
+              Our IP in this network
+              <InfoHint wide>
+                Where this software publishes its own NMOS Node API for this domain. It becomes
+                <code>node.href</code> and <code>api.endpoints[].host</code>, so a controller in that network
+                fetches our resources and a virtual sender's <code>/transportfile</code> over it — it has to be
+                an address this host actually holds there. The list offers the host's own interfaces; physical
+                NICs come first, because an address on a container bridge is reachable from nowhere useful.
+              </InfoHint>
+            </th>
+            <th>Interface<InfoHint text="OS interface name. Used for interface_bindings on our resources, and to look up the MAC that IS-04 requires in interfaces[].port_id." /></th>
+            <th>Enabled</th>
+            <th></th>
+          </tr>
         </thead>
         <tbody>
-          <tr v-for="(d, i) in cfg.domains" :key="i">
+          <tr v-for="(d, i) in cfg.domains" :key="i" :title="`internal key: ${d.id}`">
             <td><input v-model="d.label" /></td>
-            <td>
-              <input
-                :value="d.id"
-                readonly
-                class="ro"
-                :title="isNewDomain(d.id) ? 'derived from the name until saved' : 'internal key — rename the name instead'"
-              />
-            </td>
             <td>
               <select v-model="d.kind">
                 <option value="internal">our own facility</option>
@@ -275,41 +315,39 @@ onMounted(refresh);
           </tr>
         </tbody>
       </table>
-      <p class="hint">
-        <strong>Our IP in this network</strong> is where this software publishes its own NMOS Node API for
-        that domain — a controller there reaches our resources and a virtual sender's
-        <code>/transportfile</code> through it, so it has to be an address this host holds in that network.
-        <strong>Role</strong> only marks which domain is your own house; it drives the defaults when
-        creating a device and nothing else. The <strong>ID</strong> is an internal key that devices and
-        registries refer to: it follows the name while the entry is new and is fixed once saved.
-      </p>
     </section>
 
     <!-- ── Registries ── -->
     <section>
-      <div class="head"><h3>Registries</h3><button @click="addRegistry">Add registry</button></div>
-      <p class="hint">
-        Several registries per domain is the normal case when partners share a network.
-        Enter IP and port — the URL is assembled from them.
-      </p>
+      <div class="head">
+        <h3>
+          Registries
+          <InfoHint wide>
+            Each registry belongs to one domain, and several per domain is the normal case when partners share
+            a network. Enter IP and port — the URL is assembled from them and shown in the last column, so a
+            typo is visible before saving.
+          </InfoHint>
+        </h3>
+        <button @click="addRegistry">Add registry</button>
+      </div>
       <table>
         <thead>
           <tr>
-            <th>Name</th><th>ID</th><th>Domain</th><th>Mode</th><th>IP / hostname</th><th>Port</th>
-            <th>TLS</th><th>Version</th><th>Enabled</th><th>Address</th><th></th>
+            <th>Name</th>
+            <th>Domain</th>
+            <th>Mode<InfoHint text="manual: the address below. dnssd: found over DNS-SD, see the DNS-SD block underneath." /></th>
+            <th>IP / hostname<InfoHint text="In dnssd mode this is the search domain instead — leave it empty to use the ones the host got from DHCP." /></th>
+            <th>Port<InfoHint text="Registration API port. Defaults to 80; nmos-cpp configured with a single http_port typically listens on 8010." /></th>
+            <th>TLS</th>
+            <th>Version</th>
+            <th>Enabled</th>
+            <th>Address<InfoHint text="Assembled from IP, port and TLS. A port that matches the scheme's default is left out, because a strict registry rejects a URI that spells it out." /></th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(r, i) in cfg.registries" :key="i">
+          <tr v-for="(r, i) in cfg.registries" :key="i" :title="`internal key: ${r.id}`">
             <td><input v-model="r.label" /></td>
-            <td>
-              <input
-                :value="r.id"
-                readonly
-                class="ro"
-                :title="isNewRegistry(r.id) ? 'derived from the name until saved' : 'internal key — rename the name instead'"
-              />
-            </td>
             <td><select v-model="r.domainId"><option v-for="d in cfg.domains" :key="d.id" :value="d.id">{{ d.label }}</option></select></td>
             <td><select v-model="r.mode"><option value="manual">manual</option><option value="dnssd">dnssd</option></select></td>
             <td>
@@ -326,13 +364,24 @@ onMounted(refresh);
         </tbody>
       </table>
 
-      <h4>Current status</h4>
-      <p class="hint">Reflects what is running — save first for a changed address to show up here.</p>
+      <h4>
+        Current status
+        <InfoHint text="Reflects what is actually running, not what is in the form above — save first for a changed address to show up here." />
+      </h4>
       <RegistryStatusTable :registries="registryStatus" show-test @probed="loadRegistryStatus" />
 
-      <h4>DNS-SD</h4>
+      <h4>
+        DNS-SD
+        <InfoHint wide>
+          Both unicast DNS-SD and mDNS (<code>.local</code>) are queried, and both the current
+          <code>_nmos-register._tcp</code> and the older <code>_nmos-registration._tcp</code> service name.
+          Leave the search domain empty to use the host's — under <code>network_mode: host</code> those are
+          the ones DHCP handed out. The result lists every name that was queried, so a miss is diagnosable.
+        </InfoHint>
+      </h4>
       <div class="row">
-        <label>Search domain
+        <label>
+          <span>Search domain</span>
           <input v-model="discoveryDomain" :placeholder="discovery?.searchDomains.join(', ') || 'from the host (DHCP)'" />
         </label>
         <button :disabled="discovering" @click="runDiscovery">{{ discovering ? 'searching…' : 'Discover now' }}</button>
@@ -340,10 +389,6 @@ onMounted(refresh);
           Re-resolve
         </button>
       </div>
-      <p class="hint">
-        Leave the domain empty to use the host's search domains — under <code>network_mode: host</code>
-        those are the ones DHCP handed out. Both unicast DNS-SD and mDNS (<code>.local</code>) are queried.
-      </p>
       <template v-if="discovery">
         <p class="hint">
           Host search domains: <code>{{ discovery.searchDomains.join(', ') || 'none in resolv.conf' }}</code>
@@ -381,31 +426,42 @@ onMounted(refresh);
 
     <!-- ── NAT: the plant. How each domain hangs on each switch, and the pools. ── -->
     <section class="nat">
-      <h3>NAT</h3>
+      <h3>
+        NAT
+        <InfoHint wide>
+          This section describes the plant: how each domain hangs on the switches, and which addresses may be
+          handed out. The software only configures the switch — the essence never passes through it.
+        </InfoHint>
+      </h3>
       <div class="row">
-        <label class="check"><input type="checkbox" v-model="cfg.nat.enabled" /> NAT enabled</label>
-        <label>Driver
+        <label class="check">
+          <input type="checkbox" v-model="cfg.nat.enabled" />
+          <span>NAT enabled<InfoHint wide>
+            With NAT off, every SDP is copied verbatim and no switch is touched. That is the right mode when
+            the address plans of the houses involved do not collide and the networks are already routed.
+          </InfoHint></span>
+        </label>
+        <label>
+          <span>Driver<InfoHint text="mock logs the switch commands instead of sending them — the whole federation becomes visible in your controller without touching the network. Start here." /></span>
           <select v-model="cfg.nat.driver"><option value="arista-eapi">arista-eapi</option><option value="mock">mock</option></select>
         </label>
-        <label>NAT group from <input type="number" v-model.number="cfg.nat.groupIdRange[0]" /></label>
-        <label>to <input type="number" v-model.number="cfg.nat.groupIdRange[1]" /></label>
+        <label>
+          <span>NAT group from<InfoHint text="EOS requires the source and destination rule of one translation to share a group number. They are per switch, not per domain, so this range is the upper bound for simultaneous channels across all domains." /></span>
+          <input type="number" v-model.number="cfg.nat.groupIdRange[0]" />
+        </label>
+        <label><span>to</span><input type="number" v-model.number="cfg.nat.groupIdRange[1]" /></label>
       </div>
-      <p class="hint">
-        With NAT off, every SDP is copied verbatim and no switch is touched — the right mode when the
-        address plans do not collide and the networks are already routed. <code>mock</code> logs the switch
-        commands instead of sending them. NAT group numbers are per switch, so that range is the upper
-        bound for simultaneous channels across all domains.
-      </p>
 
       <h4>Switches</h4>
       <article v-for="fabric in (['red', 'blue'] as const)" :key="fabric" class="box">
         <div class="row">
           <strong :class="fabric">{{ fabric }}</strong>
-          <label>Host <input v-model="cfg.nat.switches[fabric].host" /></label>
-          <label>User <input v-model="cfg.nat.switches[fabric].user" /></label>
-          <label>Password <input type="password" v-model="cfg.nat.switches[fabric].password" /></label>
-          <label class="check"><input type="checkbox" v-model="cfg.nat.switches[fabric].tls" /> HTTPS</label>
-          <label>Join
+          <label><span>Host</span><input v-model="cfg.nat.switches[fabric].host" /></label>
+          <label><span>User</span><input v-model="cfg.nat.switches[fabric].user" /></label>
+          <label><span>Password</span><input type="password" v-model="cfg.nat.switches[fabric].password" /></label>
+          <label class="check"><input type="checkbox" v-model="cfg.nat.switches[fabric].tls" /><span>HTTPS</span></label>
+          <label>
+            <span>Join<InfoHint text="How the switch is made to pull the original stream and emit the translated one: a static IGMP join on the interfaces, PIM when the switch is last hop anyway, or nothing if the far side joins by itself." /></span>
             <select v-model="cfg.nat.switches[fabric].join">
               <option value="igmpStatic">igmpStatic</option><option value="pim">pim</option><option value="none">none</option>
             </select>
@@ -415,20 +471,52 @@ onMounted(refresh);
         </div>
       </article>
 
-      <h4>How each domain hangs on the switches</h4>
-      <p class="hint">
-        For a channel, ingress is the <em>source</em> domain's interface and egress the <em>target</em>
-        domain's — on the same switch. <strong>First m= line</strong> says which fabric the first media
-        section of an incoming SDP belongs to; the other leg takes the other fabric. That is configuration,
-        not something read out of the stream.
-      </p>
+      <h4>
+        How each domain hangs on the switches
+        <InfoHint wide>
+          For a channel, ingress is the <em>source</em> domain's interface and egress the <em>target</em>
+          domain's — both on the same switch. That is why the interfaces belong to the domain rather than to
+          the switch, and why direction needs no special case.
+        </InfoHint>
+      </h4>
       <table>
         <thead>
-          <tr><th>Domain</th><th>L3 on red</th><th>L3 on blue</th><th>First m= line</th><th>Pool base (even)</th><th>Pairs</th><th>Source NAT</th></tr>
+          <tr>
+            <th>Domain</th>
+            <th>L3 on red<InfoHint text="This domain's interface on the red switch — SVI, routed port or port-channel." /></th>
+            <th>L3 on blue<InfoHint text="The same on the blue switch." /></th>
+            <th>
+              First m= line
+              <InfoHint wide>
+                Which fabric the first media section of an incoming SDP belongs to; the other leg takes the
+                other fabric. This is configuration, not something read out of the stream — the plant already
+                states where each domain hangs, and guessing it from a source address would only add a way to
+                silently NAT a stream onto the wrong fabric. For a redundant SDP the order comes from the
+                <code>a=mid:</code> values named in <code>a=group:DUP</code>.
+              </InfoHint>
+            </th>
+            <th>
+              Pool base
+              <InfoHint wide>
+                The range handed out for senders created <em>in</em> this domain. Addresses go out in pairs —
+                even is blue, odd is red — and a pair is reserved even for a single-leg source, so the base
+                address must be even.
+              </InfoHint>
+            </th>
+            <th>Pairs</th>
+            <th>
+              Source NAT
+              <InfoHint wide>
+                Also translates the source address, one per fabric at the same index as the group pair. Usually
+                necessary: with only the group translated, the stream keeps a source IP from the foreign
+                network, which SSM (<code>a=source-filter</code>) and RPF on the far side will not accept.
+              </InfoHint>
+            </th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="(d, i) in cfg.domains" :key="i">
-            <td><strong>{{ d.label }}</strong><small>{{ d.id }}</small></td>
+            <td><strong>{{ d.label }}</strong></td>
             <td><input v-model="d.switchInterface.red" placeholder="Vlan101" /></td>
             <td><input v-model="d.switchInterface.blue" placeholder="Vlan102" /></td>
             <td>
@@ -446,12 +534,38 @@ onMounted(refresh);
           </tr>
         </tbody>
       </table>
-      <p class="hint">
-        The pool is the range handed out for senders created <em>in</em> that domain. Addresses go out in
-        pairs — even is blue, odd is red — even for a single-leg source, so the base must be even.
-        <strong>Source NAT</strong> also translates the source address, which SSM
-        (<code>a=source-filter</code>) and RPF on the far side usually need.
-      </p>
+    </section>
+
+    <!-- ── Maintenance ── -->
+    <section class="maint">
+      <h3>
+        Maintenance
+        <InfoHint wide>
+          <strong>Remove leftovers</strong> asks each registry for everything belonging to our nodes and
+          deletes whatever the current configuration does not call for. That is the only way resources from an
+          earlier run can be found: the record of what was registered is not kept across a restart, so they
+          have to be identified by querying the registry.
+        </InfoHint>
+      </h3>
+      <p v-if="cleanupResult" class="ok">{{ cleanupResult }}</p>
+      <div class="row">
+        <button :disabled="busy" @click="runCleanup">Remove leftovers from the registries</button>
+        <button :disabled="busy" @click="askReset">Factory reset…</button>
+      </div>
+      <div v-if="resetPlan" class="confirm">
+        <p class="warn">
+          A factory reset tears down every channel, removes everything this installation put into the
+          registries, and wipes the configuration and state back to defaults. It cannot be undone.
+        </p>
+        <p>
+          It would remove:
+          <code v-for="(n, k) in resetPlan" :key="k">{{ k }}: {{ n }}&nbsp;</code>
+        </p>
+        <div class="row">
+          <button :disabled="busy" class="danger" @click="doReset">Yes, reset everything</button>
+          <button :disabled="busy" @click="resetPlan = null">Cancel</button>
+        </div>
+      </div>
     </section>
   </template>
 </template>
@@ -461,10 +575,15 @@ onMounted(refresh);
 .head button { margin-left: 0.5rem; }
 section { margin-bottom: 2.5rem; }
 section.nat { border-top: 1px solid #8884; padding-top: 1.25rem; }
+section.maint { border-top: 1px solid #8884; padding-top: 1.25rem; }
+.confirm { border: 1px solid #d24b3e88; border-radius: 6px; padding: 0.9rem; margin-top: 0.75rem; }
+.confirm code { margin-right: 0.5rem; }
+button.danger { background: #d24b3e; color: #fff; border-color: #d24b3e; }
 .box { border: 1px solid #8884; border-radius: 6px; padding: 0.9rem; margin-bottom: 0.75rem; }
 .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-bottom: 0.5rem; }
 label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }
 label.check { flex-direction: row; align-items: center; gap: 0.35rem; }
+label > span { display: inline-flex; align-items: center; white-space: nowrap; }
 input, select { padding: 0.3rem 0.4rem; }
 input[type='number'] { width: 6rem; }
 td input, td select { width: 100%; box-sizing: border-box; }

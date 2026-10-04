@@ -193,8 +193,14 @@ moment they are built, and nothing re-registers an altered body under an old sta
   last restart — is reported as such rather than omitted, so the GUI never silently
   hides one.
 - Heartbeat 404 → that registry restarted → re-register everything there only.
-- At startup: orphan cleanup per registry — resources carrying our node UUID that are
-  not in the persisted state are deleted.
+- At startup and after every settings change: **orphan cleanup** per registry. The
+  record of what was registered lives only in memory, so after a restart the software
+  cannot unregister what an earlier run left behind — it has to ask the query API for
+  everything belonging to one of our nodes and delete whatever the current plan does not
+  contain. Only resources under our own node ids are ever touched. Those ids derive from
+  the persisted seed and survive a restart; if the state file itself is deleted they are
+  unknowable, and the registry's own garbage collection takes over once the heartbeat
+  stops.
 - **The node of a domain is registered as soon as a registry is enabled for it**, with
   or without a federation device. Without that, an installation that has registries but
   no devices yet registers nothing, its heartbeat 404s every five seconds forever, and

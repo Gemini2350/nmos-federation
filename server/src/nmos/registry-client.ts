@@ -222,36 +222,6 @@ export class RegistryClient {
   }
 
   /**
-   * Orphan cleanup needs the query API — the registration API cannot list. Without
-   * a query URL all we have is our own bookkeeping, which can be incomplete after
-   * a crash.
-   */
-  async cleanupOrphans(nodeId: string, keep: Set<string>, queryUrl?: string): Promise<number> {
-    if (!queryUrl) return 0;
-    let removed = 0;
-    for (const type of ['receiver', 'sender', 'flow', 'source', 'device'] as ResourceType[]) {
-      try {
-        const res = await request(`${queryUrl.replace(/\/+$/, '')}/x-nmos/query/${this.cfg.version}/${type}s`);
-        if (!res.ok) continue;
-        const list = (await res.json()) as { id: string; node_id?: string; device_id?: string }[];
-        for (const item of list) {
-          const mine = item.node_id === nodeId || keep.has(`${type}:${item.id}`);
-          if (item.node_id === nodeId && !keep.has(`${type}:${item.id}`)) {
-            await this.unregister(type, item.id).catch(() => {});
-            removed++;
-          } else if (!mine) {
-            /* someone else's resource, hands off */
-          }
-        }
-      } catch {
-        /* query API unreachable — no cleanup, but no abort either */
-      }
-    }
-    if (removed) log.info({ registry: this.cfg.id, removed }, 'removed orphaned resources');
-    return removed;
-  }
-
-  /**
    * Checks reachability without changing anything: resolve the address and ask the
    * registration API for its base resource list.
    */

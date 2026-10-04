@@ -11,6 +11,12 @@ import type { AristaConfig } from '../switch/arista-eapi.js';
  * registries. Partners in separate networks = several domains.
  */
 export interface DomainConfig {
+  /**
+   * Opaque key. Devices refer to it through sourceDomain/targetDomain, registries
+   * through domainId — so it must never change once anything points at it. New entries
+   * get the next free number; it is not shown in the GUI and carries no meaning.
+   * Older configurations with names like "internal" keep working: it is just a string.
+   */
   id: string;
   label: string;
   kind: 'internal' | 'external';
@@ -33,6 +39,7 @@ export interface DomainConfig {
 }
 
 export interface RegistryConfig {
+  /** Opaque key, see DomainConfig.id. Devices refer to it through targetRegistries. */
   id: string;
   label: string;
   /** Domain this registry is reached through. */
@@ -66,6 +73,30 @@ export function registryUrl(cfg: RegistryConfig): string | null {
   const host = cfg.ip.includes(':') ? `[${cfg.ip}]` : cfg.ip; // IPv6 literal
   const isDefaultPort = (cfg.tls && port === 443) || (!cfg.tls && port === 80);
   return isDefaultPort ? `${scheme}://${host}` : `${scheme}://${host}:${port}`;
+}
+
+/**
+ * The smallest positive integer not already in use, as a string. Numbers rather than
+ * names because the id is a key: a name invites editing it, and editing it detaches
+ * everything that refers to it.
+ */
+export function nextId(existing: string[]): string {
+  const used = new Set(existing);
+  for (let n = 1; ; n++) if (!used.has(String(n))) return String(n);
+}
+
+/**
+ * Fills in missing ids, so an API client does not have to invent them and the GUI never
+ * has to show the field. Entries that already carry an id keep it untouched.
+ */
+export function normalizeIds(cfg: AppConfig): AppConfig {
+  for (const d of cfg.domains) {
+    if (!d.id) d.id = nextId(cfg.domains.map((x) => x.id));
+  }
+  for (const r of cfg.registries) {
+    if (!r.id) r.id = nextId(cfg.registries.map((x) => x.id));
+  }
+  return cfg;
 }
 
 /** Leg order of a domain: the first `m=` line, then the other fabric. */
@@ -162,7 +193,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   nmosPort: 8081,
   domains: [
     {
-      id: 'internal',
+      id: '1',
       label: 'Internal system',
       kind: 'internal',
       iface: { name: 'eth0', address: '127.0.0.1' },
@@ -173,7 +204,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
   ],
   registries: [
-    { id: 'internal', label: 'Internal registry', domainId: 'internal', mode: 'dnssd', version: 'v1.3', enabled: true },
+    { id: '1', label: 'Internal registry', domainId: '1', mode: 'dnssd', version: 'v1.3', enabled: true },
   ],
   nat: {
     enabled: false,

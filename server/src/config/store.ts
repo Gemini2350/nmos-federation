@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, migrateRegistry, registryUrl, type AppConfig } from './schema.js';
+import { DEFAULT_CONFIG, migrateRegistry, normalizeIds, registryUrl, type AppConfig } from './schema.js';
 import { listInterfaces } from '../nmos/resources.js';
 import { validatePool } from '../federation/pool.js';
 import { overlappingPools } from '../federation/pools.js';
@@ -45,6 +45,20 @@ export class ConfigStore {
         'no configuration found, using defaults',
       );
     }
+    return this.cfg;
+  }
+
+  /** Back to defaults, including the first-start address detection. */
+  async reset(): Promise<AppConfig> {
+    this.cfg = structuredClone(DEFAULT_CONFIG);
+    const host = listInterfaces().find((i) => !i.internal);
+    const internal = this.cfg.domains.find((d) => d.kind === 'internal');
+    if (host && internal) internal.iface = { name: host.name, address: host.address };
+    await mkdir(this.dir, { recursive: true });
+    const tmp = join(this.dir, 'config.json.tmp');
+    await writeFile(tmp, JSON.stringify(this.cfg, null, 2), 'utf8');
+    await rename(tmp, join(this.dir, 'config.json'));
+    log.warn({}, 'configuration reset to defaults');
     return this.cfg;
   }
 
@@ -124,6 +138,7 @@ export class ConfigStore {
   }
 
   async save(cfg: AppConfig): Promise<ConfigIssue[]> {
+    normalizeIds(cfg);
     const issues = this.validate(cfg);
     const errors = issues.filter((i) => i.level === 'error');
     if (errors.length) {

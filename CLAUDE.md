@@ -63,6 +63,9 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
   not just against a stub registry. The stub accepts anything; a strict registry
   rejected every resource with 400 while the suite was green. Touch a builder, run that
   test.
+- **`registered` is in-memory only.** After a restart the software cannot unregister
+  what it left in a registry, so `Engine.cleanupOrphans()` finds it through the query
+  API instead. Anything that removes resources has to run it, or they stay there forever.
 - **The node is registered per domain, independent of devices.** Otherwise an
   installation with registries but no devices registers nothing and heartbeats 404 in a
   loop.

@@ -6,6 +6,7 @@ import type { FederationDevice, VirtualReceiver } from '../types.js';
 import { randomUUID } from 'node:crypto';
 import type { MirrorEntry } from '../config/schema.js';
 import { listInterfaces } from '../nmos/resources.js';
+import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
 
 /**
@@ -30,10 +31,18 @@ import { log } from '../util/log.js';
  *   GET/POST /api/mirrors                      registry-to-registry copies
  *   DELETE   /api/mirrors/:id                  remove a copy and tear it down
  *   POST     /api/mirrors/:id/refresh          re-read the origin and rebuild
+ *   POST     /api/cleanup                       remove registry resources left over from an earlier run
+ *   POST     /api/reset                         factory reset: unregister everything, wipe config and state
  *   POST     /api/reconcile                    run desired/actual reconciliation now
  *   WS       /api/events                       channel and status changes
  */
-export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine: Engine, onConfigChange: () => Promise<void>): void {
+export function registerRestApi(
+  app: FastifyInstance,
+  store: ConfigStore,
+  engine: Engine,
+  state: StateStore,
+  onConfigChange: () => Promise<void>,
+): void {
   app.get('/api/status', async () => engine.status());
   app.get('/api/config', async () => store.current);
   app.get('/api/channels', async () => engine.channels());
@@ -419,6 +428,47 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+  });
+
+  app.post('/api/cleanup', async () => ({ registries: await engine.cleanupOrphans() }));
+
+  /**
+   * Factory reset. Deliberately explicit: it tears down every channel, removes
+   * everything this installation put into the registries, and then wipes configuration
+   * and state. Without `confirm` it only reports what it would do.
+   */
+  app.post<{ Body: { confirm?: boolean } }>('/api/reset', async (req) => {
+    const current = store.current;
+    const plan = {
+      channels: engine.channels().length,
+      devices: current.devices.length,
+      receivers: current.receivers.length,
+      mirrors: current.mirrors.length,
+      domains: current.domains.length,
+      registries: current.registries.length,
+    };
+    if (!req.body?.confirm) return { confirmed: false, wouldRemove: plan };
+
+    // Order matters: tear the channels down first so the switch is cleared and the
+    // senders are unregistered, then empty the resource tree and let the sync remove
+    // what is left, then scan for anything an earlier run abandoned — all while the
+    // registries are still configured. Only then wipe.
+    for (const vrx of current.receivers) await engine.deactivate(vrx.id);
+    for (const m of current.mirrors) await engine.deactivate(`mirror-${m.id}`);
+
+    const emptied = structuredClone(current);
+    emptied.devices = [];
+    emptied.receivers = [];
+    emptied.mirrors = [];
+    await store.save(emptied).catch(() => undefined);
+    await onConfigChange();
+    const removed = await engine.cleanupOrphans().catch(() => []);
+
+    await state.reset();
+    await store.reset();
+    await onConfigChange();
+    log.warn({ ...plan }, 'factory reset completed');
+    return { confirmed: true, removed, wasRemoved: plan };
   });
 
   app.post('/api/reconcile', async () => {
