@@ -53,7 +53,9 @@ async function main() {
   // --- NMOS APIs: one listener per domain on that domain's IP ---------------
   const nmosApps: FastifyInstance[] = [];
   for (const domain of cfg.domains.filter((d) => d.enabled)) {
-    const app = Fastify({ logger: false });
+    // Controllers differ in whether they add or strip a trailing slash, and the hrefs
+    // we publish must resolve either way — see nmos/node-api.ts.
+    const app = Fastify({ logger: false, routerOptions: { ignoreTrailingSlash: true } });
     acceptEmptyJson(app);
     registerNodeApi(app, domain, engine, state);
     // If two domains share an IP (lab setup), the configured port is already
@@ -93,7 +95,7 @@ async function main() {
   }
 
   // --- GUI + REST ----------------------------------------------------------
-  const gui = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+  const gui = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024, routerOptions: { ignoreTrailingSlash: true } });
   acceptEmptyJson(gui);
   await gui.register(fastifyWebsocket);
   registerRestApi(gui, store, engine, state, async () => {

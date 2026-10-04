@@ -194,6 +194,20 @@ moment they are built, and nothing re-registers an altered body under an old sta
   key) so that controller bindings survive a container restart. A vTX carries the
   same ID in every registry **of the same domain**.
 
+### Every published href must answer
+
+`node.href`, each device's `controls[].href` and each sender's `manifest_href` are
+addresses other systems follow. Two of them used to return 404: `node.href` points at the
+root, which had no route, and the control href lacked the trailing slash its route was
+registered with. Fastify treats `/x` and `/x/` as different paths by default.
+
+The NMOS APIs now run with `ignoreTrailingSlash`, since controllers differ in whether they
+add or strip a slash, and the root answers. The control href ends in a slash, as the IS-04
+examples and other implementations write it — a controller appends `single/receivers/…`
+to it, which without the slash produced `…/v1.1single/…`. A test follows every published
+href, including what a controller builds from the control href, and checks every base path
+in both forms.
+
 ### IS-05
 
 - **vRX**: full connection API v1.1 (`staged`, `active`, `constraints`,

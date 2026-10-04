@@ -168,6 +168,15 @@ export class Engine {
   }
 
   // -- Resource tree -------------------------------------------------------
+  /**
+   * The device's `controls[].href`. Ends in a slash, as the IS-04 examples and other
+   * implementations do: a controller appends `single/receivers/…` to it, and without the
+   * slash that produced ".../v1.1single/…".
+   */
+  private controlHref(domain: DomainConfig): string {
+    return `${this.connectionBase(domain)}/`;
+  }
+
   private connectionBase(domain: DomainConfig): string {
     // Canonical form — a strict registry rejects a control href that spells out the
     // default port.
@@ -351,7 +360,7 @@ export class Engine {
               devId,
               this.nodeId(bridge.id),
               device.label,
-              this.connectionBase(domain),
+              this.controlHref(domain),
               mine.map((c) => this.senderNmosId(c.receiverId)),
               isSource ? vrxList.map((v) => this.receiverNmosId(v.id)) : [],
             ),

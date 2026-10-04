@@ -41,6 +41,11 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
     engine.channels().find((c) => c.targetDomain === domain.id && engine.senderNmosId(c.receiverId) === nmosId);
 
   // ---- Discovery paths ----------------------------------------------------
+  // node.href points at the root, so the root has to answer. It used to be a 404, and so
+  // was the device's control href, because it lacked the trailing slash the route was
+  // registered with. The app is created with ignoreTrailingSlash, and a test follows
+  // every href we publish.
+  app.get('/', async () => ['x-nmos/']);
   app.get('/x-nmos/', async () => ['node/', 'connection/']);
   app.get('/x-nmos/node/', async () => [`${NODE_VER}/`]);
   app.get(`/x-nmos/node/${NODE_VER}/`, async () => ['self/', 'devices/', 'sources/', 'flows/', 'senders/', 'receivers/']);
