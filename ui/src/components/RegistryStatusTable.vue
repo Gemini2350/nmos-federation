@@ -1,8 +1,14 @@
 <script setup lang="ts">
 import { api, type RegistryStatus } from '../api';
 
+import { ref } from 'vue';
+
 const props = defineProps<{ registries: RegistryStatus[]; showTest?: boolean }>();
 const emit = defineEmits<{ probed: [] }>();
+
+/** Per-registry result of the last Test, so the button is never a no-op on screen. */
+const probeResult = ref<Record<string, { ok: boolean; text: string }>>({});
+const testing = ref<string | null>(null);
 
 const LABEL: Record<RegistryStatus['state'], string> = {
   ok: 'ok',
@@ -30,7 +36,18 @@ function heartbeat(r: RegistryStatus): string {
 }
 
 async function test(r: RegistryStatus) {
-  await api.probeRegistry(r.id).catch(() => undefined);
+  testing.value = r.id;
+  try {
+    const res = await api.probeRegistry(r.id);
+    probeResult.value[r.id] = res.reachable
+      ? { ok: true, text: `reachable${res.status ? ` (HTTP ${res.status})` : ''}` }
+      : { ok: false, text: res.error ?? 'unreachable' };
+  } catch (e) {
+    // Swallowing this is what made the Test button look like it did nothing at all.
+    probeResult.value[r.id] = { ok: false, text: (e as Error).message };
+  } finally {
+    testing.value = null;
+  }
   emit('probed');
 }
 </script>
@@ -55,7 +72,10 @@ async function test(r: RegistryStatus) {
         <td :title="breakdown(r)">{{ r.resources.total }}</td>
         <td>{{ heartbeat(r) }}</td>
         <td class="err">{{ r.error || '' }}</td>
-        <td v-if="props.showTest"><button @click="test(r)">Test</button></td>
+        <td v-if="props.showTest" class="test">
+          <button :disabled="testing === r.id" @click="test(r)">{{ testing === r.id ? '…' : 'Test' }}</button>
+          <small v-if="probeResult[r.id]" :class="probeResult[r.id]!.ok ? 'ok' : 'bad'">{{ probeResult[r.id]!.text }}</small>
+        </td>
       </tr>
       <tr v-if="!props.registries.length">
         <td :colspan="props.showTest ? 8 : 7"><small>No registries configured.</small></td>
@@ -74,4 +94,7 @@ async function test(r: RegistryStatus) {
 .dot.unknown { background: #8888; }
 .dot.disabled { background: #8884; }
 .err { color: #d24b3e; max-width: 22rem; }
+.test small { display: block; white-space: nowrap; }
+.ok { color: #2e9e4f; }
+.bad { color: #d24b3e; }
 </style>

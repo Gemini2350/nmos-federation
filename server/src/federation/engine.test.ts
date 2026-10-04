@@ -20,14 +20,28 @@ interface StubRegistry {
   posts: { type: string; id: string; data: Record<string, unknown> }[];
   deletes: string[];
   heartbeats: number;
+  /** Flip to make the health endpoint answer 404, as a restarted registry would. */
+  health404?: boolean;
 }
 
 async function startStubRegistry(): Promise<StubRegistry> {
-  const stub: Partial<StubRegistry> = { posts: [], deletes: [], heartbeats: 0 };
-  const server = createServer((req, res) => {
+  // One object, shared with the handler: returning a spread copy would mean a test
+  // flipping `health404` on the result had no effect on the running server.
+  const stub = {
+    posts: [] as StubRegistry['posts'],
+    deletes: [] as string[],
+    heartbeats: 0,
+    health404: false,
+  } as StubRegistry;
+
+  stub.server = createServer((req, res) => {
     const url = req.url ?? '';
     if (req.method === 'POST' && url.includes('/health/nodes/')) {
-      stub.heartbeats!++;
+      stub.heartbeats++;
+      if (stub.health404) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end('{}');
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ health: String(Math.floor(Date.now() / 1000)) }));
     }
@@ -36,22 +50,24 @@ async function startStubRegistry(): Promise<StubRegistry> {
       req.on('data', (c) => (body += c));
       return req.on('end', () => {
         const parsed = JSON.parse(body) as { type: string; data: Record<string, unknown> };
-        stub.posts!.push({ type: parsed.type, id: String(parsed.data.id), data: parsed.data });
+        stub.posts.push({ type: parsed.type, id: String(parsed.data.id), data: parsed.data });
         res.writeHead(201, { 'content-type': 'application/json' });
         res.end(JSON.stringify(parsed.data));
       });
     }
     if (req.method === 'DELETE') {
-      stub.deletes!.push(url);
+      stub.deletes.push(url);
       res.writeHead(204);
       return res.end();
     }
     res.writeHead(404);
     res.end();
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = (server.address() as { port: number }).port;
-  return { ...(stub as StubRegistry), server, ip: '127.0.0.1', port };
+
+  await new Promise<void>((resolve) => stub.server.listen(0, '127.0.0.1', resolve));
+  stub.ip = '127.0.0.1';
+  stub.port = (stub.server.address() as { port: number }).port;
+  return stub;
 }
 
 const DUP_SDP = [
@@ -250,6 +266,62 @@ test('end to end: connecting to a virtual receiver creates NAT and a published s
   });
   assert.equal(again.allocation!.groups.blue, '239.200.0.0');
   assert.equal(again.allocation!.natGroupId, 100);
+});
+
+test('a registry gets our node even with no federation device configured', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  // A fresh installation: registries configured, nothing built on top of them yet.
+  cfg.devices = [];
+  cfg.receivers = [];
+
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+
+  // Without this the plan is empty, nothing is registered, and the heartbeat 404s
+  // forever while the status claims the registry was never contacted.
+  assert.ok(
+    intReg.posts.some((p) => p.type === 'node'),
+    'the node must be registered even with no device',
+  );
+  assert.equal(intReg.posts.filter((p) => p.type === 'device').length, 0);
+  assert.ok(extReg.posts.some((p) => p.type === 'node'), 'and in the external domain too');
+
+  const status = engine.registryStatus().find((r) => r.id === 'int')!;
+  assert.notEqual(status.state, 'unknown', 'contact has happened, so the state must not say otherwise');
+  assert.equal(status.resources.node, 1);
+});
+
+test('a heartbeat 404 counts as contact, not as silence', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+  const client = engine.registries.get('int')!;
+  // Make the stub answer 404 to the health endpoint, as a restarted registry would.
+  intReg.health404 = true;
+  await client.heartbeat();
+
+  const status = client.status();
+  assert.equal(status.reachable, true, 'a 404 is an answer — the registry was reached');
+  assert.equal(status.state, 'degraded');
+  assert.match(status.error!, /node unknown/);
 });
 
 test('NAT off: the SDP is copied verbatim and the switch is left alone', async (t) => {

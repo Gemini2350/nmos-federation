@@ -103,6 +103,35 @@ parameters (`format`, `media_type`, `frame_width/height`, `exactframerate`,
 from the incoming SDP, not guessed. If parsing fails the channel goes to `failed`
 rather than publishing a wrongly described sender.
 
+### Schema conformance
+
+Every resource is validated against the **official IS-04 v1.3 schemas** in the test
+suite (`schemas/is-04-v1.3/`, checked by ajv in `nmos/schema.test.ts`). That is not
+belt-and-braces: the end-to-end tests run against a stub registry that accepts
+anything, so they proved the behaviour and nothing about the payloads. A schema-strict
+registry rejected every resource with HTTP 400 while the suite was green.
+
+Four things a strict validator refuses that are easy to get wrong:
+
+| Field | Requirement |
+|---|---|
+| `hostname` | optional, `format: hostname` — an IP address is invalid there and `null` is invalid outright, so it is omitted |
+| `interfaces[].port_id` | must match `^([0-9a-f]{2}-){5}[0-9a-f]{2}$`. `null` is refused, and the interface name is not an acceptable substitute |
+| `interfaces[].chassis_id` | may be `null`; the MAC is published when known so a controller can correlate the node with LLDP/SNMP on the same NIC |
+| `href`, `controls[].href`, `manifest_href` | canonical URI — a spelled-out default port is rejected |
+
+`endpoints[].authorization` and `controls[].authorization` are optional; stating them
+explicitly as `false` sits better with strict validators.
+
+The MAC requirement needs a fallback: inside a container without host networking there
+may be no OS interface carrying the configured address. A deterministic
+locally-administered EUI-48 is derived from the node UUID, so it is stable across
+restarts and marked as not globally unique.
+
+One more trap, from the same family: **a registry rejects a re-POST that carries the
+same `version` with different content.** Resources are therefore versioned from the
+moment they are built, and nothing re-registers an altered body under an old stamp.
+
 ### Registration
 
 - IS-04 registration API v1.3, POST `/x-nmos/registration/v1.3/resource`, heartbeat
@@ -134,6 +163,13 @@ rather than publishing a wrongly described sender.
 - Heartbeat 404 → that registry restarted → re-register everything there only.
 - At startup: orphan cleanup per registry — resources carrying our node UUID that are
   not in the persisted state are deleted.
+- **The node of a domain is registered as soon as a registry is enabled for it**, with
+  or without a federation device. Without that, an installation that has registries but
+  no devices yet registers nothing, its heartbeat 404s every five seconds forever, and
+  the status cannot tell "unreachable" from "we never put anything there".
+- A heartbeat 404 is **successful contact** — the registry answered, it just does not
+  know this node. Recording it as nothing at all is what made the status sit on "not
+  contacted yet" while the registry was perfectly healthy.
 - IDs are **deterministic and persistent** (UUIDv5 from the node UUID plus a logical
   key) so that controller bindings survive a container restart. A vTX carries the
   same ID in every registry **of the same domain**.

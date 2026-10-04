@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 import { parseSdp, sessionName, type ParsedSdp } from './sdp.js';
 
 /**
@@ -135,6 +136,26 @@ export interface NodeIdentity {
   address: string;
   port: number;
   interfaceName: string;
+  /** MAC of that interface, when it can be resolved. Used for chassis_id/port_id. */
+  mac?: string | null;
+}
+
+/**
+ * Looks up the OS interface carrying `address` and returns its name and MAC in the
+ * dash-separated form IS-04 expects. The MAC matters: `interfaces[].port_id` must be a
+ * non-empty string, and publishing the real one lets a controller correlate the node
+ * with LLDP/SNMP discovery on the same NIC.
+ */
+export function resolveInterface(address: string, fallbackName: string): { name: string; mac: string | null } {
+  for (const [name, addrs] of Object.entries(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.address === address) {
+        const mac = addr.mac && addr.mac !== '00:00:00:00:00:00' ? addr.mac.replace(/:/g, '-').toLowerCase() : null;
+        return { name, mac };
+      }
+    }
+  }
+  return { name: fallbackName, mac: null };
 }
 
 export interface ClockInfo {
@@ -147,8 +168,45 @@ const macFromRefclk = (refclk: string | null): string | null => {
   return m ? m[1]!.toUpperCase() : null;
 };
 
+/**
+ * A deterministic locally-administered EUI-48, for when the real MAC cannot be
+ * resolved — inside a container without host networking, for instance.
+ *
+ * `interfaces[].port_id` must match `^([0-9a-f]{2}-){5}([0-9a-f]{2})$`; the interface
+ * name is not an acceptable substitute, so there has to be *some* MAC. Deriving it
+ * from the node UUID keeps it stable across restarts, and the locally-administered bit
+ * marks it as not globally unique.
+ */
+export function syntheticMac(seed: string): string {
+  const bytes = createHash('sha1').update(seed).digest().subarray(0, 6);
+  bytes[0] = (bytes[0]! & 0xfe) | 0x02; // unicast + locally administered
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('-');
+}
+
+/** Canonical URL: a strict registry rejects a URI that spells out the default port. */
+export function canonicalUrl(protocol: 'http' | 'https', host: string, port: number, path = '/'): string {
+  const authority = host.includes(':') ? `[${host}]` : host;
+  const isDefault = (protocol === 'http' && port === 80) || (protocol === 'https' && port === 443);
+  return `${protocol}://${authority}${isDefault ? '' : `:${port}`}${path}`;
+}
+
+/**
+ * The node resource.
+ *
+ * A schema-strict registry (nmos-cpp) checks IS-04 v1.3 closely, and three things here
+ * are not obvious — all three were found by it rejecting the node outright:
+ *  - `hostname` is optional and carries `format: hostname`, so an IP address is invalid
+ *    there and `null` is invalid full stop. It is omitted.
+ *  - `interfaces[].port_id` must match the EUI-48 pattern; `null` is refused and the
+ *    interface name is not accepted either. The real MAC is used when it resolves, a
+ *    deterministic locally-administered one otherwise.
+ *  - `href` and every control URL must be canonical, i.e. without the default port.
+ * `endpoints[].authorization` and `controls[].authorization` are optional, but stating
+ * them explicitly sits better with strict validators.
+ */
 export function buildNode(identity: NodeIdentity, label: string, clock: ClockInfo, version = nmosVersion()) {
   const gmid = macFromRefclk(clock.refclk);
+  const portId = identity.mac || syntheticMac(`${identity.id}:${identity.interfaceName}`);
   return {
     id: identity.id,
     version,
@@ -156,17 +214,16 @@ export function buildNode(identity: NodeIdentity, label: string, clock: ClockInf
     description: label,
     tags: {},
     href: identity.href,
-    hostname: null,
     caps: {},
     api: {
       versions: ['v1.3'],
-      endpoints: [{ host: identity.address, port: identity.port, protocol: 'http' }],
+      endpoints: [{ host: identity.address, port: identity.port, protocol: 'http', authorization: false }],
     },
     services: [],
     clocks: gmid
       ? [{ name: 'clk0', ref_type: 'ptp', traceable: true, version: 'IEEE1588-2008', gmid: gmid.toLowerCase(), locked: true }]
       : [{ name: 'clk0', ref_type: 'internal' }],
-    interfaces: [{ name: identity.interfaceName, chassis_id: null, port_id: null }],
+    interfaces: [{ name: identity.interfaceName, chassis_id: identity.mac ?? null, port_id: portId }],
   };
 }
 
@@ -189,7 +246,7 @@ export function buildDevice(
     node_id: nodeId,
     senders,
     receivers,
-    controls: [{ href: controlHref, type: 'urn:x-nmos:control:sr-ctrl/v1.1' }],
+    controls: [{ href: controlHref, type: 'urn:x-nmos:control:sr-ctrl/v1.1', authorization: false }],
   };
 }
 

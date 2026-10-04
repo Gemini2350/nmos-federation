@@ -24,6 +24,8 @@
   "devDependencies": {
     "@types/multicast-dns": "^7.2.4",
     "@types/node": "^22.10.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

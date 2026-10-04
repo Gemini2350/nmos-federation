@@ -12,8 +12,10 @@ import {
   buildReceiver,
   buildSender,
   buildSource,
+  canonicalUrl,
   essenceFromSdp,
   nmosVersion,
+  resolveInterface,
   uuidv5,
   type EssenceParams,
 } from '../nmos/resources.js';
@@ -134,17 +136,24 @@ export class Engine {
 
   // -- Resource tree -------------------------------------------------------
   private connectionBase(domain: DomainConfig): string {
-    return `http://${domain.iface.address}:${this.portOf(domain.id)}/x-nmos/connection/v1.1`;
+    // Canonical form — a strict registry rejects a control href that spells out the
+    // default port.
+    return canonicalUrl('http', domain.iface.address, this.portOf(domain.id), '/x-nmos/connection/v1.1');
   }
 
   private nodeResource(domain: DomainConfig) {
+    const port = this.portOf(domain.id);
+    // The OS interface that actually carries this address, for its real MAC — IS-04
+    // requires an EUI-48 in interfaces[].port_id.
+    const iface = resolveInterface(domain.iface.address, domain.iface.name);
     return buildNode(
       {
         id: this.nodeId(domain.id),
-        href: `http://${domain.iface.address}:${this.portOf(domain.id)}/`,
+        href: canonicalUrl('http', domain.iface.address, port, '/'),
         address: domain.iface.address,
-        port: this.portOf(domain.id),
+        port,
         interfaceName: domain.iface.name,
+        mac: iface.mac,
       },
       `NMOS Federation — ${domain.label}`,
       { refclk: domain.ptpRefclk },
@@ -275,6 +284,17 @@ export class Engine {
       if (!list.some((r) => r.type === res.type && r.data.id === res.data.id)) list.push(res);
       plan.set(registryId, list);
     };
+
+    // The node of a domain belongs in every enabled registry of that domain, whether or
+    // not a federation device exists yet. Without this an installation with no devices
+    // registers nothing at all, its heartbeat 404s every five seconds forever, and the
+    // status cannot tell "registry unreachable" from "we never put anything there".
+    for (const domain of this.cfg.domains.filter((d) => d.enabled)) {
+      const self = this.nodeResource(domain);
+      for (const reg of registriesOf(this.cfg, domain.id)) {
+        add(reg.id, { type: 'node', data: self });
+      }
+    }
 
     for (const device of this.cfg.devices) {
       const srcRegs = registriesOf(this.cfg, device.sourceDomain).map((r) => r.id);

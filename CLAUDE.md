@@ -59,6 +59,13 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
   own heartbeat per registry; the reconciler catches up on what is missing.
 - **Release pool entries only through the PoolManager**, never by editing state.
 - **Switch commands belong in `switch/arista-eapi.ts`** and nowhere else.
+- **Resources are validated against the real IS-04 schemas** in `nmos/schema.test.ts`,
+  not just against a stub registry. The stub accepts anything; a strict registry
+  rejected every resource with 400 while the suite was green. Touch a builder, run that
+  test.
+- **The node is registered per domain, independent of devices.** Otherwise an
+  installation with registries but no devices registers nothing and heartbeats 404 in a
+  loop.
 - **A copy is a channel.** Sender copies and receiver proxies go through
   `Engine.runChannel`, the same path as an IS-05 activation — only the trigger and the
   source of the origin SDP differ. Do not grow a second pipeline for them.

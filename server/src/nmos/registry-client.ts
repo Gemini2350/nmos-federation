@@ -185,8 +185,14 @@ export class RegistryClient {
       return;
     }
     if (res.status === 404) {
-      // The registry no longer knows us — typical after a registry restart.
+      // The registry answered, it just does not know this node — typically after a
+      // registry restart. That is still successful contact: recording it as nothing at
+      // all is what made the status sit on "not contacted yet" while the registry was
+      // perfectly fine.
       log.warn({ registry: this.cfg.id }, 'heartbeat 404, re-registering');
+      this.reachable = true;
+      this.heartbeatFailures++;
+      this.lastError = 'node unknown to the registry — re-registering';
       this.registered.clear();
       this.onNeedsReregister(this);
       return;

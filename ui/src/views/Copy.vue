@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { RouterLink } from 'vue-router';
 import { api, type BrowseReceiver, type BrowseSender, type Config, type Mirror } from '../api';
 
 const cfg = ref<Config | null>(null);
@@ -53,7 +54,11 @@ async function browse() {
     receivers.value = res.receivers;
     paging.value = res.paging;
     error.value = null;
-    const paged = res.paging.limit ? ` · ${res.paging.pages} pages at limit ${res.paging.limit}` : '';
+    // The page count is the sum over senders, receivers, devices and flows — reporting
+    // it as "N pages" next to a sender count read as nonsense. Say what it means.
+    const paged = res.paging.limit
+      ? ` · this registry caps a page at ${res.paging.limit}, so the list was fetched in ${res.paging.pages} requests`
+      : '';
     notice.value = `${res.senders.length} senders, ${res.receivers.length} receivers${paged}`;
   } catch (e) {
     error.value = (e as Error).message;
@@ -155,13 +160,21 @@ onMounted(load);
     <p v-if="paging?.truncated" class="warn">
       The registry returned more pages than this browse follows — the list may be incomplete.
     </p>
-    <p v-if="!cfg?.devices.length" class="warn">No devices yet — create one under Devices first; it supplies the direction and the NAT setting.</p>
+    <p v-if="!cfg?.devices.length" class="warn">
+      No devices yet. Create one under <RouterLink to="/devices">Devices</RouterLink> first — it supplies
+      the direction, the target registries and the NAT setting that a copy needs.
+    </p>
   </section>
 
   <section v-if="senders.length || receivers.length">
     <h3>Senders <small v-if="device">copyable from {{ device.sourceDomain }}</small></h3>
-    <p v-if="!senderSource" class="warn">
-      This registry is not in the target device's source domain, so its senders cannot be copied with that device.
+    <!-- With no device there is nothing to say about domains yet; saying it anyway
+         produced three contradictory messages and a blank domain name. -->
+    <p v-if="!device" class="warn">Pick a target device to copy anything.</p>
+    <p v-else-if="!senderSource" class="warn">
+      Senders can only be copied from <strong>{{ device.sourceDomain }}</strong>, the source domain of
+      “{{ device.label }}”. This registry is in
+      <strong>{{ registries.find((r) => r.id === sourceRegistry)?.domainId }}</strong>.
     </p>
     <table v-else>
       <thead><tr><th>Sender</th><th>Device</th><th>Essence</th><th></th></tr></thead>
@@ -184,8 +197,11 @@ onMounted(load);
     </table>
 
     <h3>Receivers <small v-if="device">proxyable into {{ device.sourceDomain }}</small></h3>
-    <p v-if="!receiverSource" class="warn">
-      A receiver proxy drives a receiver in the device's target domain — pick a registry in {{ device?.targetDomain }}.
+    <p v-if="!device" class="warn">Pick a target device to copy anything.</p>
+    <p v-else-if="!receiverSource" class="warn">
+      A receiver proxy drives a receiver in <strong>{{ device.targetDomain }}</strong>, the target domain of
+      “{{ device.label }}”. This registry is in
+      <strong>{{ registries.find((r) => r.id === sourceRegistry)?.domainId }}</strong>.
     </p>
     <table v-else>
       <thead><tr><th>Receiver</th><th>Device</th><th>Accepts</th><th>Currently</th><th></th></tr></thead>
