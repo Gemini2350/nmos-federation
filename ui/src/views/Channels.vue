@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue';
 import { api, type Channel, type Status } from '../api';
+import { domainName, primeFromStatus, registryNames } from '../names';
 import RegistryStatusTable from '../components/RegistryStatusTable.vue';
 
 const channels = ref<Channel[]>([]);
@@ -12,6 +13,7 @@ let poll: number | null = null;
 async function refresh() {
   try {
     [channels.value, status.value] = await Promise.all([api.channels(), api.status()]);
+    primeFromStatus(status.value);
     error.value = null;
   } catch (e) {
     error.value = (e as Error).message;
@@ -54,7 +56,7 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
       <span :class="sw.reachable ? 'ok' : 'bad'">{{ sw.reachable ? sw.version || 'reachable' : sw.error || 'unreachable' }}</span>
     </div>
     <div class="card" v-for="(pool, domainId) in status.pools" :key="domainId">
-      <h3>Pool {{ domainId }}</h3>
+      <h3>Pool {{ domainName(String(domainId)) }}</h3>
       <span>{{ pool.free }} / {{ pool.total }} pairs free</span>
     </div>
   </section>
@@ -75,7 +77,7 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
     <tbody>
       <tr v-for="c in channels" :key="c.id">
         <td><span :class="badge(c.state)">{{ c.state }}</span></td>
-        <td>{{ c.sourceDomain }} → {{ c.targetDomain }}</td>
+        <td>{{ domainName(c.sourceDomain) }} → {{ domainName(c.targetDomain) }}</td>
         <td>
           <div v-for="leg in c.legs" :key="leg.fabric">
             <span :class="leg.fabric">{{ leg.fabric }}</span> {{ leg.group }}:{{ leg.port }}
@@ -90,7 +92,7 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
           <small v-else>NAT off — SDP copied verbatim</small>
         </td>
         <td>{{ c.allocation?.natGroupId ?? '—' }}</td>
-        <td>{{ c.publishedIn.join(', ') || '—' }}</td>
+        <td>{{ registryNames(c.publishedIn) || '—' }}</td>
         <td class="bad">{{ c.error || '' }}</td>
         <td class="actions">
           <button v-if="c.state === 'failed'" @click="api.retryChannel(c.receiverId).then(refresh).catch(e => error = e.message)">Retry</button>

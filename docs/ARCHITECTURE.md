@@ -110,10 +110,18 @@ in `config.json` and in log lines.
 Editing ids in `config.json` by hand is still possible, which is why a dangling
 reference is handled rather than rejected:
 
-- **A reference that does not resolve is a warning, not an error**, and the device is
-  reported as *detached*: it registers nothing until its domain exists again. Making it
-  an error locked the operator out — every write rewrites the whole configuration, so one
-  stale reference also blocked deleting the very device that carried it.
+- **A half-configured thing is a warning, not an error.** A missing L3 interface while
+  NAT is on, a registry whose address has not been typed yet, a reference that no longer
+  resolves — none of these are incoherent, they are work in progress. As errors they
+  blocked *every* save, including the delete meant to resolve them.
+- **A save is refused only for what it introduces.** Every write rewrites the whole
+  configuration, so judging it as a whole means one unrelated problem blocks every
+  operation. The error set before and after are compared, and only genuinely new errors
+  refuse the write; pre-existing ones come back as a warning.
+- Errors that remain: duplicate ids, no single internal domain, a device whose source and
+  target domain are the same, an invalid pool. Those are contradictions, not drafts. An
+  invalid pool no longer takes startup down with it either — that domain simply cannot
+  allocate.
 - The registration pass **skips** a detached device instead of throwing. Otherwise one
   stale reference takes the whole pass, and with it startup, down with it.
 - As a backstop, **a save that strictly reduces the number of errors is allowed

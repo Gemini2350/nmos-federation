@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api, type BrowseReceiver, type BrowseSender, type Config, type Mirror } from '../api';
+import { domainName, primeFromConfig, registryName, registryNames } from '../names';
 
 const cfg = ref<Config | null>(null);
 const mirrors = ref<Mirror[]>([]);
@@ -35,6 +36,7 @@ const visibleReceivers = computed(() => receivers.value.filter((r) => match(r.la
 async function load() {
   try {
     [cfg.value, mirrors.value] = await Promise.all([api.config(), api.mirrors()]);
+    primeFromConfig(cfg.value);
     if (!deviceId.value) deviceId.value = cfg.value.devices[0]?.id ?? '';
     if (!sourceRegistry.value) sourceRegistry.value = registries.value[0]?.id ?? '';
     error.value = null;
@@ -144,13 +146,13 @@ onMounted(load);
     <div class="row">
       <label>Source registry
         <select v-model="sourceRegistry" @change="browse">
-          <option v-for="r in registries" :key="r.id" :value="r.id">{{ r.label }} ({{ r.domainId }})</option>
+          <option v-for="r in registries" :key="r.id" :value="r.id">{{ r.label }} — {{ domainName(r.domainId) }}</option>
         </select>
       </label>
       <label>Target device
         <select v-model="deviceId">
           <option v-for="d in cfg?.devices ?? []" :key="d.id" :value="d.id">
-            {{ d.label }} — {{ d.sourceDomain }} → {{ d.targetDomain }}{{ d.nat ? '' : ' (no NAT)' }}
+            {{ d.label }} — {{ domainName(d.sourceDomain) }} → {{ domainName(d.targetDomain) }}{{ d.nat ? '' : ' (no NAT)' }}
           </option>
         </select>
       </label>
@@ -167,20 +169,20 @@ onMounted(load);
   </section>
 
   <section v-if="senders.length || receivers.length">
-    <h3>Senders <small v-if="device">copyable from {{ device.sourceDomain }}</small></h3>
+    <h3>Senders <small v-if="device">copyable from {{ domainName(device.sourceDomain) }}</small></h3>
     <!-- With no device there is nothing to say about domains yet; saying it anyway
          produced three contradictory messages and a blank domain name. -->
     <p v-if="!device" class="warn">Pick a target device to copy anything.</p>
     <p v-else-if="!senderSource" class="warn">
-      Senders can only be copied from <strong>{{ device.sourceDomain }}</strong>, the source domain of
-      “{{ device.label }}”. This registry is in
-      <strong>{{ registries.find((r) => r.id === sourceRegistry)?.domainId }}</strong>.
+      Senders can only be copied from <strong>{{ domainName(device.sourceDomain) }}</strong>, the source
+      domain of “{{ device.label }}”. This registry is in
+      <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
     </p>
     <table v-else>
       <thead><tr><th>Sender</th><th>Device</th><th>Essence</th><th></th></tr></thead>
       <tbody>
         <tr v-for="s in visibleSenders" :key="s.id">
-          <td><strong>{{ s.label }}</strong><small>{{ s.id }}</small></td>
+          <td><strong>{{ s.label }}</strong></td>
           <td>{{ s.deviceLabel }}<small v-if="s.ours">one of ours</small></td>
           <td>
             <template v-if="s.flow">{{ s.flow.media_type }}<small v-if="s.flow.frame_width">{{ s.flow.frame_width }}×{{ s.flow.frame_height }}</small></template>
@@ -196,18 +198,18 @@ onMounted(load);
       </tbody>
     </table>
 
-    <h3>Receivers <small v-if="device">proxyable into {{ device.sourceDomain }}</small></h3>
+    <h3>Receivers <small v-if="device">proxyable into {{ domainName(device.sourceDomain) }}</small></h3>
     <p v-if="!device" class="warn">Pick a target device to copy anything.</p>
     <p v-else-if="!receiverSource" class="warn">
-      A receiver proxy drives a receiver in <strong>{{ device.targetDomain }}</strong>, the target domain of
-      “{{ device.label }}”. This registry is in
-      <strong>{{ registries.find((r) => r.id === sourceRegistry)?.domainId }}</strong>.
+      A receiver proxy drives a receiver in <strong>{{ domainName(device.targetDomain) }}</strong>, the
+      target domain of “{{ device.label }}”. This registry is in
+      <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
     </p>
     <table v-else>
       <thead><tr><th>Receiver</th><th>Device</th><th>Accepts</th><th>Currently</th><th></th></tr></thead>
       <tbody>
         <tr v-for="r in visibleReceivers" :key="r.id">
-          <td><strong>{{ r.label }}</strong><small>{{ r.id }}</small></td>
+          <td><strong>{{ r.label }}</strong></td>
           <td>{{ r.deviceLabel }}<small v-if="r.ours">one of ours</small></td>
           <td>{{ (r.caps?.media_types ?? []).join(', ') || '—' }}</td>
           <td><small>{{ r.subscription?.active ? `connected to ${r.subscription.sender_id}` : 'idle' }}</small></td>
@@ -228,9 +230,9 @@ onMounted(load);
       <thead><tr><th>Origin</th><th>Kind</th><th>Direction</th><th>State</th><th></th></tr></thead>
       <tbody>
         <tr v-for="m in mirrors" :key="m.id">
-          <td><strong>{{ m.label || m.originLabel }}</strong><small>from {{ m.registryId }}</small></td>
+          <td><strong>{{ m.label || m.originLabel }}</strong><small>from {{ registryName(m.registryId) }}</small></td>
           <td>{{ m.kind === 'sender' ? 'sender copy' : 'receiver proxy' }}</td>
-          <td><small v-if="m.device">{{ m.device.sourceDomain }} → {{ m.device.targetDomain }}{{ m.device.nat ? '' : ' (no NAT)' }}</small></td>
+          <td><small v-if="m.device">{{ domainName(m.device.sourceDomain) }} → {{ domainName(m.device.targetDomain) }}{{ m.device.nat ? '' : ' (no NAT)' }}</small></td>
           <td :class="stateClass(m)">{{ stateText(m) }}</td>
           <td class="actions">
             <button v-if="m.kind === 'sender'" :disabled="busy" @click="run(() => api.refreshMirror(m.id))" title="re-read the origin SDP and rebuild">Refresh</button>

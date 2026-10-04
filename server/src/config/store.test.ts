@@ -99,24 +99,54 @@ test('two domains with the same ID stay a hard error', async (t) => {
   await assert.rejects(() => store.save(cfg), /duplicate domain ID/);
 });
 
-test('a save that reduces an existing error count is allowed through', async (t) => {
+test('an unrelated half-configured domain does not block deleting a device', async (t) => {
   const { store, cleanup } = await freshStore();
   t.after(cleanup);
-  // Get into a state with two hard errors by writing the file behind the validator.
   const cfg = configWithDevice();
-  cfg.devices.push({ ...cfg.devices[0]!, id: 'dev2', sourceDomain: 'internal', targetDomain: 'internal' });
-  cfg.devices.push({ ...cfg.devices[0]!, id: 'dev3', sourceDomain: 'partnerA', targetDomain: 'partnerA' });
-  await assert.rejects(() => store.save(cfg), /source and target domain are the same/);
+  // Exactly the field report: NAT switched on before the switch interfaces were filled
+  // in. That used to make every save fail — including the delete meant to fix things.
+  cfg.nat.enabled = true;
+  cfg.domains[1]!.switchInterface = { red: '', blue: '' };
+  const issues = await store.save(cfg);
+  assert.deepEqual(issues.filter((i) => i.level === 'error'), [], 'half-configured is not an error');
+  assert.match(issues.map((i) => i.message).join(' '), /cannot carry a channel/);
 
-  // Seed the broken state directly, as an edited config.json would.
-  const seeded = new ConfigStore((await mkdtemp(join(tmpdir(), 'cfgstore-'))) as string);
-  await seeded.load();
-  // @ts-expect-error reaching into the private field is the point: simulate a bad file
-  seeded.cfg = cfg;
-  assert.equal(seeded.validate(seeded.current).filter((i) => i.level === 'error').length, 2);
+  const pruned = structuredClone(store.current);
+  pruned.devices = [];
+  await store.save(pruned);
+  assert.equal(store.current.devices.length, 0);
+});
 
-  const better = structuredClone(cfg);
-  better.devices = better.devices.filter((d) => d.id !== 'dev3');
-  const issues = await seeded.save(better);
-  assert.match(issues.map((i) => i.message).join(' '), /saved with 1 remaining problem/);
+test('a registry without an address yet is a warning, not a refusal', async (t) => {
+  const { store, cleanup } = await freshStore();
+  t.after(cleanup);
+  const cfg = configWithDevice();
+  cfg.registries.push({ id: 'new', label: 'Just added', domainId: 'internal', mode: 'manual', version: 'v1.3', enabled: true });
+  const issues = await store.save(cfg);
+  assert.deepEqual(issues.filter((i) => i.level === 'error'), []);
+  assert.match(issues.map((i) => i.message).join(' '), /no address yet/);
+});
+
+test('a save is refused only for what it introduces', async (t) => {
+  const { store, cleanup } = await freshStore();
+  t.after(cleanup);
+  await store.save(configWithDevice());
+
+  // Get one hard error in place, then try an unrelated change.
+  const broken = structuredClone(store.current);
+  broken.domains.push({ ...broken.domains[0]!, id: 'second-internal', label: 'Another home' });
+  await assert.rejects(() => store.save(broken), /exactly one internal domain/);
+
+  // Force that state in, as a hand-edited config.json would.
+  // @ts-expect-error reaching into the private field is the point
+  store.cfg = broken;
+  const unrelated = structuredClone(broken);
+  unrelated.devices = [];
+  const issues = await store.save(unrelated);
+  assert.match(issues.map((i) => i.message).join(' '), /earlier problem/);
+
+  // But a new problem on top of the old one is still refused.
+  const worse = structuredClone(store.current);
+  worse.domains[1]!.pool.base = '239.200.0.1';
+  await assert.rejects(() => store.save(worse), /must be even/);
 });

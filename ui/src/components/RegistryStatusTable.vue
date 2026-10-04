@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { api, type RegistryStatus } from '../api';
+import { domainName } from '../names';
 
 import { ref } from 'vue';
 
@@ -68,9 +69,9 @@ async function test(r: RegistryStatus) {
       <tr v-for="r in props.registries" :key="r.id">
         <td>
           <strong>{{ r.label }}</strong>
-          <small>{{ r.id }} · {{ r.mode }} · {{ r.version }}</small>
+          <small>{{ r.mode }} · {{ r.version }}</small>
         </td>
-        <td>{{ r.domainId }}</td>
+        <td>{{ domainName(r.domainId) }}</td>
         <td><code v-if="r.url">{{ r.url }}</code><small v-else>not resolved</small></td>
         <td><span class="dot" :class="r.state"></span>{{ LABEL[r.state] }}</td>
         <td :title="breakdown(r)">{{ r.resources.total }}</td>

@@ -1,6 +1,7 @@
 import type { Allocation, DomainId } from '../types.js';
 import type { DomainConfig } from '../config/schema.js';
 import { NatGroupAllocator, PoolAllocator, poolsOverlap } from './pool.js';
+import { log } from '../util/log.js';
 
 /**
  * Keeps one pool per domain. Allocation always comes from the **target** domain's
@@ -11,16 +12,33 @@ import { NatGroupAllocator, PoolAllocator, poolsOverlap } from './pool.js';
  */
 export class PoolManager {
   private readonly pools = new Map<DomainId, PoolAllocator>();
+  /** Every configured domain, so an unusable pool can be told from an unknown domain. */
+  private readonly known = new Set<DomainId>();
   private readonly natGroups: NatGroupAllocator;
 
   constructor(domains: DomainConfig[], natGroupRange: [number, number]) {
     this.natGroups = new NatGroupAllocator(natGroupRange);
-    for (const d of domains) this.pools.set(d.id, new PoolAllocator(d.pool));
+    for (const d of domains) {
+      this.known.add(d.id);
+      try {
+        this.pools.set(d.id, new PoolAllocator(d.pool));
+      } catch (e) {
+        // A pool that does not validate must not take the process down on startup. The
+        // domain simply cannot hand out addresses, and says so when something asks.
+        log.error({ domain: d.id, err: String(e) }, 'pool unusable — this domain cannot allocate');
+      }
+    }
   }
 
   private poolFor(domainId: DomainId): PoolAllocator {
     const pool = this.pools.get(domainId);
-    if (!pool) throw new Error(`no domain ${domainId} configured`);
+    if (!pool) {
+      throw new Error(
+        this.known.has(domainId)
+          ? `domain ${domainId} has no usable pool — check its base address`
+          : `no domain ${domainId} configured`,
+      );
+    }
     return pool;
   }
 

@@ -75,9 +75,15 @@ export class ConfigStore {
       if (domainIds.has(d.id)) err(`duplicate domain ID ${d.id}`);
       domainIds.add(d.id);
       for (const e of validatePool(d.pool)) err(`domains.${d.id}.pool.${e.field}: ${e.message}`);
+      // Half-filled is not incoherent. Blocking the save would mean an operator who
+      // turned NAT on cannot save anything at all — not even deleting an unrelated
+      // device — until every interface is typed in. The domain simply cannot carry a
+      // channel until then, and says so.
       if (cfg.nat.enabled) {
         for (const fabric of ['red', 'blue'] as const) {
-          if (!d.switchInterface[fabric]) err(`domains.${d.id}: no L3 interface for fabric ${fabric}`);
+          if (!d.switchInterface[fabric]) {
+            warn(`domain "${d.label || d.id}": no L3 interface for fabric ${fabric} — it cannot carry a channel`);
+          }
         }
       }
     }
@@ -93,11 +99,12 @@ export class ConfigStore {
       registryIds.add(r.id);
         if (!domainIds.has(r.domainId)) warn(`registry "${r.label || r.id}" is detached: no domain ${r.domainId}`);
       if (r.mode === 'manual') {
-        if (!r.ip) err(`registries.${r.id}: IP or hostname missing`);
+        const label = r.label || r.id;
+        if (!r.ip) warn(`registry "${label}": no address yet — it cannot be contacted`);
         if (r.port !== undefined && (!Number.isInteger(r.port) || r.port < 1 || r.port > 65535)) {
-          err(`registries.${r.id}: port ${r.port} is not a valid port`);
+          warn(`registry "${label}": ${r.port} is not a valid port`);
         }
-        if (r.ip && !registryUrl(r)) err(`registries.${r.id}: cannot assemble a URL from ip/port`);
+        if (r.ip && !registryUrl(r)) warn(`registry "${label}": cannot assemble a URL from the address and port`);
       }
     }
 
@@ -142,17 +149,18 @@ export class ConfigStore {
     const issues = this.validate(cfg);
     const errors = issues.filter((i) => i.level === 'error');
     if (errors.length) {
-      // A configuration that is already broken must not trap the operator. Every write
-      // rewrites the whole file, so refusing outright would also refuse the delete that
-      // fixes it. A save that strictly reduces the number of errors is allowed through.
-      const before = this.validate(this.cfg).filter((i) => i.level === 'error').length;
-      if (!(before > 0 && errors.length < before)) {
-        throw new Error(errors.map((e) => e.message).join('; '));
-      }
-      log.warn({ before, after: errors.length }, 'saved a configuration that still has errors, but fewer than before');
+      // Only refuse what this save actually introduces. Every write rewrites the whole
+      // configuration, so judging it as a whole means one unrelated problem blocks every
+      // operation — including the delete that would resolve it. That is how an operator
+      // ends up unable to remove a device because a different domain is half-configured.
+      const existing = new Set(this.validate(this.cfg).filter((i) => i.level === 'error').map((i) => i.message));
+      const introduced = errors.filter((e) => !existing.has(e.message));
+      if (introduced.length) throw new Error(introduced.map((e) => e.message).join('; '));
+
+      log.warn({ remaining: errors.length }, 'saved; pre-existing problems remain');
       issues.push({
         level: 'warning',
-        message: `saved with ${errors.length} remaining problem(s) — it was ${before} before`,
+        message: `saved, but ${errors.length} earlier problem(s) are still there: ${errors.map((e) => e.message).join('; ')}`,
       });
     }
     await mkdir(this.dir, { recursive: true });

@@ -46,7 +46,15 @@ test('an exhausted NAT group range releases the pair again', () => {
 
 test('an unknown domain is rejected', () => {
   const pools = new PoolManager(domains, [100, 999]);
-  assert.throws(() => pools.allocate('partnerC'), /no domain/);
+  assert.throws(() => pools.allocate('partnerC'), /no domain partnerC configured/);
+});
+
+test('an invalid pool disables its domain instead of crashing the process', () => {
+  const broken = [...domains, { ...domain('bad', 'external', '239.0.0.0'), pool: { base: '239.0.0.1', pairs: 4, sourceNat: null } }];
+  // An odd base is invalid; the constructor used to throw, taking startup with it.
+  const pools = new PoolManager(broken, [100, 999]);
+  assert.equal(pools.status()['partnerA']!.free, 2, 'the other domains still work');
+  assert.throws(() => pools.allocate('bad'), /no usable pool/);
 });
 
 test('releasing returns both the pair and the NAT group', () => {

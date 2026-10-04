@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { api, type Config, type Device, type VirtualReceiver } from '../api';
+import { domainName, primeFromConfig, registryNames } from '../names';
 
 const cfg = ref<Config | null>(null);
 const devices = ref<Device[]>([]);
@@ -17,6 +18,7 @@ const registriesOf = (domainId: string) => (cfg.value?.registries ?? []).filter(
 async function refresh() {
   try {
     [cfg.value, devices.value] = await Promise.all([api.config(), api.devices()]);
+    primeFromConfig(cfg.value);
     if (!draft.value.sourceDomain) {
       draft.value.sourceDomain = domains.value.find((d) => d.kind === 'internal')?.id ?? '';
       draft.value.targetDomain = domains.value.find((d) => d.kind === 'external')?.id ?? '';
@@ -106,16 +108,16 @@ onMounted(refresh);
       <div>
         <strong>{{ d.label }}</strong>
         <span v-if="d.detached" class="badge">detached</span>
-        <small>{{ d.sourceDomain }} → {{ d.targetDomain }} ·
-          {{ d.targetRegistries.length ? d.targetRegistries.join(', ') : 'all registries of the target domain' }}</small>
+        <small>{{ domainName(d.sourceDomain) }} → {{ domainName(d.targetDomain) }} ·
+          {{ d.targetRegistries.length ? registryNames(d.targetRegistries) : 'all registries of the target domain' }}</small>
         <small v-if="d.detached" class="bad">
           Points at
-          {{ [d.missing?.sourceDomain, d.missing?.targetDomain].filter(Boolean).join(' and ') }}, which
+          {{ [d.missing?.sourceDomain, d.missing?.targetDomain].filter((x): x is string => !!x).map(domainName).join(' and ') }}, which
           {{ d.missing?.sourceDomain && d.missing?.targetDomain ? 'do' : 'does' }} not exist — this device registers nothing.
           Recreate that domain under Settings, or change the device, or delete it.
         </small>
         <small v-else-if="d.missing?.registries.length" class="warn">
-          Unknown target registries ignored: {{ d.missing.registries.join(', ') }}
+          Unknown target registries ignored: {{ registryNames(d.missing.registries) }}
         </small>
       </div>
       <div class="controls">
