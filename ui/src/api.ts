@@ -26,10 +26,9 @@ export interface Domain {
   label: string;
   kind: 'internal' | 'external';
   iface: { name: string; address: string };
-  fabricSubnets: Fabric2<string | null>;
+  firstLeg: 'red' | 'blue';
   switchInterface: Fabric2<string>;
   pool: Pool;
-  ptpRefclk: string | null;
   enabled: boolean;
 }
 

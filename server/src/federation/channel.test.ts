@@ -9,10 +9,9 @@ const domain = (id: string, kind: 'internal' | 'external', red: string, blue: st
   label: id,
   kind,
   iface: { name: 'eth0', address: '10.0.0.1' },
-  fabricSubnets: { red: null, blue: null },
+  firstLeg: 'red',
   switchInterface: { red, blue },
   pool: { base: '239.200.0.0', pairs: 4, sourceNat: null },
-  ptpRefclk: null,
   enabled: true,
 });
 

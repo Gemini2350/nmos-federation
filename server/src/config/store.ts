@@ -38,12 +38,7 @@ export class ConfigStore {
       const host = listInterfaces().find((i) => !i.internal);
       if (host) {
         const internal = this.cfg.domains.find((d) => d.kind === 'internal');
-        if (internal) {
-          internal.iface = { name: host.name, address: host.address };
-          if (host.cidr) {
-            internal.fabricSubnets.red = host.cidr.replace(/^(\d+\.\d+\.\d+)\.\d+/, '$1.0');
-          }
-        }
+        if (internal) internal.iface = { name: host.name, address: host.address };
       }
       log.warn(
         { dir: this.dir, ...(host ? { address: `${host.name} ${host.address}` } : {}) },

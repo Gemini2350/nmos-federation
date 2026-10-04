@@ -11,10 +11,9 @@ const domain = (id: string, kind: 'internal' | 'external'): DomainConfig => ({
   label: id,
   kind,
   iface: { name: 'eth0', address: '10.0.0.1' },
-  fabricSubnets: { red: null, blue: null },
+  firstLeg: 'red',
   switchInterface: { red: 'Vlan1', blue: 'Vlan2' },
   pool: { base: kind === 'internal' ? '239.201.0.0' : '239.200.0.0', pairs: 8, sourceNat: null },
-  ptpRefclk: null,
   enabled: true,
 });
 

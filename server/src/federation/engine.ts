@@ -1,5 +1,5 @@
 import type { AppConfig, DomainConfig } from '../config/schema.js';
-import { domainById, registriesOf } from '../config/schema.js';
+import { domainById, legOrder, registriesOf } from '../config/schema.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
 import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
@@ -19,7 +19,7 @@ import {
   uuidv5,
   type EssenceParams,
 } from '../nmos/resources.js';
-import { assignFabrics, parseSdp, rewriteSdp } from '../nmos/sdp.js';
+import { assignFabrics, essenceCount, parseSdp, rewriteSdp } from '../nmos/sdp.js';
 import { programChannel, unprogramChannel, type SwitchDriver } from '../switch/driver.js';
 import type { Channel, FederationDevice, VirtualReceiver } from '../types.js';
 import type { MirrorEntry } from '../config/schema.js';
@@ -156,7 +156,7 @@ export class Engine {
         mac: iface.mac,
       },
       `NMOS Federation — ${domain.label}`,
-      { refclk: domain.ptpRefclk },
+      { refclk: null },
     );
   }
 
@@ -545,7 +545,14 @@ export class Engine {
 
     try {
       const parsed = parseSdp(sdp);
-      channel.legs = assignFabrics(parsed, source.fabricSubnets);
+      // A video+audio SDP is not a redundant pair. Treating its second m= line as the
+      // other fabric would NAT an audio group as if it were the video's second path and
+      // publish a sender describing only the first essence.
+      const essences = essenceCount(parsed);
+      if (essences > 1) {
+        throw new Error(`SDP describes ${essences} essences — only a single essence, optionally ST 2022-7 redundant, can be federated`);
+      }
+      channel.legs = assignFabrics(parsed, legOrder(source));
       if (!channel.legs.length) throw new Error('SDP without a usable multicast group');
       essenceFromSdp(parsed); // fail early, before touching the switch
 
@@ -566,10 +573,7 @@ export class Engine {
             },
           ]),
         );
-        channel.senderSdp = rewriteSdp(sdp, {
-          byMediaIndex,
-          ...(target.ptpRefclk ? { tsRefclk: target.ptpRefclk } : {}),
-        });
+        channel.senderSdp = rewriteSdp(sdp, { byMediaIndex });
       } else {
         // NAT off: the SDP is copied verbatim, the stream flows unchanged.
         channel.senderSdp = sdp;

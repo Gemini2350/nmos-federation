@@ -98,14 +98,13 @@ const domain = (id: string, kind: 'internal' | 'external', address: string, red:
   label: id,
   kind,
   iface: { name: kind === 'internal' ? 'eth0' : 'eth1', address },
-  fabricSubnets: { red: kind === 'internal' ? '10.1.1.0/24' : '10.9.1.0/24', blue: kind === 'internal' ? '10.1.2.0/24' : '10.9.2.0/24' },
+  firstLeg: 'red',
   switchInterface: { red, blue },
   pool: {
     base,
     pairs: 8,
     sourceNat: kind === 'internal' ? { red: '10.1.1.200', blue: '10.1.2.200' } : { red: '10.9.1.200', blue: '10.9.2.200' },
   },
-  ptpRefclk: null,
   enabled: true,
 });
 
@@ -322,6 +321,48 @@ test('a heartbeat 404 counts as contact, not as silence', async (t) => {
   assert.equal(status.reachable, true, 'a 404 is an answer — the registry was reached');
   assert.equal(status.state, 'degraded');
   assert.match(status.error!, /node unknown/);
+});
+
+test('an SDP carrying two essences is refused, not NATted as a redundant pair', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, drivers } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+
+  // Video and audio in one SDP: two m= lines, no a=group:DUP.
+  const multi = [
+    'v=0',
+    'o=- 1 1 IN IP4 10.1.1.50',
+    's=CAM01 + MIC01',
+    't=0 0',
+    'm=video 5004 RTP/AVP 96',
+    'c=IN IP4 239.10.1.5/64',
+    'a=rtpmap:96 raw/90000',
+    'a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; exactframerate=25; depth=10; TCS=SDR; colorimetry=BT709;',
+    'm=audio 5006 RTP/AVP 97',
+    'c=IN IP4 239.10.1.6/64',
+    'a=rtpmap:97 L24/48000/2',
+    '',
+  ].join('\r\n');
+
+  await assert.rejects(
+    engine.activate('vrx1', {
+      sender_id: null,
+      master_enable: true,
+      transport_file: { data: multi, type: 'application/sdp' },
+      transport_params: [{}],
+    }),
+    /2 essences/,
+  );
+  assert.equal(drivers.red.applied.size, 0, 'nothing may be programmed for an SDP we cannot represent');
+  assert.equal(extReg.posts.filter((p) => p.type === 'sender').length, 0);
 });
 
 test('NAT off: the SDP is copied verbatim and the switch is left alone', async (t) => {

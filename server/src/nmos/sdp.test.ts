@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSdp, rewriteSdp, assignFabrics } from './sdp.js';
+import { parseSdp, rewriteSdp, assignFabrics, essenceCount } from './sdp.js';
 
 /** Typical ST 2110-20 SDP with 2022-7 redundancy. */
 const DUP_SDP = [
@@ -59,16 +59,46 @@ test('media without its own c= inherits the session connection', () => {
   assert.equal(p.dup, false);
 });
 
-test('fabric assignment follows the source subnet', () => {
-  const p = parseSdp(DUP_SDP);
-  const legs = assignFabrics(p, { red: '10.1.1.0/24', blue: '10.1.2.0/24' });
-  assert.deepEqual(legs.map((l) => l.fabric), ['red', 'blue']);
+test('legs are assigned positionally, in the configured order', () => {
+  const legs = assignFabrics(parseSdp(DUP_SDP), ['red', 'blue']);
+  assert.deepEqual(legs.map((l) => [l.fabric, l.group]), [
+    ['red', '239.10.1.5'],
+    ['blue', '239.10.2.5'],
+  ]);
 });
 
-test('without matching subnets the order of the m= lines decides', () => {
-  const p = parseSdp(DUP_SDP);
-  const legs = assignFabrics(p, { red: null, blue: null });
-  assert.deepEqual(legs.map((l) => l.fabric), ['red', 'blue']);
+test('a plant that counts the other way round just flips the order', () => {
+  const legs = assignFabrics(parseSdp(DUP_SDP), ['blue', 'red']);
+  assert.deepEqual(legs.map((l) => [l.fabric, l.group]), [
+    ['blue', '239.10.1.5'],
+    ['red', '239.10.2.5'],
+  ]);
+});
+
+test('a=group:DUP decides which leg is first, not the order of the m= lines', () => {
+  // Same SDP with the group naming SECONDARY first: that is what defines the primary.
+  const swapped = DUP_SDP.replace('a=group:DUP PRIMARY SECONDARY', 'a=group:DUP SECONDARY PRIMARY');
+  const legs = assignFabrics(parseSdp(swapped), ['red', 'blue']);
+  assert.deepEqual(legs.map((l) => [l.fabric, l.group]), [
+    ['red', '239.10.2.5'],
+    ['blue', '239.10.1.5'],
+  ]);
+});
+
+test('a single-leg source takes the first fabric only', () => {
+  const legs = assignFabrics(parseSdp(SINGLE_SDP), ['red', 'blue']);
+  assert.equal(legs.length, 1);
+  assert.equal(legs[0]!.fabric, 'red');
+});
+
+test('a redundant pair counts as one essence, a video+audio SDP as two', () => {
+  assert.equal(essenceCount(parseSdp(DUP_SDP)), 1);
+  assert.equal(essenceCount(parseSdp(SINGLE_SDP)), 1);
+  const multi = SINGLE_SDP.replace(
+    'a=ts-refclk:ptp=IEEE1588-2008:08-00-11-FF-FE-22-04-00:0\r\n',
+    'a=ts-refclk:ptp=IEEE1588-2008:08-00-11-FF-FE-22-04-00:0\r\nm=video 5006 RTP/AVP 96\r\nc=IN IP4 239.10.1.10/64\r\na=rtpmap:96 raw/90000\r\n',
+  );
+  assert.equal(essenceCount(parseSdp(multi)), 2, 'two essences cannot be one sender');
 });
 
 test('the rewrite replaces group and source in c=, source-filter and o=', () => {

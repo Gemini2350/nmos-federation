@@ -1,5 +1,4 @@
 import type { Fabric, Leg } from '../types.js';
-import { ipToInt } from '../federation/pool.js';
 
 export interface SdpMedia {
   /** Index of the m= line, zero-based. */
@@ -142,42 +141,51 @@ export function parseSdp(text: string): ParsedSdp {
   return { raw: text, eol, originAddress, sessionConnection, dup, media, tsRefclk };
 }
 
-/** Mapping from media section to fabric. */
-export interface FabricSubnets {
-  red: string | null;   // CIDR, e.g. 10.1.1.0/24
-  blue: string | null;
+/**
+ * Assigns a fabric to each leg **positionally**: the first `m=` line takes the first
+ * entry of `order`, the second the other one.
+ *
+ * Not derived from source subnets. Which domain hangs on which switch interface is
+ * already configured, so the mapping belongs to the plant description; guessing it from
+ * an address only adds a way to silently NAT a stream onto the wrong fabric.
+ *
+ * For a redundant SDP the legs follow the order their `a=mid:` values appear in
+ * `a=group:DUP`, which is what actually defines which leg is primary — falling back to
+ * the order of the `m=` lines when the mids are absent.
+ */
+export function assignFabrics(parsed: ParsedSdp, order: Fabric[]): Leg[] {
+  const usable = parsed.media.filter((m) => m.group);
+  const ordered = parsed.dup ? orderByDupGroup(parsed, usable) : usable;
+  return ordered.slice(0, order.length).map((m, i) => ({
+    fabric: order[i]!,
+    group: m.group!,
+    source: m.sourceFilter,
+    port: m.port,
+  }));
 }
 
-function inCidr(ip: string, cidr: string): boolean {
-  const [net, bitsRaw] = cidr.split('/');
-  if (!net || !bitsRaw) return false;
-  const bits = Number(bitsRaw);
-  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  return ((ipToInt(ip) & mask) >>> 0) === ((ipToInt(net) & mask) >>> 0);
+/** `a=group:DUP PRIMARY SECONDARY` plus `a=mid:` per block defines the leg order. */
+function orderByDupGroup(parsed: ParsedSdp, media: SdpMedia[]): SdpMedia[] {
+  const groupLine = parsed.raw.split(/\r?\n/).find((l) => /^a=group:DUP\b/i.test(l));
+  const mids = groupLine ? groupLine.trim().split(/\s+/).slice(1) : [];
+  if (!mids.length) return media;
+  const midOf = (m: SdpMedia) => m.lines.find((l) => l.startsWith('a=mid:'))?.slice('a=mid:'.length).trim();
+  const byMid = new Map(media.map((m) => [midOf(m), m]));
+  const ordered = mids.map((mid) => byMid.get(mid)).filter((m): m is SdpMedia => !!m);
+  // Anything the group did not name keeps its original position behind the named ones.
+  return [...ordered, ...media.filter((m) => !ordered.includes(m))];
 }
 
 /**
- * Assigns a fabric to every leg: primarily from the source subnet, falling back to
- * the order of the m= lines (leg 0 = red, leg 1 = blue).
+ * How many separate essences this SDP describes. More than one means it cannot be
+ * represented as a single sender — a video+audio SDP is not a redundant pair, and
+ * treating its two `m=` lines as legs would NAT an audio group as if it were the
+ * second path of the video.
  */
-export function assignFabrics(parsed: ParsedSdp, subnets: FabricSubnets): Leg[] {
-  const bySubnet = (src: string | null): Fabric | null => {
-    if (!src) return null;
-    if (subnets.red && inCidr(src, subnets.red)) return 'red';
-    if (subnets.blue && inCidr(src, subnets.blue)) return 'blue';
-    return null;
-  };
-
-  const order: Fabric[] = ['red', 'blue'];
-  const legs: Leg[] = [];
-  for (const m of parsed.media) {
-    if (!m.group) continue;
-    const src = m.sourceFilter ?? parsed.originAddress;
-    const fabric = bySubnet(src) ?? order[legs.length % 2]!;
-    legs.push({ fabric, group: m.group, source: m.sourceFilter, port: m.port });
-  }
-  return legs;
+export function essenceCount(parsed: ParsedSdp): number {
+  const usable = parsed.media.filter((m) => m.group);
+  if (parsed.dup) return usable.length > 2 ? usable.length - 1 : 1;
+  return usable.length;
 }
 
 export interface SdpRewrite {

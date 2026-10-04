@@ -16,14 +16,19 @@ export interface DomainConfig {
   kind: 'internal' | 'external';
   /** Reachability of the node API from this domain + interface_bindings. */
   iface: { name: string; address: string };
-  /** Source subnets per fabric — used to determine an SDP leg's fabric. */
-  fabricSubnets: Record<Fabric, string | null>;
+  /**
+   * Which fabric the FIRST `m=` line of an SDP belongs to. The rest follows from it.
+   *
+   * Deliberately not detected from source subnets: the configuration already states
+   * where each domain hangs on each switch, so the mapping is a property of the plant,
+   * not something to infer from an address — and inferring it wrongly silently NATs a
+   * stream onto the wrong fabric.
+   */
+  firstLeg: Fabric;
   /** This domain's L3 interface per switch: ingress when source, egress when target. */
   switchInterface: Record<Fabric, string>;
   /** Pool for senders created **in** this domain. */
   pool: PoolConfig;
-  /** This domain's ts-refclk for the SDP override; null = pass through. */
-  ptpRefclk: string | null;
   enabled: boolean;
 }
 
@@ -61,6 +66,11 @@ export function registryUrl(cfg: RegistryConfig): string | null {
   const host = cfg.ip.includes(':') ? `[${cfg.ip}]` : cfg.ip; // IPv6 literal
   const isDefaultPort = (cfg.tls && port === 443) || (!cfg.tls && port === 80);
   return isDefaultPort ? `${scheme}://${host}` : `${scheme}://${host}:${port}`;
+}
+
+/** Leg order of a domain: the first `m=` line, then the other fabric. */
+export function legOrder(domain: DomainConfig): Fabric[] {
+  return domain.firstLeg === 'blue' ? ['blue', 'red'] : ['red', 'blue'];
 }
 
 /**
@@ -156,10 +166,9 @@ export const DEFAULT_CONFIG: AppConfig = {
       label: 'Internal system',
       kind: 'internal',
       iface: { name: 'eth0', address: '127.0.0.1' },
-      fabricSubnets: { red: null, blue: null },
+      firstLeg: 'red',
       switchInterface: { red: '', blue: '' },
       pool: emptyPool('239.201.0.0'),
-      ptpRefclk: null,
       enabled: true,
     },
   ],
@@ -179,12 +188,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   receivers: [],
   mirrors: [],
 };
-
-export function internalDomain(cfg: AppConfig): DomainConfig {
-  const d = cfg.domains.find((x) => x.kind === 'internal');
-  if (!d) throw new Error('no internal domain configured');
-  return d;
-}
 
 export function domainById(cfg: AppConfig, id: string): DomainConfig {
   const d = cfg.domains.find((x) => x.id === id);

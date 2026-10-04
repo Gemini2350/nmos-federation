@@ -8,10 +8,9 @@ const domain = (id: string, kind: 'internal' | 'external', base: string): Domain
   label: id,
   kind,
   iface: { name: 'eth0', address: '10.0.0.1' },
-  fabricSubnets: { red: null, blue: null },
+  firstLeg: 'red',
   switchInterface: { red: 'Vlan101', blue: 'Vlan102' },
   pool: { base, pairs: 2, sourceNat: null },
-  ptpRefclk: null,
   enabled: true,
 });
 

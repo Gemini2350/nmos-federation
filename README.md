@@ -42,13 +42,10 @@ docker compose up -d --build
 
 Then open `http://<host>:8080` and configure it under **Settings**:
 
-1. **Domains** — one internal, one per partner network. Pick **our IP in this network**
-   from the host's interfaces (that is where this software publishes its own node API for
-   that domain); give the red/blue **source subnets**, which is how a stream's leg is
-   assigned to a fabric; the **L3 interface** this domain has on each switch, needed only
-   with NAT enabled; and a multicast pool whose base address is **even**. The ID next to
-   the name is an internal key — devices refer to it, so it follows the name while the
-   entry is new and is fixed once saved.
+1. **Domains** — one for your own facility, one per partner network. Pick **our IP in
+   this network** from the host's interfaces; that is where this software publishes its
+   own node API for that domain. The ID next to the name is an internal key that devices
+   refer to, so it follows the name while the entry is new and is fixed once saved.
 2. **Registries** — assign each to a domain and give it an **IP and port**, or use
    **DNS-SD**. The URL is assembled for you and shown next to the fields; the port
    defaults to 80. Several registries per domain are fine.
@@ -58,10 +55,12 @@ Then open `http://<host>:8080` and configure it under **Settings**:
    was found, which search domains the host has and every name that was queried, so a
    miss is diagnosable. Both unicast DNS-SD and mDNS (`.local`) are tried, and both the
    current `_nmos-register._tcp` and the older `_nmos-registration._tcp` service name.
-3. **NAT and switches** — host and credentials per fabric, plus the NAT group range.
-   Leave the driver on `mock` at first: the software then logs the switch commands
-   instead of sending them, which lets you see the whole federation in your
-   controller without touching the network.
+3. **NAT**, at the bottom of the page — this is where the plant is described: host and
+   credentials per switch, and per domain its **L3 interface on each switch**, which
+   fabric the **first `m=` line** of an incoming SDP belongs to, and the multicast
+   **pool** (base address must be even). Leave the driver on `mock` at first: the
+   software then logs the switch commands instead of sending them, which lets you see
+   the whole federation in your controller without touching the network.
 
 The **Channels** page shows a status line per registry — resolved address, state,
 how many of our resources it holds, the age of the last heartbeat and the last error —

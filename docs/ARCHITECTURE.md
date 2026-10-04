@@ -93,8 +93,9 @@ same network.
 |---|---|
 | **Our IP in this network** (`iface.address`) | the address **this host** holds in that network. It is published as `node.href` and `api.endpoints[].host`, so a controller in that domain fetches our resources and a virtual sender's `/transportfile` over it. The settings page offers the host's own interfaces rather than a free-text field, because a wrong value here is invisible until a controller tries to fetch a transport file. |
 | `iface.name` | OS interface name, used for `interface_bindings` and to look up the MAC for `interfaces[].port_id` |
-| **Subnet red/blue** (`fabricSubnets`) | source subnets of the two fabrics *in this domain*. A stream's leg is assigned to a fabric by matching its source IP against these; if neither matches, the order of the `m=` lines decides |
-| **L3 interface red/blue** (`switchInterface`) | this domain's interface on each switch — SVI, routed port or port-channel. For a channel, ingress is the source domain's and egress the target domain's, which is why they live on the domain rather than on the switch. Only needed with NAT enabled |
+| **L3 interface red/blue** (`switchInterface`) | this domain's interface on each switch — SVI, routed port or port-channel. For a channel, ingress is the source domain's and egress the target domain's. Configured in the NAT section, since it describes how the domain hangs on the NAT device |
+| **First m= line** (`firstLeg`) | which fabric the first media section of an incoming SDP belongs to; the other leg takes the other fabric |
+| **Role** (`kind`) | marks which domain is your own house. It drives the defaults when creating a device and the "exactly one of these" check — the engine never branches on it, direction comes solely from a device's source and target domain |
 
 ### IDs are keys, not labels
 
@@ -331,8 +332,20 @@ pool base 239.200.0.0, pair index i
   index** ("the next free address").
 - For a single-leg source only the address of the fabric the source is on is used;
   the other stays reserved and unused.
-- Fabric assignment of an SDP leg: primarily from the source domain's subnets, else
-  from the order of the `m=` lines (leg 0 = red, leg 1 = blue).
+- Fabric assignment of an SDP leg is **positional**, from the source domain's
+  `firstLeg`: the first media section takes that fabric, the other leg the other one.
+  For a redundant SDP the order comes from the `a=mid:` values named in `a=group:DUP`,
+  which is what actually defines the primary, falling back to the order of the `m=`
+  lines.
+
+  It is deliberately *not* derived from source subnets. The configuration already states
+  which domain hangs on which switch interface, so the mapping belongs to the plant
+  description; inferring it from an address only adds a way to silently NAT a stream onto
+  the wrong fabric.
+- An SDP carrying **more than one essence** — video and audio together, say — is
+  refused. Its second `m=` line is not a redundant leg, and treating it as one would NAT
+  an audio group as the video's second path and publish a sender describing only the
+  first essence.
 - Overlapping pools of two domains are a **warning**, not an error: with genuinely
   separate networks that is legitimate, and the software cannot tell.
 
@@ -441,7 +454,7 @@ Input: the `transport_file` from the vRX's IS-05 activation.
 | `m=` port/payload | unchanged |
 | `a=fmtp:` | unchanged (essence description) |
 | `a=group:DUP` / several `m=` | every leg gets its counterpart from the pool |
-| `a=ts-refclk:ptp=…` | passed through by default, optionally overridden with the target domain's `ptpRefclk` |
+| `a=ts-refclk:ptp=…` | passed through unchanged |
 | `a=mediaclk:` | unchanged |
 
 With **NAT disabled** there is no transformation: the SDP is copied verbatim and the
@@ -450,8 +463,9 @@ routed between the two houses.
 
 > The PTP question is real: both houses must be locked to the same time (TAI),
 > otherwise the stream arrives on the target side but its timestamps do not match the
-> local grandmaster. The override only rescues the receiver's SDP plausibility check,
-> not the physics.
+> local grandmaster. Rewriting `ts-refclk` would only paper over a receiver's
+> plausibility check without changing the physics, so it is passed through as-is and the
+> timing stays an operational matter.
 
 ## 8. Channel lifecycle
 
@@ -489,19 +503,17 @@ release the pool.
   "domains": [
     { "id": "internal", "label": "Own facility", "kind": "internal",
       "iface": { "name": "eth0", "address": "10.1.0.10" },
-      "fabricSubnets": { "red": "10.1.1.0/24", "blue": "10.1.2.0/24" },
       "switchInterface": { "red": "Vlan101", "blue": "Vlan102" },
       "pool": { "base": "239.201.0.0", "pairs": 64,
                 "sourceNat": { "red": "10.1.1.100", "blue": "10.1.2.100" } },
-      "ptpRefclk": null, "enabled": true },
+      "firstLeg": "red", "enabled": true },
 
     { "id": "partnerA", "label": "Partner A", "kind": "external",
       "iface": { "name": "eth1", "address": "10.9.0.10" },
-      "fabricSubnets": { "red": "10.9.1.0/24", "blue": "10.9.2.0/24" },
       "switchInterface": { "red": "Vlan901", "blue": "Vlan902" },
       "pool": { "base": "239.200.0.0", "pairs": 64,
                 "sourceNat": { "red": "10.9.1.100", "blue": "10.9.2.100" } },
-      "ptpRefclk": null, "enabled": true },
+      "firstLeg": "red", "enabled": true },
 
     { "id": "partnerB", "label": "Partner B", "kind": "external", "…": "…" }
   ],
@@ -667,8 +679,9 @@ already routed.
    This blocks roadmap item 3.
 2. **The exact EOS syntax and interface placement** (ingress vs. egress/twice NAT)
    needs verifying against the platform actually used.
-3. **PTP across domain boundaries** — pass `ts-refclk` through or override it? An
-   operational decision; both are prepared technically.
+3. **PTP across domain boundaries** — `ts-refclk` is passed through unchanged. Both
+   houses have to be locked to the same TAI; that is an operational requirement, not
+   something the gateway can fix.
 4. **IS-05 activation modes**: only `activate_immediate`; `activate_scheduled_*`
    answers 501. To be added for planned switchovers.
 5. **Collisions in the target network** — a domain's federation pool has to be

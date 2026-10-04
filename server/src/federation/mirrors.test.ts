@@ -134,14 +134,13 @@ const domain = (id: string, kind: 'internal' | 'external', red: string, blue: st
   label: id,
   kind,
   iface: { name: kind === 'internal' ? 'eth0' : 'eth1', address: '127.0.0.1' },
-  fabricSubnets: kind === 'internal' ? { red: '10.1.1.0/24', blue: '10.1.2.0/24' } : { red: '10.9.1.0/24', blue: '10.9.2.0/24' },
+  firstLeg: 'red',
   switchInterface: { red, blue },
   pool: {
     base,
     pairs: 8,
     sourceNat: kind === 'internal' ? { red: '10.1.1.200', blue: '10.1.2.200' } : { red: '10.9.1.200', blue: '10.9.2.200' },
   },
-  ptpRefclk: null,
   enabled: true,
 });
 
