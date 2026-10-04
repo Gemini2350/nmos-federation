@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="NMOS Federation">
+  <title>NMOS Federation</title>
+  <!--
+    Two facilities, each its own NMOS domain, joined by two paths: the red and blue
+    ST 2022-7 fabrics, which stay separate end to end.
+    The arcs are deliberately gentle. Raising them to fill the square turns the mark into
+    a pointed eye and loses the left-to-right reading, which is the thing worth keeping —
+    a link between two places is a horizontal idea. The nodes overlap the arc ends so the
+    pinch where the two paths meet never shows.
+    Structure follows the viewer's theme; the fabrics never do, because red and blue
+    carry meaning.
+  -->
+  <style>
+    .node { fill: #1f2933; }
+    @media (prefers-color-scheme: dark) { .node { fill: #e8edf2; } }
+  </style>
+
+  <g fill="none" stroke-linecap="round">
+    <path d="M18 32 Q32 10 46 32" stroke="#d6453a" stroke-width="7" />
+    <path d="M18 32 Q32 54 46 32" stroke="#3a78c9" stroke-width="7" />
+  </g>
+  <circle class="node" cx="12" cy="32" r="10" />
+  <circle class="node" cx="52" cy="32" r="10" />
+</svg>

@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="ui/public/icon-dark.svg">
+  <img src="ui/public/icon.svg" alt="" width="84" align="right">
+</picture>
+
 # NMOS Federation
 
 A gateway for exchanging individual signals between separate ST 2110 / NMOS systems.

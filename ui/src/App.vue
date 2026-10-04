@@ -4,7 +4,7 @@ import { RouterLink, RouterView } from 'vue-router';
 
 <template>
   <header>
-    <h1>NMOS Federation</h1>
+    <h1><img src="/icon.svg" alt="" width="24" height="24" />NMOS Federation</h1>
     <nav>
       <RouterLink to="/channels">Channels</RouterLink>
       <RouterLink to="/devices">Devices</RouterLink>
@@ -19,7 +19,7 @@ import { RouterLink, RouterView } from 'vue-router';
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
 body { margin: 0; }
 header { display: flex; gap: 2rem; align-items: baseline; padding: 1rem 1.5rem; border-bottom: 1px solid #8884; }
-h1 { font-size: 1.1rem; margin: 0; }
+h1 { font-size: 1.1rem; margin: 0; display: flex; align-items: center; gap: 0.5rem; }
 nav { display: flex; gap: 1rem; }
 nav a { text-decoration: none; opacity: 0.7; }
 nav a.router-link-active { opacity: 1; font-weight: 600; }
