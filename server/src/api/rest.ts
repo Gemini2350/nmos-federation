@@ -236,12 +236,18 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     const query = engine.queryClient(req.params.id);
     if (!query) return reply.code(404).send({ error: `no registry ${req.params.id}, or it is disabled` });
     try {
-      const [senders, receivers, devices, flows] = await Promise.all([
-        query.senders(),
-        query.receivers(),
-        query.devices(),
-        query.flows().catch(() => []),
+      // Paged, not a single GET: a registry that caps a page would otherwise hand us a
+      // silently truncated list. The paging stats go to the GUI so a hard cap is visible.
+      const [senderPage, receiverPage, devicePage, flowPage] = await Promise.all([
+        query.getAll<Awaited<ReturnType<typeof query.senders>>[number]>('senders'),
+        query.getAll<Awaited<ReturnType<typeof query.receivers>>[number]>('receivers'),
+        query.getAll<Awaited<ReturnType<typeof query.devices>>[number]>('devices'),
+        query.getAll<Awaited<ReturnType<typeof query.flows>>[number]>('flows').catch(() => ({ items: [], pages: 0, truncated: false, limit: null })),
       ]);
+      const senders = senderPage.items;
+      const receivers = receiverPage.items;
+      const devices = devicePage.items;
+      const flows = flowPage.items;
       const deviceById = new Map(devices.map((d) => [d.id, d]));
       const flowById = new Map(flows.map((f) => [f.id, f]));
       const ourNodes = new Set(store.current.domains.map((d) => engine.nodeId(d.id)));
@@ -259,6 +265,11 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
       };
 
       return {
+        paging: {
+          limit: senderPage.limit,
+          pages: senderPage.pages + receiverPage.pages + devicePage.pages + flowPage.pages,
+          truncated: senderPage.truncated || receiverPage.truncated || devicePage.truncated || flowPage.truncated,
+        },
         senders: senders.map((s) => ({
           ...s,
           ...annotate(s),

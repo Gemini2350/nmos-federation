@@ -12,6 +12,7 @@ const filter = ref('');
 const busy = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
+const paging = ref<{ limit: number | null; pages: number; truncated: boolean } | null>(null);
 
 const device = computed(() => cfg.value?.devices.find((d) => d.id === deviceId.value) ?? null);
 const registries = computed(() => (cfg.value?.registries ?? []).filter((r) => r.enabled));
@@ -50,8 +51,10 @@ async function browse() {
     const res = await api.browse(sourceRegistry.value);
     senders.value = res.senders;
     receivers.value = res.receivers;
+    paging.value = res.paging;
     error.value = null;
-    notice.value = `${res.senders.length} senders, ${res.receivers.length} receivers`;
+    const paged = res.paging.limit ? ` · ${res.paging.pages} pages at limit ${res.paging.limit}` : '';
+    notice.value = `${res.senders.length} senders, ${res.receivers.length} receivers${paged}`;
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -149,6 +152,9 @@ onMounted(load);
       <label>Filter <input v-model="filter" placeholder="label or device" /></label>
       <button :disabled="busy || !sourceRegistry" @click="browse">{{ busy ? 'working…' : 'Browse' }}</button>
     </div>
+    <p v-if="paging?.truncated" class="warn">
+      The registry returned more pages than this browse follows — the list may be incomplete.
+    </p>
     <p v-if="!cfg?.devices.length" class="warn">No devices yet — create one under Devices first; it supplies the direction and the NAT setting.</p>
   </section>
 

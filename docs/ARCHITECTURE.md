@@ -199,6 +199,44 @@ because the far end was briefly unreachable is worse than leaving it running.
 On teardown the remote receiver is released **before** our sender disappears — the same
 ordering rule as everywhere else.
 
+### Browsing a registry: pagination
+
+Listing a registry's resources is not one GET. Five things have to be right, and each
+one silently truncates or corrupts the result if skipped — all five are implemented in
+`nmos/query-client.ts` and pinned by tests against a stub that reproduces them:
+
+1. **A registry may cap a page.** A default cap of 10 exists in the field. Trusting the
+   first response loses everything past the boundary.
+2. **Both directions have to be walked.** The parameterless base response is defined as
+   the most recently updated resources in descending order, so `rel="next"` — toward
+   newer — is a dead end from there: nothing is newer than "most recent". A large,
+   mostly stable registry's older majority only appears walking `rel="prev"`.
+3. **The next URL is built from the `X-Paging-*` cursors, not taken from the `Link`
+   header.** A real registry emits a malformed Link header, missing the `?` before its
+   query string, which 404s if followed verbatim. The header's `rel` names are still
+   used as the continue/stop signal.
+4. **Cursors are sent unencoded.** They are version stamps of the form
+   `<seconds>:<nanoseconds>`, and percent-encoding that colon is known to make a real
+   registry stop responding.
+5. **The cursor is not a strict boundary.** The resource sitting exactly at it can
+   reappear as the first item of the next page, for instance when two resources share a
+   version timestamp, so results are collected into a map keyed by id.
+
+On top of that, the bare collection is probed once to read `X-Paging-Limit` and that
+limit is then restated on every request: one registry returns a self-contradictory
+`X-Paging-Since: 0:0` — "nothing older exists" — for a parameterless request while
+older pages do exist, and answers correctly as soon as `paging.limit` is stated at all.
+Two requests to the base is the price of a correct walk.
+
+The paging statistics reach the GUI, so a registry whose pagination outruns the page
+cap is visible rather than quietly returning a short list.
+
+> These are not hypotheticals: they are the failure modes documented in
+> [taqq505/nmos-simple-rds-mirror](https://github.com/taqq505/nmos-simple-rds-mirror),
+> a control-plane-only IS-04 mirror that hit each of them against real registries.
+> Worth reading — it solves the half of this problem we do not (metadata consistency
+> without touching the fabric), and declares multicast NAT an explicit non-goal.
+
 ### What is deliberately not done
 
 - Copies are re-homed under **our** node in the target domain, with our own IDs. The

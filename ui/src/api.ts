@@ -254,7 +254,10 @@ export const api = {
     return req<DiscoveryResult>(`/discovery${q.size ? `?${q}` : ''}`);
   },
   refreshDiscovery: () => req<{ ok: boolean }>('/discovery/refresh', { method: 'POST' }),
-  browse: (registryId: string) => req<{ senders: BrowseSender[]; receivers: BrowseReceiver[] }>(`/registries/${registryId}/browse`),
+  browse: (registryId: string) =>
+    req<{ paging: { limit: number | null; pages: number; truncated: boolean }; senders: BrowseSender[]; receivers: BrowseReceiver[] }>(
+      `/registries/${registryId}/browse`,
+    ),
   mirrors: () => req<Mirror[]>('/mirrors'),
   createMirror: (body: {
     kind: 'sender' | 'receiver';
