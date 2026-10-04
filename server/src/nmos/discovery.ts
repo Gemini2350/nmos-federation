@@ -293,6 +293,21 @@ export async function discoverMdns(timeoutMs = MDNS_TIMEOUT_MS): Promise<Discove
   return { found, tried, notes };
 }
 
+/**
+ * Best candidate first: **unicast always before mDNS**, then lower TXT `pri` within the
+ * same mechanism, then a stable order.
+ *
+ * Unicast is the administratively configured answer; mDNS is opportunistic and fragile
+ * across subnets. A `pri` value only ranks registries announced the same way — an mDNS
+ * announcement with a better `pri` must not override what the network's DNS says.
+ * (The original ordering compared URLs as strings on a tie, so an mDNS hit on a bare IP
+ * beat a unicast hit on a hostname simply because a digit sorts before a letter.)
+ */
+export function compareCandidates(a: DiscoveredRegistry, b: DiscoveredRegistry): number {
+  const viaRank = (r: DiscoveredRegistry) => (r.via === 'unicast' ? 0 : 1);
+  return viaRank(a) - viaRank(b) || a.priority - b.priority || a.url.localeCompare(b.url);
+}
+
 export interface DiscoverOptions {
   /** Explicitly configured search domain; empty = take the host's. */
   domain?: string;
@@ -348,7 +363,7 @@ export async function discoverRegistries(opts: DiscoverOptions = {}): Promise<Di
     return true;
   });
 
-  usable.sort((a, b) => a.priority - b.priority || a.url.localeCompare(b.url));
+  usable.sort(compareCandidates);
 
   // The same registry is routinely announced under both service types, and a dual
   // stack host answers twice. One entry per address is what the operator wants to see.

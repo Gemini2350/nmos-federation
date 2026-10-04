@@ -419,6 +419,25 @@ Conversely, an empty translation table after a static rule is the typical pictur
 "configuration accepted, hardware not programmed" — only a traffic test decides. See
 open point 1.
 
+### Requests the way a browser sends them
+
+A browser's fetch helper typically sets `content-type: application/json` on every
+request, body or not, and Fastify's default parser rejects a JSON content-type with an
+empty body. That made every bodyless action in the GUI — Test, Reconcile, Remove
+leftovers, Re-resolve, Retry, Refresh — fail with 400, while every check made with
+`curl`, which sends no such header, passed. Both sides are fixed: the client only declares
+JSON when it sends some, and the server treats an empty JSON body as an empty object. A
+test drives the real routes with the browser's exact request shape, and fails without the
+fix.
+
+### A registry nothing is registered in
+
+A bridge is the node, so a registry whose domain no bridge uses holds nothing of ours
+and has nothing to heartbeat — it was never contacted, and its status said "not contacted
+yet" forever, which tells the operator nothing about whether the address is right. Such
+registries are now probed read-only at startup, after a settings change and on every
+reconcile, and the status says "reachable — no bridge uses this domain yet".
+
 ### What costs time, and what must not
 
 A registry that caps a page at 10 turns every listing into a sequence of round trips,
@@ -598,6 +617,12 @@ DNS-SD is harder than it looks, and three separate things have to be right:
 3. **TXT decides the outcome.** `api_proto` picks http vs https, `api_ver` says whether
    the registry speaks our version, and `pri` orders candidates — lower wins, and
    `>= 100` means "not for production", which is filtered out.
+
+**Unicast always ranks above mDNS**, whatever the `pri` values. Unicast DNS-SD is the
+administratively configured answer; mDNS is opportunistic and fragile across subnets, and
+an mDNS announcement with a better `pri` must not override what the network's DNS says.
+`pri` only orders registries announced the same way. The status shows which mechanism
+produced the address in use.
 
 Both service names are queried: `_nmos-register._tcp` and the pre-v1.3
 `_nmos-registration._tcp`, which is what nmos-cpp still advertises.

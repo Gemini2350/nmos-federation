@@ -31,6 +31,8 @@ function breakdown(r: RegistryStatus): string {
 
 function heartbeat(r: RegistryStatus): string {
   if (r.state === 'disabled') return '—';
+  // No node here means nothing to heartbeat — "never" would read as a fault.
+  if (r.resources.total === 0 && r.heartbeat.ageSeconds === null && !r.heartbeat.failures) return 'n/a';
   if (r.heartbeat.ageSeconds === null) return r.heartbeat.failures ? `${r.heartbeat.failures} failed` : 'never';
   const age = r.heartbeat.ageSeconds < 1 ? 'just now' : `${r.heartbeat.ageSeconds} s ago`;
   return r.heartbeat.failures ? `${age} · ${r.heartbeat.failures} failed since` : age;
@@ -72,11 +74,14 @@ async function test(r: RegistryStatus) {
           <small>{{ r.mode }} · {{ r.version }}</small>
         </td>
         <td>{{ domainName(r.domainId) }}</td>
-        <td><code v-if="r.url">{{ r.url }}</code><small v-else>not resolved</small></td>
+        <td>
+          <code v-if="r.url">{{ r.url }}</code><small v-else>not resolved</small>
+          <small v-if="r.via">via {{ r.via === 'unicast' ? 'unicast DNS-SD' : 'mDNS' }}</small>
+        </td>
         <td><span class="dot" :class="r.state"></span>{{ LABEL[r.state] }}</td>
         <td :title="breakdown(r)">{{ r.resources.total }}</td>
         <td>{{ heartbeat(r) }}</td>
-        <td class="err">{{ r.error || '' }}</td>
+        <td :class="r.error ? 'err' : 'note'">{{ r.error || r.note || '' }}</td>
         <td v-if="props.showTest" class="test">
           <button :disabled="testing === r.id" @click="test(r)">{{ testing === r.id ? '…' : 'Test' }}</button>
           <small v-if="probeResult[r.id]" :class="probeResult[r.id]!.ok ? 'ok' : 'bad'">{{ probeResult[r.id]!.text }}</small>
@@ -104,6 +109,7 @@ async function test(r: RegistryStatus) {
 .dot.unknown { background: #8888; }
 .dot.disabled { background: #8884; }
 .err { color: #d24b3e; max-width: 22rem; }
+.note { opacity: 0.7; font-size: 0.8rem; }
 .test small { display: block; white-space: nowrap; }
 .ok { color: #2e9e4f; }
 .bad { color: #d24b3e; }

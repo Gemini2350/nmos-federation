@@ -1,7 +1,9 @@
 /** Thin client for the backend. Endpoints: see server/src/api/rest.ts. */
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  // Only declare JSON when there is JSON. A content-type with an empty body is what the
+  // server used to reject with 400 for every bodyless POST.
   const res = await fetch(`/api${path}`, {
-    headers: { 'content-type': 'application/json' },
+    ...(init?.body ? { headers: { 'content-type': 'application/json' } } : {}),
     ...init,
   });
   const text = await res.text();
@@ -219,6 +221,10 @@ export interface RegistryStatus {
   error: string | null;
   resources: { total: number; node: number; device: number; source: number; flow: number; sender: number; receiver: number };
   heartbeat: { lastOkAt: string | null; ageSeconds: number | null; failures: number };
+  /** Context for an otherwise puzzling state, e.g. reachable but nothing registered. */
+  note?: string | null;
+  /** For a DNS-SD registry: which mechanism produced the address in use. */
+  via?: 'unicast' | 'mdns' | null;
 }
 
 export interface Status {

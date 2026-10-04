@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addressFromInstanceName, buildCandidate, discoverRegistries, hostSearchDomains, SERVICE_TYPES } from './discovery.js';
+import { addressFromInstanceName, buildCandidate, compareCandidates, discoverRegistries, hostSearchDomains, SERVICE_TYPES } from './discovery.js';
 
 async function resolvConf(body: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'resolv-'));
@@ -105,6 +105,29 @@ test('the same registry announced under both service types is listed once', asyn
   // both service types are queried, and no duplicate survives an empty result.
   const result = await discoverRegistries({ domain: 'invalid.example', unicastOnly: true });
   assert.equal(new Set(result.found.map((f) => f.url)).size, result.found.length);
+});
+
+test('a unicast hit wins over an mDNS one at equal pri', () => {
+  const mdns = buildCandidate('a', 'r.local', 8010, TXT, 0, 'mdns', '_nmos-register._tcp', 'local', '192.168.11.100');
+  const unicast = buildCandidate('b', 'registrar1.home.int', 8010, TXT, 0, 'unicast', '_nmos-register._tcp', 'home.int');
+  // Same pri — the old string tie-break put the IP first because a digit sorts before a
+  // letter, so the configured unicast answer silently lost.
+  assert.equal([mdns, unicast].sort(compareCandidates)[0]!.via, 'unicast');
+  assert.equal([unicast, mdns].sort(compareCandidates)[0]!.via, 'unicast');
+});
+
+test('unicast wins even when the mDNS announcement has the better pri', () => {
+  // pri only ranks registries announced the same way; mDNS must never override what the
+  // network's DNS says.
+  const mdns = buildCandidate('a', 'r.local', 8010, { ...TXT, pri: '5' }, 0, 'mdns', '_nmos-register._tcp', 'local', '10.0.0.1');
+  const unicast = buildCandidate('b', 'reg.example', 8010, { ...TXT, pri: '20' }, 0, 'unicast', '_nmos-register._tcp', 'example');
+  assert.equal([mdns, unicast].sort(compareCandidates)[0]!.via, 'unicast');
+});
+
+test('within one mechanism the lower pri still wins', () => {
+  const a = buildCandidate('a', 'one.example', 8010, { ...TXT, pri: '20' }, 0, 'unicast', '_nmos-register._tcp', 'example');
+  const b = buildCandidate('b', 'two.example', 8010, { ...TXT, pri: '5' }, 0, 'unicast', '_nmos-register._tcp', 'example');
+  assert.equal([a, b].sort(compareCandidates)[0]!.host, 'two.example');
 });
 
 test('both the current and the legacy service type are queried', () => {

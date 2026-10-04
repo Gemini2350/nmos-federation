@@ -12,6 +12,7 @@ import { PoolManager } from './federation/pools.js';
 import { Engine } from './federation/engine.js';
 import { registerNodeApi } from './nmos/node-api.js';
 import { registerRestApi } from './api/rest.js';
+import { acceptEmptyJson } from './api/http.js';
 import { AristaEapiDriver } from './switch/arista-eapi.js';
 import { MockSwitchDriver } from './switch/mock.js';
 import type { SwitchDriver } from './switch/driver.js';
@@ -19,6 +20,7 @@ import { FABRICS } from './types.js';
 import { log } from './util/log.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
 
 async function main() {
   const store = new ConfigStore();
@@ -52,6 +54,7 @@ async function main() {
   const nmosApps: FastifyInstance[] = [];
   for (const domain of cfg.domains.filter((d) => d.enabled)) {
     const app = Fastify({ logger: false });
+    acceptEmptyJson(app);
     registerNodeApi(app, domain, engine, state);
     // If two domains share an IP (lab setup), the configured port is already
     // taken. Take the next free one and set the href accordingly — better than
@@ -91,6 +94,7 @@ async function main() {
 
   // --- GUI + REST ----------------------------------------------------------
   const gui = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+  acceptEmptyJson(gui);
   await gui.register(fastifyWebsocket);
   registerRestApi(gui, store, engine, state, async () => {
     // Configuration changes take effect immediately: rebuild the drivers (hosts and

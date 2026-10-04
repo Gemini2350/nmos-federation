@@ -540,6 +540,22 @@ export class Engine {
     return removed;
   }
 
+  /**
+   * Probes every registry that holds nothing of ours.
+   *
+   * A bridge is the node, so a registry whose domain no bridge uses has nothing to
+   * register and nothing to heartbeat — and was therefore never contacted at all. Its
+   * status sat on "not contacted yet" forever, which says nothing about whether the
+   * address is right. A read-only probe answers that.
+   */
+  async probeIdleRegistries(): Promise<void> {
+    await Promise.all(
+      [...this.registries.values()]
+        .filter((c) => c.registered.size === 0)
+        .map((c) => c.probe().catch(() => undefined)),
+    );
+  }
+
   async syncRegistries(registryIds?: string[]): Promise<void> {
     const ids = registryIds ?? [...this.registries.keys()];
     for (const id of ids) {
@@ -592,6 +608,7 @@ export class Engine {
   async restartRegistries(cleanup = false): Promise<void> {
     this.buildRegistryClients();
     await this.syncRegistries();
+    await this.probeIdleRegistries();
     if (cleanup) await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
       client.startHeartbeat(this.nodeIdsFor(client.cfg.domainId));
@@ -615,6 +632,7 @@ export class Engine {
     }
 
     await this.syncRegistries();
+    await this.probeIdleRegistries();
     // Anything a previous run left behind is only findable through the query API.
     await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
@@ -879,6 +897,7 @@ export class Engine {
   /** Desired/actual reconciliation: catch registries up, verify switch rules. */
   async reconcile(): Promise<void> {
     await this.syncRegistries();
+    await this.probeIdleRegistries();
 
     // An enabled sender copy with no channel at all has never run, or its channel was
     // lost. Bring it up. A channel in `failed` is left alone — retrying it every
@@ -934,9 +953,19 @@ export class Engine {
    * so the GUI never silently hides a registry.
    */
   registryStatus() {
+    const used = new Set(this.usableBridges().flatMap((b) => [b.sourceDomain, b.targetDomain]));
     return this.cfg.registries.map((reg) => {
       const client = this.registries.get(reg.id);
-      if (client) return client.status();
+      if (client) {
+        const st = client.status();
+        // Reachable and empty is normal before a bridge exists — say so, rather than
+        // leaving the operator to wonder why nothing appears.
+        const note =
+          st.resources.total === 0 && st.reachable && !used.has(reg.domainId)
+            ? 'reachable — no bridge uses this domain yet, so nothing is registered'
+            : null;
+        return { ...st, note };
+      }
       return {
         id: reg.id,
         label: reg.label,
@@ -949,6 +978,7 @@ export class Engine {
         error: reg.enabled ? 'no client yet' : null,
         resources: { total: 0, node: 0, device: 0, source: 0, flow: 0, sender: 0, receiver: 0 },
         heartbeat: { lastOkAt: null, ageSeconds: null, failures: 0 },
+        note: null,
       };
     });
   }

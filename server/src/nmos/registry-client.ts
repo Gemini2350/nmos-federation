@@ -29,6 +29,8 @@ export interface RegistryStatus {
   heartbeat: { lastOkAt: string | null; ageSeconds: number | null; failures: number };
   /** How many candidates the last DNS-SD run returned; null for a manual registry. */
   discovered?: number | null;
+  /** For a DNS-SD registry: which mechanism produced the address in use. */
+  via?: 'unicast' | 'mdns' | null;
 }
 
 export class RegistryError extends Error {
@@ -295,6 +297,7 @@ export class RegistryClient {
       error: this.lastError,
       resources: this.countResources(),
       discovered: this.cfg.mode === 'dnssd' ? this.lastDiscovery.length : null,
+      via: this.cfg.mode === 'dnssd' ? (this.lastDiscovery.find((d) => d.url === this.base)?.via ?? null) : null,
       heartbeat: {
         lastOkAt: this.lastHeartbeatOk === null ? null : new Date(this.lastHeartbeatOk).toISOString(),
         ageSeconds,
