@@ -101,7 +101,14 @@ per domain (node href, manifest fetch, mDNS). Configuration and state live in
 ## Starting over
 
 Configuration and state live in `./config`, mounted into the container at `/config`.
-A clean installation is:
+
+**The clean way** is *Settings → Maintenance → Factory reset*. It tears down every
+channel, unregisters everything this installation put into the registries, and only then
+wipes configuration and state — in that order, because the node ids derive from the
+state, so wiping first would leave resources in the registries that nobody can identify
+any more.
+
+**By hand**, if the GUI is not reachable:
 
 ```bash
 docker compose down
@@ -109,11 +116,13 @@ rm -rf config
 docker compose up -d --build
 ```
 
-That leaves whatever this installation registered behind in the registries, because
-nothing is there to unregister it any more. Two things clear it up: the registry's own
-garbage collection removes a node once its heartbeat stops, and **Settings → Maintenance
-→ Factory reset** does it properly — it tears down every channel, removes everything this
-installation put into the registries, and only then wipes configuration and state.
+This leaves whatever was registered behind, since nothing is left to unregister it. The
+registry's own garbage collection removes a node once its heartbeat stops, so it clears
+within a minute or two — and *Maintenance → Remove leftovers* clears it immediately.
+
+Upgrading does **not** need either: an older `config.json` keeps working. A registry's
+full `url` is migrated into address and port, fields that no longer exist are dropped,
+and string ids like `internal` stay valid — they are opaque keys.
 
 **Remove leftovers**, next to it, is the narrower tool: it asks each registry for
 everything belonging to our nodes and deletes whatever the current configuration does not

@@ -57,6 +57,7 @@ async function main() {
     // taken. Take the next free one and set the href accordingly — better than
     // leaving a domain without a node API.
     let bound = false;
+    let lastError: Error | null = null;
     for (let offset = 0; offset < 10 && !bound; offset++) {
       const port = cfg.nmosPort + offset;
       try {
@@ -69,6 +70,7 @@ async function main() {
           'node API bound',
         );
       } catch (e) {
+        lastError = e as Error;
         if ((e as { code?: string }).code !== 'EADDRINUSE') {
           log.error({ domain: domain.id, address: domain.iface.address, err: String(e) }, 'node API could not bind');
           break;
@@ -76,7 +78,13 @@ async function main() {
       }
     }
     if (!bound) {
-      log.error({ domain: domain.id, address: domain.iface.address }, 'node API could not bind — domain stays without an API');
+      const code = (lastError as { code?: string } | null)?.code;
+      const reason =
+        code === 'EADDRNOTAVAIL'
+          ? `${domain.iface.address} is not an address of this host`
+          : (lastError?.message ?? 'could not bind');
+      engine.markNodeApiUnavailable(domain.id, reason);
+      log.error({ domain: domain.id, address: domain.iface.address, reason }, 'node API could not bind — domain stays without an API');
       await app.close();
     }
   }

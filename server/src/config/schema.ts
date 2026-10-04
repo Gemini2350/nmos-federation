@@ -87,6 +87,19 @@ export function nextId(existing: string[]): string {
  * Fills in missing ids, so an API client does not have to invent them and the GUI never
  * has to show the field. Entries that already carry an id keep it untouched.
  */
+export function normalizeConfig(cfg: AppConfig): AppConfig {
+  for (const d of cfg.domains) {
+    // Added later; an older file simply has no leg order yet.
+    if (d.firstLeg !== 'red' && d.firstLeg !== 'blue') d.firstLeg = 'red';
+    // Fields that no longer exist. Leaving them makes the file look like it still
+    // configures something it does not.
+    delete (d as unknown as Record<string, unknown>)['fabricSubnets'];
+    delete (d as unknown as Record<string, unknown>)['ptpRefclk'];
+  }
+  for (const r of cfg.registries) delete (r as unknown as Record<string, unknown>)['domain'];
+  return normalizeIds(cfg);
+}
+
 export function normalizeIds(cfg: AppConfig): AppConfig {
   for (const d of cfg.domains) {
     if (!d.id) d.id = nextId(cfg.domains.map((x) => x.id));

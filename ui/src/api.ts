@@ -214,7 +214,18 @@ export interface Status {
   switches: Record<string, { reachable: boolean; version?: string; error?: string }>;
   registries: RegistryStatus[];
   pools: Record<string, { free: number; total: number; used: number[] }>;
-  domains: { id: string; label: string; kind: string; nodeId: string; registries: string[] }[];
+  domains: {
+    id: string;
+    label: string;
+    kind: string;
+    nodeId: string;
+    address: string;
+    /** null when no listener could be started for this domain. */
+    nodeApiPort: number | null;
+    /** Why the node API is not being served, when it is not. */
+    nodeApiError: string | null;
+    registries: string[];
+  }[];
   channels: number;
 }
 

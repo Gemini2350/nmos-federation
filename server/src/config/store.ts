@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, migrateRegistry, normalizeIds, registryUrl, type AppConfig } from './schema.js';
+import { DEFAULT_CONFIG, migrateRegistry, normalizeConfig, registryUrl, type AppConfig } from './schema.js';
 import { listInterfaces } from '../nmos/resources.js';
 import { validatePool } from '../federation/pool.js';
 import { overlappingPools } from '../federation/pools.js';
@@ -29,8 +29,9 @@ export class ConfigStore {
     try {
       const raw = await readFile(join(this.dir, 'config.json'), 'utf8');
       this.cfg = { ...structuredClone(DEFAULT_CONFIG), ...JSON.parse(raw) };
-      // Registries used to carry a full URL; keep those configurations working.
+      // Older files: registries carried a full URL, domains carried fields that are gone.
       this.cfg.registries = this.cfg.registries.map(migrateRegistry);
+      normalizeConfig(this.cfg);
       log.info({ dir: this.dir, domains: this.cfg.domains.length, registries: this.cfg.registries.length }, 'configuration loaded');
     } catch {
       // First start: the default 127.0.0.1 would publish a node href no controller can
@@ -145,7 +146,7 @@ export class ConfigStore {
   }
 
   async save(cfg: AppConfig): Promise<ConfigIssue[]> {
-    normalizeIds(cfg);
+    normalizeConfig(cfg);
     const issues = this.validate(cfg);
     const errors = issues.filter((i) => i.level === 'error');
     if (errors.length) {

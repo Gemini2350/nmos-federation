@@ -47,6 +47,11 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
   <p v-if="error" class="bad">{{ error }}</p>
 
   <section v-if="status" class="cards">
+    <div class="card bad-card" v-for="d in status.domains.filter((x) => x.nodeApiError)" :key="d.id">
+      <h3>{{ d.label }}</h3>
+      <span class="bad">no node API: {{ d.nodeApiError }}</span>
+      <small>its resources are registered but nothing answers at {{ d.address }}</small>
+    </div>
     <div class="card" v-if="!status.nat.enabled">
       <h3>NAT</h3>
       <span class="warn">globally off — SDPs are copied verbatim</span>
@@ -108,6 +113,7 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
 .head { display: flex; justify-content: space-between; align-items: center; }
 .cards { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1rem 0 1.5rem; }
 .card { border: 1px solid #8884; border-radius: 6px; padding: 0.6rem 0.9rem; min-width: 11rem; }
+.bad-card { border-color: #d24b3e88; }
 .card h3 { margin: 0 0 0.3rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
 .card small { display: block; opacity: 0.6; }
 .ok { color: #2e9e4f; }

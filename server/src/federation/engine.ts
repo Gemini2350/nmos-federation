@@ -68,6 +68,8 @@ export class Engine {
   private readonly domainPorts = new Map<string, number>();
   /** id -> the content hash and the version stamped for it, see stamp(). */
   private readonly versions = new Map<string, { hash: string; version: string }>();
+  /** Domains whose node API could not be served, with why. */
+  private readonly nodeApiErrors = new Map<string, string>();
 
   constructor(private deps: EngineDeps) {}
 
@@ -116,6 +118,15 @@ export class Engine {
 
   setDomainPort(domainId: string, port: number): void {
     this.domainPorts.set(domainId, port);
+  }
+
+  /**
+   * A domain whose address is not on this host gets no listener, and until now that was
+   * only a line in the log — the registry still held a node whose href answered nothing,
+   * which is a deployment that looks configured and quietly does not work.
+   */
+  markNodeApiUnavailable(domainId: string, reason: string): void {
+    this.nodeApiErrors.set(domainId, reason);
   }
 
   private portOf(domainId: string): number {
@@ -940,6 +951,9 @@ export class Engine {
         label: d.label,
         kind: d.kind,
         nodeId: this.nodeId(d.id),
+        address: d.iface.address,
+        nodeApiPort: this.domainPorts.get(d.id) ?? null,
+        nodeApiError: this.nodeApiErrors.get(d.id) ?? null,
         registries: registriesOf(this.cfg, d.id).map((r) => r.id),
       })),
       channels: this.channels().length,
