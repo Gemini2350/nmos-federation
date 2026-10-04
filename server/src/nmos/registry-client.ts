@@ -76,8 +76,8 @@ export class RegistryClient {
   lastDiscovery: DiscoveredRegistry[] = [];
   private heartbeatFailures = 0;
   private heartbeatIntervalMs = 5000;
-  /** What this registry knows about, as far as we can tell. */
-  readonly registered = new Set<string>();
+  /** What this registry knows about, keyed "type:id" -> the version we last sent. */
+  readonly registered = new Map<string, string>();
 
   constructor(
     readonly cfg: RegistryConfig,
@@ -135,7 +135,12 @@ export class RegistryClient {
     return `${base}/x-nmos/registration/${this.cfg.version}`;
   }
 
-  async register(type: ResourceType, data: { id: string }): Promise<void> {
+  async register(type: ResourceType, data: { id: string; version?: string }): Promise<boolean> {
+    const key = `${type}:${data.id}`;
+    // Nothing to say if the registry already holds this exact version. Re-POSTing an
+    // unchanged resource every reconcile is pure churn — and it only looked necessary
+    // because every build used to stamp a fresh version.
+    if (data.version && this.registered.get(key) === data.version) return false;
     const base = await this.resolve();
     const res = await request(`${this.apiBase(base)}/resource`, {
       method: 'POST',
@@ -149,9 +154,10 @@ export class RegistryClient {
     }
     this.reachable = true;
     this.lastError = null;
-    this.registered.add(`${type}:${data.id}`);
+    this.registered.set(key, data.version ?? '');
     if (type === 'node') this.nodeId = data.id;
     log.debug({ registry: this.cfg.id, type, id: data.id, status: res.status }, 'registered');
+    return true;
   }
 
   async unregister(type: ResourceType, id: string): Promise<void> {
@@ -246,7 +252,7 @@ export class RegistryClient {
 
   private countResources(): { total: number } & Record<ResourceType, number> {
     const counts = { total: 0, node: 0, device: 0, source: 0, flow: 0, sender: 0, receiver: 0 };
-    for (const key of this.registered) {
+    for (const key of this.registered.keys()) {
       const type = key.split(':')[0] as ResourceType;
       if (type in counts) counts[type]++;
       counts.total++;

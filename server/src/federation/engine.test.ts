@@ -299,6 +299,52 @@ test('a registry gets our node even with no federation device configured', async
   assert.equal(status.resources.node, 1);
 });
 
+test('an unchanged sync re-registers nothing', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+  const after = intReg.posts.length + extReg.posts.length;
+  assert.ok(after > 0, 'the first sync must register something');
+
+  // The reconciler runs this every 30 s. Stamping a fresh version on every build made it
+  // re-POST the whole tree each time, so a registry saw our resources "update"
+  // constantly for no reason.
+  await engine.syncRegistries();
+  await engine.syncRegistries();
+  assert.equal(intReg.posts.length + extReg.posts.length, after, 'nothing changed, so nothing should be sent');
+});
+
+test('a changed label is sent, with a new version', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+  const before = intReg.posts.filter((p) => p.type === 'receiver').at(-1)!;
+  cfg.receivers[0]!.label = 'Renamed';
+  await engine.syncRegistries();
+
+  const after = intReg.posts.filter((p) => p.type === 'receiver').at(-1)!;
+  assert.equal(after.data.label, 'Renamed');
+  assert.notEqual(after.data.version, before.data.version, 'changed content needs a new version');
+});
+
 test('a heartbeat 404 counts as contact, not as silence', async (t) => {
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();

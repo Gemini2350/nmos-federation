@@ -23,6 +23,7 @@ import { assignFabrics, essenceCount, parseSdp, rewriteSdp } from '../nmos/sdp.j
 import { programChannel, unprogramChannel, type SwitchDriver } from '../switch/driver.js';
 import type { Channel, FederationDevice, VirtualReceiver } from '../types.js';
 import type { MirrorEntry } from '../config/schema.js';
+import { createHash } from 'node:crypto';
 import { buildChannelPlan } from './channel.js';
 import type { PoolManager } from './pools.js';
 import type { ConnectionState, StateStore } from './state.js';
@@ -65,6 +66,8 @@ export class Engine {
   /** Node API port actually bound per domain — may differ from the configured one
    *  when two domains share an IP. The hrefs must reflect that. */
   private readonly domainPorts = new Map<string, number>();
+  /** id -> the content hash and the version stamped for it, see stamp(). */
+  private readonly versions = new Map<string, { hash: string; version: string }>();
 
   constructor(private deps: EngineDeps) {}
 
@@ -146,7 +149,11 @@ export class Engine {
     // The OS interface that actually carries this address, for its real MAC — IS-04
     // requires an EUI-48 in interfaces[].port_id.
     const iface = resolveInterface(domain.iface.address, domain.iface.name);
-    return buildNode(
+    // Stamped here rather than at the call sites: the registration plan builds the node
+    // directly, and an unstamped one carries a fresh version on every build — which is
+    // exactly the pointless re-POST this is meant to stop.
+    return this.stamp(
+      buildNode(
       {
         id: this.nodeId(domain.id),
         href: canonicalUrl('http', domain.iface.address, port, '/'),
@@ -155,8 +162,9 @@ export class Engine {
         interfaceName: domain.iface.name,
         mac: iface.mac,
       },
-      `NMOS Federation — ${domain.label}`,
-      { refclk: null },
+        `NMOS Federation — ${domain.label}`,
+        { refclk: null },
+      ),
     );
   }
 
@@ -168,6 +176,25 @@ export class Engine {
   isAttached(device: FederationDevice): boolean {
     const ids = new Set(this.cfg.domains.map((d) => d.id));
     return ids.has(device.sourceDomain) && ids.has(device.targetDomain);
+  }
+
+  /**
+   * Gives a resource a version that only changes when its content does.
+   *
+   * The builders stamp the current time by default, so every rebuild produced a new
+   * version and the whole tree was re-POSTed on every reconcile — a registry seeing our
+   * resources "update" every 30 seconds for no reason. A registry also rejects a re-POST
+   * that carries the same version with different content, so the two have to move
+   * together.
+   */
+  private stamp<T extends { id: string; version: string }>(res: T): T {
+    const { version: _ignored, ...content } = res;
+    const hash = createHash('sha1').update(JSON.stringify(content)).digest('hex');
+    const prev = this.versions.get(res.id);
+    if (prev?.hash === hash) return { ...res, version: prev.version };
+    const version = nmosVersion();
+    this.versions.set(res.id, { hash, version });
+    return { ...res, version };
   }
 
   receiversOf(device: FederationDevice): VirtualReceiver[] {
@@ -209,7 +236,7 @@ export class Engine {
           const conn = this.deps.state.connection(vrx.id).active;
           const caps = MEDIA_TYPES[vrx.format];
           receivers.push(
-            buildReceiver(
+            this.stamp(buildReceiver(
               this.receiverNmosId(vrx.id, domainId),
               devId,
               vrx.label,
@@ -217,18 +244,18 @@ export class Engine {
               caps.mediaTypes,
               [domain.iface.name],
               { sender_id: conn.sender_id, active: conn.master_enable },
-            ),
+            )),
           );
         }
         devices.push(
-          buildDevice(
+          this.stamp(buildDevice(
             devId,
             this.nodeId(domainId),
             device.label,
             this.connectionBase(domain),
             [],
             vrxList.map((v) => this.receiverNmosId(v.id, domainId)),
-          ),
+          )),
         );
       }
 
@@ -248,28 +275,28 @@ export class Engine {
           const sourceId = this.sourceNmosId(vrxId, domainId);
           const flowId = this.flowNmosId(vrxId, domainId);
           const senderId = this.senderNmosId(vrxId, domainId);
-          sources.push(buildSource(sourceId, mirrorId, label, essence));
-          flows.push(buildFlow(flowId, sourceId, mirrorId, label, essence));
+          sources.push(this.stamp(buildSource(sourceId, mirrorId, label, essence)));
+          flows.push(this.stamp(buildFlow(flowId, sourceId, mirrorId, label, essence)));
           senders.push(
-            buildSender(
+            this.stamp(buildSender(
               senderId,
               flowId,
               mirrorId,
               label,
               `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
               [domain.iface.name],
-            ),
+            )),
           );
         }
         devices.push(
-          buildDevice(
+          this.stamp(buildDevice(
             mirrorId,
             this.nodeId(domainId),
             device.mirrorLabel || `${device.label} ▸ ${device.sourceDomain}`,
             this.connectionBase(domain),
             mine.map((c) => this.senderNmosId(c.receiverId, domainId)),
             [],
-          ),
+          )),
         );
       }
     }
@@ -358,7 +385,7 @@ export class Engine {
     // First remove what should no longer be there — children before parents, and
     // the sender first: nobody should connect to a stream we are about to tear down.
     for (const type of [...REGISTER_ORDER].reverse()) {
-      for (const key of [...client.registered]) {
+      for (const key of [...client.registered.keys()]) {
         const [t, id] = key.split(':') as [ResourceType, string];
         if (t === type && !desiredKeys.has(key)) {
           await client.unregister(t, id).catch((e) => log.warn({ registry: client.id, key, err: String(e) }, 'unregister failed'));
@@ -406,16 +433,23 @@ export class Engine {
       const desired = new Set((plan.get(id) ?? []).map((r) => `${r.type}:${r.data.id}`));
       const removed: string[] = [];
 
-      // Children before parents, so a registry never sees a dangling reference.
+      // Scanning is the expensive half — six collections, each paginated — and the
+      // collections are independent, so they are fetched at once. Deleting still happens
+      // children before parents, so a registry never sees a dangling reference.
+      const scans = await Promise.all(
+        REGISTER_ORDER.map(async (type) => {
+          try {
+            return [type, (await query.getAll<{ id: string; node_id?: string }>(`${type}s`)).items] as const;
+          } catch (e) {
+            log.debug({ registry: id, type, err: String(e) }, 'orphan scan skipped');
+            return [type, [] as { id: string; node_id?: string }[]] as const;
+          }
+        }),
+      );
+      const byType = new Map(scans);
+
       for (const type of [...REGISTER_ORDER].reverse()) {
-        let items: { id: string; node_id?: string }[];
-        try {
-          items = (await query.getAll<{ id: string; node_id?: string }>(`${type}s`)).items;
-        } catch (e) {
-          log.debug({ registry: id, type, err: String(e) }, 'orphan scan skipped');
-          continue;
-        }
-        for (const item of items) {
+        for (const item of byType.get(type) ?? []) {
           const mine = type === 'node' ? ourNodes.has(item.id) : !!item.node_id && ourNodes.has(item.node_id);
           if (!mine) continue; // someone else's resource — hands off
           const key = `${type}:${item.id}`;
@@ -442,7 +476,7 @@ export class Engine {
     let removed = 0;
     for (const client of this.registries.values()) {
       for (const type of [...REGISTER_ORDER].reverse()) {
-        for (const key of [...client.registered]) {
+        for (const key of [...client.registered.keys()]) {
           const [t, id] = key.split(':') as [ResourceType, string];
           if (t !== type) continue;
           await client.unregister(t, id).catch((e) => log.warn({ key, err: String(e) }, 'unregister failed'));
@@ -495,13 +529,18 @@ export class Engine {
     return this.cfg.mirrors.find((m) => Engine.mirrorKey(m.id) === key);
   }
 
-  /** After a settings change: rebuild the clients, establish the desired state. */
-  async restartRegistries(): Promise<void> {
+  /**
+   * After a settings change: rebuild the clients and establish the desired state.
+   *
+   * `cleanup` is off by default and deliberately so. Scanning every collection of every
+   * registry costs seconds against a registry that caps pages, and a settings save is
+   * the most frequent operation there is — it used to make saving take eight seconds.
+   * Removing something is what can orphan a resource, so those paths ask for it.
+   */
+  async restartRegistries(cleanup = false): Promise<void> {
     this.buildRegistryClients();
     await this.syncRegistries();
-    // A domain or device that just disappeared leaves resources behind that the
-    // in-memory bookkeeping of the fresh clients knows nothing about.
-    await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
+    if (cleanup) await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
       client.startHeartbeat(this.nodeId(client.cfg.domainId));
     }

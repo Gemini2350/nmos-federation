@@ -440,6 +440,27 @@ Conversely, an empty translation table after a static rule is the typical pictur
 "configuration accepted, hardware not programmed" — only a traffic test decides. See
 open point 1.
 
+### What costs time, and what must not
+
+A registry that caps a page at 10 turns every listing into a sequence of round trips,
+and at a few hundred milliseconds each that adds up fast. Four rules keep it out of the
+operator's way:
+
+- **A settings save must not scan.** Scanning every collection of every registry is the
+  expensive operation; a save is the most frequent one. Orphan cleanup therefore runs at
+  startup, on an explicit request, and when resetting — not on every save. That alone
+  took saving from 8.3 s to 0.2 s.
+- **Collections are scanned in parallel.** They are independent, so the six of them are
+  fetched at once rather than one after another: 9.0 s to 1.5 s.
+- **A page limit is a property of the registry, not of a collection.** It is learned
+  once and reused, instead of probing again for every collection.
+- **A resource's `version` changes only when its content does.** The builders stamp the
+  current time by default, so every rebuild produced a new version and the reconciler
+  re-registered the whole tree every 30 seconds — a registry watching our resources
+  "update" forever for no reason. Content is hashed and the version reused when it
+  matches, and a registration whose version the registry already holds is not sent at
+  all. A reconcile now sends nothing when nothing changed.
+
 ### Idempotence and the reconciler
 
 The software keeps a persisted desired state (`state.json` in the volume). A

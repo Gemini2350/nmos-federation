@@ -109,6 +109,9 @@ export interface PagedResult<T> {
 }
 
 export class QueryClient {
+  /** The registry's own page limit, learned once and reused for every collection. */
+  private pageLimit: number | null | undefined;
+
   /**
    * @param resolveRegistry resolves the registration API's base URL — the registry
    *   client's own resolver, which is the only thing that knows where a DNS-SD registry
@@ -179,42 +182,56 @@ export class QueryClient {
     let pages = 0;
     let truncated = false;
 
-    // Probe the bare collection once to learn the registry's own page limit. Beyond
-    // being useful, one registry is known to return a self-contradictory
-    // `X-Paging-Since: 0:0` ("nothing older exists") for a parameterless request while
-    // older pages do exist, and to answer correctly as soon as paging.limit is stated
-    // at all. Two requests to the base is the price of a correct walk.
-    const probe = await getRaw(base);
-    if (!probe.ok) throw new QueryError(`HTTP ${probe.status}`);
-    const limitHeader = probe.headers.get('x-paging-limit');
-    const limit = limitHeader ? Number(limitHeader) : null;
+    // The registry's page limit has to be learned from a parameterless request: one
+    // registry returns a self-contradictory `X-Paging-Since: 0:0` ("nothing older
+    // exists") for such a request while older pages do exist, and answers correctly as
+    // soon as paging.limit is stated at all. The limit is a property of the registry,
+    // not of the collection, so it is learned once and reused — browsing four
+    // collections used to pay for that probe four times over.
+    if (this.pageLimit === undefined) {
+      const probe = await getRaw(base);
+      if (!probe.ok) throw new QueryError(`HTTP ${probe.status}`);
+      const header = probe.headers.get('x-paging-limit');
+      this.pageLimit = header ? Number(header) : null;
+      pages++;
+    }
+    const limit = this.pageLimit;
     const baseUrl = limit ? withParams(base, { 'paging.limit': limit }) : base;
 
-    const walk = async (rel: 'next' | 'prev', cursorHeader: string, param: string) => {
-      let url = baseUrl;
+    // Fetch the first page once and walk outwards from it. Running each direction from
+    // scratch fetched the base twice per collection, which on a registry that answers in
+    // a few hundred milliseconds is time spent on a page already in hand.
+    const first = await getRaw(baseUrl);
+    if (!first.ok) throw new QueryError(`HTTP ${first.status}`);
+    const firstItems = (await first.json()) as T[];
+    pages++;
+    for (const item of firstItems) byId.set(item.id, item);
+    const firstRels = linkRels(first.headers.get('link'));
+
+    const walk = async (rel: 'next' | 'prev', cursorHeader: string, param: string, from: Response) => {
+      let cursor = from.headers.get(cursorHeader);
       let lastCursor: string | null = null;
       for (let i = 0; i < MAX_PAGES; i++) {
-        const res = await getRaw(url);
+        if (!cursor || cursor === lastCursor) return;
+        lastCursor = cursor;
+        const res = await getRaw(withParams(baseUrl, { [param]: cursor }));
         if (!res.ok) throw new QueryError(`HTTP ${res.status}`);
         const items = (await res.json()) as T[];
         pages++;
         for (const item of items) byId.set(item.id, item);
 
-        const rels = linkRels(res.headers.get('link'));
-        const cursor = res.headers.get(cursorHeader);
-        // Stop on: no such rel advertised, no cursor to continue from, an empty page,
-        // or a cursor that did not move (which would otherwise spin).
-        if (!rels.has(rel) || !cursor || !items.length || cursor === lastCursor) return;
-        lastCursor = cursor;
-        url = withParams(baseUrl, { [param]: cursor });
+        // Stop on: no such rel advertised, an empty page, or a cursor that did not move.
+        if (!linkRels(res.headers.get('link')).has(rel) || !items.length) return;
+        cursor = res.headers.get(cursorHeader);
       }
       truncated = true;
     };
 
-    // Older first: that is the direction that actually yields anything from the base
-    // response. Then newer, which matters once a cursor has been used.
-    await walk('prev', 'x-paging-since', 'paging.until');
-    await walk('next', 'x-paging-until', 'paging.since');
+    // Older first: that is the direction that actually yields anything from a base
+    // response defined as the most recent resources. Newer is only walked when the
+    // registry says there is something there.
+    if (firstRels.has('prev')) await walk('prev', 'x-paging-since', 'paging.until', first);
+    if (firstRels.has('next')) await walk('next', 'x-paging-until', 'paging.since', first);
 
     return { items: [...byId.values()], pages, truncated, limit };
   }
