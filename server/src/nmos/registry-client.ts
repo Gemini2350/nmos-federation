@@ -68,7 +68,8 @@ async function request(url: string, init: RequestInit & { timeoutMs?: number } =
 export class RegistryClient {
   private base: string | null = null;
   private timer: NodeJS.Timeout | null = null;
-  private nodeId: string | null = null;
+  /** Every node of ours this registry holds — one per bridge whose domain it serves. */
+  private nodeIds: string[] = [];
   reachable = false;
   lastError: string | null = null;
   private lastHeartbeatOk: number | null = null;
@@ -155,7 +156,7 @@ export class RegistryClient {
     this.reachable = true;
     this.lastError = null;
     this.registered.set(key, data.version ?? '');
-    if (type === 'node') this.nodeId = data.id;
+    if (type === 'node' && !this.nodeIds.includes(data.id)) this.nodeIds.push(data.id);
     log.debug({ registry: this.cfg.id, type, id: data.id, status: res.status }, 'registered');
     return true;
   }
@@ -176,18 +177,28 @@ export class RegistryClient {
     return this.registered.has(`${type}:${id}`);
   }
 
+  /** One POST per node we have here — a registry can hold several, one per bridge. */
   async heartbeat(): Promise<void> {
-    if (!this.nodeId) return;
+    if (!this.nodeIds.length) return;
     const base = await this.resolve();
-    const res = await request(`${this.apiBase(base)}/health/nodes/${this.nodeId}`, { method: 'POST' });
-    if (res.status === 200) {
+    let anyMissing = false;
+    let ok = true;
+    for (const nodeId of this.nodeIds) {
+      const res = await request(`${this.apiBase(base)}/health/nodes/${nodeId}`, { method: 'POST' });
+      if (res.status === 404) anyMissing = true;
+      else if (res.status !== 200) {
+        ok = false;
+        this.lastError = `heartbeat: HTTP ${res.status}`;
+      }
+    }
+    if (ok && !anyMissing) {
       this.reachable = true;
       this.lastError = null;
       this.lastHeartbeatOk = Date.now();
       this.heartbeatFailures = 0;
       return;
     }
-    if (res.status === 404) {
+    if (anyMissing) {
       // The registry answered, it just does not know this node — typically after a
       // registry restart. That is still successful contact: recording it as nothing at
       // all is what made the status sit on "not contacted yet" while the registry was
@@ -197,16 +208,16 @@ export class RegistryClient {
       this.heartbeatFailures++;
       this.lastError = 'node unknown to the registry — re-registering';
       this.registered.clear();
+      this.nodeIds = [];
       this.onNeedsReregister(this);
       return;
     }
     this.reachable = false;
     this.heartbeatFailures++;
-    this.lastError = `heartbeat: HTTP ${res.status}`;
   }
 
-  startHeartbeat(nodeId: string, intervalMs = 5000): void {
-    this.nodeId = nodeId;
+  startHeartbeat(nodeIds: string[], intervalMs = 5000): void {
+    this.nodeIds = [...new Set([...this.nodeIds, ...nodeIds])];
     this.stopHeartbeat();
     this.heartbeatIntervalMs = intervalMs;
     this.timer = setInterval(() => {

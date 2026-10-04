@@ -1,5 +1,5 @@
 import type { AppConfig, DomainConfig } from '../config/schema.js';
-import { domainById, legOrder, registriesOf } from '../config/schema.js';
+import { bridgeOf, domainById, legOrder, registriesOf } from '../config/schema.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
 import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
@@ -23,6 +23,7 @@ import { assignFabrics, essenceCount, parseSdp, rewriteSdp } from '../nmos/sdp.j
 import { programChannel, unprogramChannel, type SwitchDriver } from '../switch/driver.js';
 import type { Channel, FederationDevice, VirtualReceiver } from '../types.js';
 import type { MirrorEntry } from '../config/schema.js';
+import type { Bridge } from '../types.js';
 import { createHash } from 'node:crypto';
 import { buildChannelPlan } from './channel.js';
 import type { PoolManager } from './pools.js';
@@ -97,23 +98,41 @@ export class Engine {
   }
 
   // -- IDs -----------------------------------------------------------------
-  nodeId(domainId: string): string {
-    return uuidv5(this.seed, `node:${domainId}`);
+  /**
+   * One node for the whole installation.
+   *
+   * There used to be one per domain, because `node.href` has to be reachable from the
+   * domain it is published in. That is solved without a second identity: a registry only
+   * ever receives resources of its own domain, so the same node is registered in each
+   * one carrying *that* domain's address. Same id everywhere, correct address locally,
+   * and a single entry in the registry instead of one per domain.
+   */
+  /** A bridge is a node: one per pair of domains, named by the operator. */
+  nodeId(bridgeId: string): string {
+    return uuidv5(this.seed, `node:${bridgeId}`);
   }
-  deviceId(devId: string, domainId: string): string {
-    return uuidv5(this.nodeId(domainId), `device:${devId}`);
+  /** The bridge a device hangs on, or undefined when it points at nothing. */
+  bridgeFor(device: FederationDevice): Bridge | undefined {
+    return bridgeOf(this.cfg, device);
   }
-  receiverNmosId(vrxId: string, domainId: string): string {
-    return uuidv5(this.nodeId(domainId), `receiver:${vrxId}`);
+  bridgeOfReceiver(vrxId: string): Bridge | undefined {
+    const device = this.cfg.devices.find((d) => d.receiverIds.includes(vrxId) || this.receiversOf(d).some((r) => r.id === vrxId));
+    return device ? this.bridgeFor(device) : undefined;
   }
-  senderNmosId(vrxId: string, domainId: string): string {
-    return uuidv5(this.nodeId(domainId), `sender:${vrxId}`);
+  deviceId(devId: string): string {
+    return uuidv5(this.seed, `device:${devId}`);
   }
-  sourceNmosId(vrxId: string, domainId: string): string {
-    return uuidv5(this.nodeId(domainId), `source:${vrxId}`);
+  receiverNmosId(vrxId: string): string {
+    return uuidv5(this.seed, `receiver:${vrxId}`);
   }
-  flowNmosId(vrxId: string, domainId: string): string {
-    return uuidv5(this.nodeId(domainId), `flow:${vrxId}`);
+  senderNmosId(vrxId: string): string {
+    return uuidv5(this.seed, `sender:${vrxId}`);
+  }
+  sourceNmosId(vrxId: string): string {
+    return uuidv5(this.seed, `source:${vrxId}`);
+  }
+  flowNmosId(vrxId: string): string {
+    return uuidv5(this.seed, `flow:${vrxId}`);
   }
 
   setDomainPort(domainId: string, port: number): void {
@@ -155,57 +174,82 @@ export class Engine {
     return canonicalUrl('http', domain.iface.address, this.portOf(domain.id), '/x-nmos/connection/v1.1');
   }
 
-  private nodeResource(domain: DomainConfig) {
+  /**
+   * The node for a bridge, as seen from one of its two domains.
+   *
+   * A bridge is the node, so its address depends on which side is asking: the same id is
+   * registered in each domain's registries carrying that domain's address, because a
+   * registry only ever receives resources of its own domain.
+   */
+  private nodeResource(bridge: Bridge, domain: DomainConfig) {
     const port = this.portOf(domain.id);
     // The OS interface that actually carries this address, for its real MAC — IS-04
     // requires an EUI-48 in interfaces[].port_id.
     const iface = resolveInterface(domain.iface.address, domain.iface.name);
-    // Stamped here rather than at the call sites: the registration plan builds the node
-    // directly, and an unstamped one carries a fresh version on every build — which is
-    // exactly the pointless re-POST this is meant to stop.
     return this.stamp(
       buildNode(
-      {
-        id: this.nodeId(domain.id),
-        href: canonicalUrl('http', domain.iface.address, port, '/'),
-        address: domain.iface.address,
-        port,
-        interfaceName: domain.iface.name,
-        mac: iface.mac,
-      },
-        `NMOS Federation — ${domain.label}`,
+        {
+          id: this.nodeId(bridge.id),
+          href: canonicalUrl('http', domain.iface.address, port, '/'),
+          address: domain.iface.address,
+          port,
+          interfaceName: domain.iface.name,
+          mac: iface.mac,
+        },
+        bridge.label,
         { refclk: null },
       ),
+      // Keyed by side: one id, two addresses, and a single cache entry would make them
+      // overwrite each other's version on every build.
+      `node:${bridge.id}:${domain.id}`,
     );
-  }
-
-  /**
-   * Whether a device's domains still exist. A rename or a removal leaves devices
-   * pointing at nothing; they must be skipped rather than throw, or one stale reference
-   * takes the whole registration pass — and with it the startup — down with it.
-   */
-  isAttached(device: FederationDevice): boolean {
-    const ids = new Set(this.cfg.domains.map((d) => d.id));
-    return ids.has(device.sourceDomain) && ids.has(device.targetDomain);
   }
 
   /**
    * Gives a resource a version that only changes when its content does.
    *
    * The builders stamp the current time by default, so every rebuild produced a new
-   * version and the whole tree was re-POSTed on every reconcile — a registry seeing our
-   * resources "update" every 30 seconds for no reason. A registry also rejects a re-POST
-   * that carries the same version with different content, so the two have to move
-   * together.
+   * version and the whole tree was re-POSTed on every reconcile. A registry also rejects
+   * a re-POST that carries the same version with different content, so the two have to
+   * move together.
    */
-  private stamp<T extends { id: string; version: string }>(res: T): T {
+  private stamp<T extends { id: string; version: string }>(res: T, cacheKey = res.id): T {
     const { version: _ignored, ...content } = res;
     const hash = createHash('sha1').update(JSON.stringify(content)).digest('hex');
-    const prev = this.versions.get(res.id);
+    const prev = this.versions.get(cacheKey);
     if (prev?.hash === hash) return { ...res, version: prev.version };
     const version = nmosVersion();
-    this.versions.set(res.id, { hash, version });
+    this.versions.set(cacheKey, { hash, version });
     return { ...res, version };
+  }
+
+  /**
+   * Whether a device still hangs on a bridge whose domains exist. A removal or a rename
+   * leaves devices pointing at nothing; they are skipped rather than allowed to throw,
+   * or one stale reference takes the whole registration pass — and startup — with it.
+   */
+  isAttached(device: FederationDevice): boolean {
+    const bridge = this.bridgeFor(device);
+    if (!bridge) return false;
+    const ids = new Set(this.cfg.domains.map((d) => d.id));
+    return ids.has(bridge.sourceDomain) && ids.has(bridge.targetDomain);
+  }
+
+  /** Bridges that are switched on and whose two domains both exist. */
+  usableBridges(): Bridge[] {
+    const ids = new Set(this.cfg.domains.filter((d) => d.enabled).map((d) => d.id));
+    return this.cfg.bridges.filter((b) => b.enabled && ids.has(b.sourceDomain) && ids.has(b.targetDomain));
+  }
+
+  devicesOf(bridge: Bridge): FederationDevice[] {
+    return this.cfg.devices.filter((d) => d.bridgeId === bridge.id);
+  }
+
+  /** Every node a registry in this domain holds — one per bridge touching it. */
+  nodeIdsFor(domainId: string): string[] {
+    return this.usableBridges()
+      .filter((b) => b.sourceDomain === domainId || b.targetDomain === domainId)
+      .map((b) => this.nodeId(b.id));
   }
 
   receiversOf(device: FederationDevice): VirtualReceiver[] {
@@ -230,6 +274,7 @@ export class Engine {
   /** Every resource of a domain — exactly what the node API serves there. */
   domainResources(domainId: string) {
     const domain = domainById(this.cfg, domainId);
+    const nodes: ReturnType<typeof buildNode>[] = [];
     const devices: ReturnType<typeof buildDevice>[] = [];
     const receivers: ReturnType<typeof buildReceiver>[] = [];
     const senders: ReturnType<typeof buildSender>[] = [];
@@ -237,42 +282,40 @@ export class Engine {
     const flows: ReturnType<typeof buildFlow>[] = [];
     const active = this.activeChannels();
 
-    for (const device of this.cfg.devices) {
-      if (!this.isAttached(device)) continue;
-      const vrxList = this.receiversOf(device);
+    for (const bridge of this.usableBridges()) {
+      const isSource = bridge.sourceDomain === domainId;
+      const isTarget = bridge.targetDomain === domainId;
+      if (!isSource && !isTarget) continue;
 
-      if (device.sourceDomain === domainId) {
-        const devId = this.deviceId(device.id, domainId);
-        for (const vrx of vrxList) {
-          const conn = this.deps.state.connection(vrx.id).active;
-          const caps = MEDIA_TYPES[vrx.format];
-          receivers.push(
-            this.stamp(buildReceiver(
-              this.receiverNmosId(vrx.id, domainId),
-              devId,
-              vrx.label,
-              caps.format,
-              caps.mediaTypes,
-              [domain.iface.name],
-              { sender_id: conn.sender_id, active: conn.master_enable },
-            )),
-          );
+      nodes.push(this.nodeResource(bridge, domain));
+
+      for (const device of this.devicesOf(bridge)) {
+        const devId = this.deviceId(device.id);
+        const vrxList = this.receiversOf(device);
+
+        // Receivers live on the source side, senders on the target side. The same
+        // device appears on both, carrying whatever exists there.
+        if (isSource) {
+          for (const vrx of vrxList) {
+            const conn = this.deps.state.connection(vrx.id).active;
+            const caps = MEDIA_TYPES[vrx.format];
+            receivers.push(
+              this.stamp(
+                buildReceiver(
+                  this.receiverNmosId(vrx.id),
+                  devId,
+                  vrx.label,
+                  caps.format,
+                  caps.mediaTypes,
+                  [domain.iface.name],
+                  { sender_id: conn.sender_id, active: conn.master_enable },
+                ),
+              ),
+            );
+          }
         }
-        devices.push(
-          this.stamp(buildDevice(
-            devId,
-            this.nodeId(domainId),
-            device.label,
-            this.connectionBase(domain),
-            [],
-            vrxList.map((v) => this.receiverNmosId(v.id, domainId)),
-          )),
-        );
-      }
 
-      if (device.targetDomain === domainId) {
-        const mirrorId = this.deviceId(`${device.id}:mirror`, domainId);
-        const mine = active.filter((c) => c.deviceId === device.id);
+        const mine = isTarget ? active.filter((c) => c.deviceId === device.id) : [];
         for (const channel of mine) {
           const essence = this.essenceOf(channel);
           if (!essence) continue;
@@ -283,43 +326,49 @@ export class Engine {
             this.mirrorOf(vrxId)?.originLabel ??
             essence.label ??
             vrxId;
-          const sourceId = this.sourceNmosId(vrxId, domainId);
-          const flowId = this.flowNmosId(vrxId, domainId);
-          const senderId = this.senderNmosId(vrxId, domainId);
-          sources.push(this.stamp(buildSource(sourceId, mirrorId, label, essence)));
-          flows.push(this.stamp(buildFlow(flowId, sourceId, mirrorId, label, essence)));
+          const sourceId = this.sourceNmosId(vrxId);
+          const flowId = this.flowNmosId(vrxId);
+          const senderId = this.senderNmosId(vrxId);
+          sources.push(this.stamp(buildSource(sourceId, devId, label, essence)));
+          flows.push(this.stamp(buildFlow(flowId, sourceId, devId, label, essence)));
           senders.push(
-            this.stamp(buildSender(
-              senderId,
-              flowId,
-              mirrorId,
-              label,
-              `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
-              [domain.iface.name],
-            )),
+            this.stamp(
+              buildSender(
+                senderId,
+                flowId,
+                devId,
+                label,
+                `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
+                [domain.iface.name],
+              ),
+            ),
           );
         }
+
         devices.push(
-          this.stamp(buildDevice(
-            mirrorId,
-            this.nodeId(domainId),
-            device.mirrorLabel || `${device.label} ▸ ${device.sourceDomain}`,
-            this.connectionBase(domain),
-            mine.map((c) => this.senderNmosId(c.receiverId, domainId)),
-            [],
-          )),
+          this.stamp(
+            buildDevice(
+              devId,
+              this.nodeId(bridge.id),
+              device.label,
+              this.connectionBase(domain),
+              mine.map((c) => this.senderNmosId(c.receiverId)),
+              isSource ? vrxList.map((v) => this.receiverNmosId(v.id)) : [],
+            ),
+            `device:${domainId}:${devId}`,
+          ),
         );
       }
     }
 
-    return { self: this.nodeResource(domain), devices, receivers, senders, sources, flows };
+    return { nodes, devices, receivers, senders, sources, flows };
   }
 
-  /** Which registries this device serves on the target side. */
-  private targetRegistryIds(device: FederationDevice): string[] {
-    const all = registriesOf(this.cfg, device.targetDomain).map((r) => r.id);
-    if (!device.targetRegistries.length) return all;
-    return device.targetRegistries.filter((id) => all.includes(id));
+  /** Which registries a bridge publishes into on its target side. */
+  private targetRegistryIds(bridge: Bridge): string[] {
+    const all = registriesOf(this.cfg, bridge.targetDomain).map((r) => r.id);
+    if (!bridge.targetRegistries.length) return all;
+    return bridge.targetRegistries.filter((id) => all.includes(id));
   }
 
   /**
@@ -334,54 +383,46 @@ export class Engine {
       plan.set(registryId, list);
     };
 
-    // The node of a domain belongs in every enabled registry of that domain, whether or
-    // not a federation device exists yet. Without this an installation with no devices
-    // registers nothing at all, its heartbeat 404s every five seconds forever, and the
-    // status cannot tell "registry unreachable" from "we never put anything there".
-    for (const domain of this.cfg.domains.filter((d) => d.enabled)) {
-      const self = this.nodeResource(domain);
-      for (const reg of registriesOf(this.cfg, domain.id)) {
-        add(reg.id, { type: 'node', data: self });
-      }
-    }
+    for (const bridge of this.usableBridges()) {
+      const srcRegs = registriesOf(this.cfg, bridge.sourceDomain).map((r) => r.id);
+      const tgtRegs = this.targetRegistryIds(bridge);
+      const srcRes = this.domainResources(bridge.sourceDomain);
+      const tgtRes = this.domainResources(bridge.targetDomain);
+      const nodeId = this.nodeId(bridge.id);
+      const devices = this.devicesOf(bridge);
 
-    for (const device of this.cfg.devices) {
-      if (!this.isAttached(device)) {
-        log.warn(
-          { device: device.id, label: device.label, source: device.sourceDomain, target: device.targetDomain },
-          'device is detached from its domains — skipped until they exist again',
-        );
-        continue;
-      }
-      const srcRegs = registriesOf(this.cfg, device.sourceDomain).map((r) => r.id);
-      const tgtRegs = this.targetRegistryIds(device);
-
-      const srcRes = this.domainResources(device.sourceDomain);
-      const srcDevId = this.deviceId(device.id, device.sourceDomain);
       for (const registryId of srcRegs) {
-        add(registryId, { type: 'node', data: srcRes.self });
-        const dev = srcRes.devices.find((d) => d.id === srcDevId);
-        if (dev) add(registryId, { type: 'device', data: dev });
-        for (const vrx of this.receiversOf(device)) {
-          const rx = srcRes.receivers.find((r) => r.id === this.receiverNmosId(vrx.id, device.sourceDomain));
-          if (rx) add(registryId, { type: 'receiver', data: rx });
+        const self = srcRes.nodes.find((n) => n.id === nodeId);
+        if (self) add(registryId, { type: 'node', data: self });
+        for (const device of devices) {
+          const devId = this.deviceId(device.id);
+          const dev = srcRes.devices.find((d) => d.id === devId);
+          if (dev) add(registryId, { type: 'device', data: dev });
+          for (const vrx of this.receiversOf(device)) {
+            const rx = srcRes.receivers.find((r) => r.id === this.receiverNmosId(vrx.id));
+            if (rx) add(registryId, { type: 'receiver', data: rx });
+          }
         }
       }
 
-      const tgtRes = this.domainResources(device.targetDomain);
-      const mirrorId = this.deviceId(`${device.id}:mirror`, device.targetDomain);
       for (const registryId of tgtRegs) {
-        add(registryId, { type: 'node', data: tgtRes.self });
-        const dev = tgtRes.devices.find((d) => d.id === mirrorId);
-        if (dev) add(registryId, { type: 'device', data: dev });
-        for (const channel of this.activeChannels().filter((c) => c.deviceId === device.id)) {
-          const vrxId = channel.receiverId;
-          const src = tgtRes.sources.find((s) => s.id === this.sourceNmosId(vrxId, device.targetDomain));
-          const flow = tgtRes.flows.find((f) => f.id === this.flowNmosId(vrxId, device.targetDomain));
-          const sender = tgtRes.senders.find((s) => s.id === this.senderNmosId(vrxId, device.targetDomain));
-          if (src) add(registryId, { type: 'source', data: src });
-          if (flow) add(registryId, { type: 'flow', data: flow });
-          if (sender) add(registryId, { type: 'sender', data: sender });
+        const self = tgtRes.nodes.find((n) => n.id === nodeId);
+        if (self) add(registryId, { type: 'node', data: self });
+        for (const device of devices) {
+          const devId = this.deviceId(device.id);
+          // The same device id as on the source side, carrying its senders instead of
+          // its receivers — one device per group of ports, wherever it shows up.
+          const dev = tgtRes.devices.find((d) => d.id === devId);
+          if (dev) add(registryId, { type: 'device', data: dev });
+          for (const channel of this.activeChannels().filter((c) => c.deviceId === device.id)) {
+            const vrxId = channel.receiverId;
+            const src = tgtRes.sources.find((x) => x.id === this.sourceNmosId(vrxId));
+            const flow = tgtRes.flows.find((f) => f.id === this.flowNmosId(vrxId));
+            const sender = tgtRes.senders.find((x) => x.id === this.senderNmosId(vrxId));
+            if (src) add(registryId, { type: 'source', data: src });
+            if (flow) add(registryId, { type: 'flow', data: flow });
+            if (sender) add(registryId, { type: 'sender', data: sender });
+          }
         }
       }
     }
@@ -433,7 +474,7 @@ export class Engine {
    * them once the heartbeat stops.
    */
   async cleanupOrphans(registryIds?: string[]): Promise<{ registry: string; removed: string[] }[]> {
-    const ourNodes = new Set(this.cfg.domains.map((d) => this.nodeId(d.id)));
+    const ourNodes = new Set(this.cfg.bridges.map((b) => this.nodeId(b.id)));
     const plan = this.registrationPlan();
     const results: { registry: string; removed: string[] }[] = [];
 
@@ -553,7 +594,7 @@ export class Engine {
     await this.syncRegistries();
     if (cleanup) await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
-      client.startHeartbeat(this.nodeId(client.cfg.domainId));
+      client.startHeartbeat(this.nodeIdsFor(client.cfg.domainId));
     }
   }
 
@@ -577,7 +618,7 @@ export class Engine {
     // Anything a previous run left behind is only findable through the query API.
     await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
-      client.startHeartbeat(this.nodeId(client.cfg.domainId));
+      client.startHeartbeat(this.nodeIdsFor(client.cfg.domainId));
     }
     this.reconcileTimer = setInterval(() => void this.reconcile(), 30_000);
     this.reconcileTimer.unref?.();
@@ -596,13 +637,16 @@ export class Engine {
     if (!vrx) throw new Error(`unknown virtual receiver ${vrxId}`);
     const device = this.cfg.devices.find((d) => d.id === vrx.deviceId);
     if (!device) throw new Error(`receiver ${vrxId} is not attached to a device`);
-    if (!this.isAttached(device))
-      throw new Error(`device "${device.label}" points at a domain that does not exist (${device.sourceDomain} → ${device.targetDomain})`);
+    const bridge = this.bridgeFor(device);
+    if (!bridge || !this.isAttached(device)) {
+      throw new Error(`device "${device.label}" is not on a usable bridge`);
+    }
     const sdp = conn.transport_file.data;
     if (!sdp) throw new Error('activation without a transport_file');
     return this.runChannel({
       key: vrxId,
       device,
+      bridge,
       sdp,
       originSenderId: conn.sender_id,
       ...(vrx.proxyFor ? { proxy: vrx.proxyFor } : {}),
@@ -619,8 +663,10 @@ export class Engine {
     if (!mirror) throw new Error(`unknown sender copy ${mirrorId}`);
     const device = this.cfg.devices.find((d) => d.id === mirror.deviceId);
     if (!device) throw new Error(`sender copy ${mirrorId} is not attached to a device`);
-    if (!this.isAttached(device))
-      throw new Error(`device "${device.label}" points at a domain that does not exist (${device.sourceDomain} → ${device.targetDomain})`);
+    const bridge = this.bridgeFor(device);
+    if (!bridge || !this.isAttached(device)) {
+      throw new Error(`device "${device.label}" is not on a usable bridge`);
+    }
     const query = this.queries.get(mirror.registryId);
     if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
 
@@ -631,6 +677,7 @@ export class Engine {
     return this.runChannel({
       key: Engine.mirrorKey(mirrorId),
       device,
+      bridge,
       sdp,
       originSenderId: sender.id,
       mirrorId,
@@ -644,12 +691,13 @@ export class Engine {
   private async runChannel(opts: {
     key: string;
     device: FederationDevice;
+    bridge: Bridge;
     sdp: string;
     originSenderId: string | null;
     mirrorId?: string;
     proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
   }): Promise<Channel> {
-    const { key, device, sdp } = opts;
+    const { key, device, bridge, sdp } = opts;
 
     await this.deactivate(key); // switching over = tear the old federation down cleanly
 
@@ -658,8 +706,8 @@ export class Engine {
       receiverId: key,
       deviceId: device.id,
       ...(opts.mirrorId ? { mirrorId: opts.mirrorId } : {}),
-      sourceDomain: device.sourceDomain,
-      targetDomain: device.targetDomain,
+      sourceDomain: bridge.sourceDomain,
+      targetDomain: bridge.targetDomain,
       state: 'allocating',
       originSdp: sdp,
       originSenderId: opts.originSenderId,
@@ -671,8 +719,8 @@ export class Engine {
       updatedAt: new Date().toISOString(),
     };
 
-    const source = domainById(this.cfg, device.sourceDomain);
-    const target = domainById(this.cfg, device.targetDomain);
+    const source = domainById(this.cfg, bridge.sourceDomain);
+    const target = domainById(this.cfg, bridge.targetDomain);
     let programmed = false;
 
     try {
@@ -688,9 +736,9 @@ export class Engine {
       if (!channel.legs.length) throw new Error('SDP without a usable multicast group');
       essenceFromSdp(parsed); // fail early, before touching the switch
 
-      const useNat = this.cfg.nat.enabled && device.nat;
+      const useNat = this.cfg.nat.enabled && bridge.nat;
       if (useNat) {
-        channel.allocation = this.deps.pools.allocate(device.targetDomain);
+        channel.allocation = this.deps.pools.allocate(bridge.targetDomain);
         channel.state = 'programming';
         const plan = buildChannelPlan(channel, this.cfg);
         await programChannel(this.deps.drivers, plan);
@@ -716,7 +764,7 @@ export class Engine {
       this.deps.state.upsertChannel(channel);
 
       channel.state = 'active';
-      channel.publishedIn = this.targetRegistryIds(device);
+      channel.publishedIn = this.targetRegistryIds(bridge);
       channel.updatedAt = new Date().toISOString();
       this.deps.state.upsertChannel(channel);
       await this.deps.state.save();
@@ -726,7 +774,7 @@ export class Engine {
       // target domain is pointed at the sender we just published.
       if (opts.proxy) {
         const is05 = this.is05.get(opts.proxy.registryId);
-        const senderId = this.senderNmosId(key, device.targetDomain);
+        const senderId = this.senderNmosId(key);
         channel.remoteReceiver = {
           registryId: opts.proxy.registryId,
           receiverId: opts.proxy.receiverId,
@@ -753,8 +801,8 @@ export class Engine {
       log.info(
         {
           channel: channel.id,
-          from: device.sourceDomain,
-          to: device.targetDomain,
+          from: bridge.sourceDomain,
+          to: bridge.targetDomain,
           groups: channel.allocation?.groups,
           natGroupId: channel.allocation?.natGroupId,
           registries: channel.publishedIn,
@@ -950,11 +998,21 @@ export class Engine {
         id: d.id,
         label: d.label,
         kind: d.kind,
-        nodeId: this.nodeId(d.id),
         address: d.iface.address,
         nodeApiPort: this.domainPorts.get(d.id) ?? null,
         nodeApiError: this.nodeApiErrors.get(d.id) ?? null,
         registries: registriesOf(this.cfg, d.id).map((r) => r.id),
+      })),
+      bridges: this.cfg.bridges.map((b) => ({
+        id: b.id,
+        label: b.label,
+        nodeId: this.nodeId(b.id),
+        sourceDomain: b.sourceDomain,
+        targetDomain: b.targetDomain,
+        nat: b.nat,
+        enabled: b.enabled,
+        usable: this.usableBridges().some((x) => x.id === b.id),
+        devices: this.cfg.devices.filter((d) => d.bridgeId === b.id).length,
       })),
       channels: this.channels().length,
       version: nmosVersion(),

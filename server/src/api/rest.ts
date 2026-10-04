@@ -5,7 +5,9 @@ import type { AppConfig } from '../config/schema.js';
 import type { FederationDevice, VirtualReceiver } from '../types.js';
 import { randomUUID } from 'node:crypto';
 import type { MirrorEntry } from '../config/schema.js';
+import type { Bridge } from '../types.js';
 import { listInterfaces } from '../nmos/resources.js';
+import { nextId } from '../config/schema.js';
 import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
 
@@ -18,7 +20,8 @@ import { log } from '../util/log.js';
  *   GET      /api/channels                     channel table incl. pool addresses and errors
  *   POST     /api/channels/:receiverId/retry   rebuild a failed channel
  *   DELETE   /api/channels/:receiverId         tear down this receiver's federation
- *   GET/POST /api/devices, PUT/DELETE /api/devices/:id
+ *   GET/POST /api/bridges, PUT/DELETE /api/bridges/:id   a bridge is an NMOS node
+ *   GET/POST /api/devices, PUT/DELETE /api/devices/:id   a device hangs on a bridge
  *   POST     /api/devices/:id/receivers        create virtual receivers (count, name pattern)
  *   DELETE   /api/receivers/:id
  *   GET      /api/registries                   per-registry status
@@ -59,66 +62,65 @@ export function registerRestApi(
     }
   });
 
-  // ---- Devices -----------------------------------------------------------
-  app.get('/api/devices', async () => {
+  // ---- Bridges -----------------------------------------------------------
+  app.get('/api/bridges', async () => {
     const domainIds = new Set(store.current.domains.map((d) => d.id));
     const registryIds = new Set(store.current.registries.map((r) => r.id));
-    return store.current.devices.map((d) => ({
-      ...d,
-      receivers: engine.receiversOf(d),
-      // A renamed or removed domain leaves the device pointing at nothing. Say so
-      // instead of letting it look configured but silently do nothing.
-      detached: !engine.isAttached(d),
+    return store.current.bridges.map((b) => ({
+      ...b,
+      nodeId: engine.nodeId(b.id),
+      devices: store.current.devices.filter((d) => d.bridgeId === b.id).length,
+      // A renamed or removed domain leaves the bridge pointing at nothing. Say so rather
+      // than letting it look configured while registering nothing.
+      detached: !domainIds.has(b.sourceDomain) || !domainIds.has(b.targetDomain),
       missing: {
-        sourceDomain: domainIds.has(d.sourceDomain) ? null : d.sourceDomain,
-        targetDomain: domainIds.has(d.targetDomain) ? null : d.targetDomain,
-        registries: d.targetRegistries.filter((r) => !registryIds.has(r)),
+        sourceDomain: domainIds.has(b.sourceDomain) ? null : b.sourceDomain,
+        targetDomain: domainIds.has(b.targetDomain) ? null : b.targetDomain,
+        registries: b.targetRegistries.filter((r) => !registryIds.has(r)),
       },
     }));
   });
 
-  app.post<{ Body: Partial<FederationDevice> }>('/api/devices', async (req, reply) => {
+  app.post<{ Body: Partial<Bridge> }>('/api/bridges', async (req, reply) => {
     const cfg = structuredClone(store.current);
-    const device: FederationDevice = {
-      id: req.body.id ?? randomUUID(),
-      label: req.body.label ?? 'Federation Device',
+    const bridge: Bridge = {
+      id: nextId(cfg.bridges.map((b) => b.id)),
+      label: req.body.label ?? 'NMOS Federation',
       sourceDomain: req.body.sourceDomain ?? '',
       targetDomain: req.body.targetDomain ?? '',
       targetRegistries: req.body.targetRegistries ?? [],
       nat: req.body.nat ?? true,
-      ...(req.body.mirrorLabel ? { mirrorLabel: req.body.mirrorLabel } : {}),
-      receiverIds: [],
+      enabled: req.body.enabled ?? true,
     };
-    cfg.devices.push(device);
+    cfg.bridges.push(bridge);
     try {
       await store.save(cfg);
       await onConfigChange();
-      return device;
+      return bridge;
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
   });
 
-  app.put<{ Params: { id: string }; Body: Partial<FederationDevice> }>('/api/devices/:id', async (req, reply) => {
+  app.put<{ Params: { id: string }; Body: Partial<Bridge> }>('/api/bridges/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
-    const i = cfg.devices.findIndex((d) => d.id === req.params.id);
-    if (i < 0) return reply.code(404).send({ error: 'unknown device' });
-    const before = cfg.devices[i]!;
-    const after: FederationDevice = { ...before, ...req.body, id: req.params.id };
-    cfg.devices[i] = after;
+    const i = cfg.bridges.findIndex((b) => b.id === req.params.id);
+    if (i < 0) return reply.code(404).send({ error: 'unknown bridge' });
+    const before = cfg.bridges[i]!;
+    const after: Bridge = { ...before, ...req.body, id: req.params.id };
+    cfg.bridges[i] = after;
 
-    // Changing NAT, the target domain or the target registries invalidates every
-    // channel of this device: its multicast addresses, switch rules and published
-    // sender were all derived from the old setting. Rebuild them instead of leaving
-    // a channel behind that no longer matches its configuration.
+    // Direction, target registries and NAT shape every channel on this bridge, so a
+    // change to them invalidates all of them. Rebuild rather than leave channels behind
+    // that no longer match their configuration.
     const rebuild =
       before.nat !== after.nat ||
+      before.sourceDomain !== after.sourceDomain ||
       before.targetDomain !== after.targetDomain ||
       JSON.stringify(before.targetRegistries) !== JSON.stringify(after.targetRegistries);
 
-    const affected = rebuild
-      ? engine.channels().filter((c) => c.deviceId === after.id).map((c) => c.receiverId)
-      : [];
+    const deviceIds = new Set(cfg.devices.filter((d) => d.bridgeId === after.id).map((d) => d.id));
+    const affected = rebuild ? engine.channels().filter((c) => deviceIds.has(c.deviceId)).map((c) => c.receiverId) : [];
     const connections = new Map(affected.map((rx) => [rx, engine.connectionOf(rx)]));
     for (const rx of affected) await engine.deactivate(rx);
 
@@ -142,12 +144,89 @@ export function registerRestApi(
     return { ...after, rebuilt: affected.length, failed };
   });
 
+  app.delete<{ Params: { id: string } }>('/api/bridges/:id', async (req, reply) => {
+    const cfg = structuredClone(store.current);
+    if (!cfg.bridges.some((b) => b.id === req.params.id)) return reply.code(404).send({ error: 'unknown bridge' });
+    const devices = cfg.devices.filter((d) => d.bridgeId === req.params.id);
+    const victims = cfg.receivers.filter((r) => devices.some((d) => d.id === r.deviceId));
+    for (const vrx of victims) await engine.deactivate(vrx.id);
+    for (const m of cfg.mirrors.filter((m) => devices.some((d) => d.id === m.deviceId))) {
+      await engine.deactivate(`mirror-${m.id}`);
+    }
+
+    const deviceIds = new Set(devices.map((d) => d.id));
+    cfg.bridges = cfg.bridges.filter((b) => b.id !== req.params.id);
+    cfg.devices = cfg.devices.filter((d) => d.bridgeId !== req.params.id);
+    cfg.receivers = cfg.receivers.filter((r) => !deviceIds.has(r.deviceId));
+    cfg.mirrors = cfg.mirrors.filter((m) => !deviceIds.has(m.deviceId));
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+      await engine.cleanupOrphans().catch(() => []);
+      return { ok: true, removedDevices: devices.length, removedReceivers: victims.length };
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  // ---- Devices -----------------------------------------------------------
+  app.get('/api/devices', async () => {
+    const bridges = new Map(store.current.bridges.map((b) => [b.id, b]));
+    return store.current.devices.map((d) => ({
+      ...d,
+      receivers: engine.receiversOf(d),
+      bridge: bridges.get(d.bridgeId) ?? null,
+      detached: !engine.isAttached(d),
+    }));
+  });
+
+  app.post<{ Body: Partial<FederationDevice> }>('/api/devices', async (req, reply) => {
+    const cfg = structuredClone(store.current);
+    if (!req.body.bridgeId || !cfg.bridges.some((b) => b.id === req.body.bridgeId)) {
+      return reply.code(400).send({ error: 'a device needs a bridge' });
+    }
+    const device: FederationDevice = {
+      id: randomUUID(),
+      label: req.body.label ?? 'Device',
+      bridgeId: req.body.bridgeId,
+      receiverIds: [],
+    };
+    cfg.devices.push(device);
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+      return device;
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.put<{ Params: { id: string }; Body: Partial<FederationDevice> }>('/api/devices/:id', async (req, reply) => {
+    const cfg = structuredClone(store.current);
+    const i = cfg.devices.findIndex((d) => d.id === req.params.id);
+    if (i < 0) return reply.code(404).send({ error: 'unknown device' });
+    // Only the label and the bridge it hangs on; everything that shapes a channel lives
+    // on the bridge.
+    cfg.devices[i] = { ...cfg.devices[i]!, ...req.body, id: req.params.id };
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+      return cfg.devices[i];
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
   app.delete<{ Params: { id: string } }>('/api/devices/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
     const victims = cfg.receivers.filter((r) => r.deviceId === req.params.id);
     for (const vrx of victims) await engine.deactivate(vrx.id);
+    for (const m of cfg.mirrors.filter((m) => m.deviceId === req.params.id)) {
+      await engine.deactivate(`mirror-${m.id}`);
+    }
     cfg.devices = cfg.devices.filter((d) => d.id !== req.params.id);
     cfg.receivers = cfg.receivers.filter((r) => r.deviceId !== req.params.id);
+    cfg.mirrors = cfg.mirrors.filter((m) => m.deviceId !== req.params.id);
     try {
       await store.save(cfg);
       await onConfigChange();
@@ -278,7 +357,7 @@ export function registerRestApi(
       const flows = flowPage.items;
       const deviceById = new Map(devices.map((d) => [d.id, d]));
       const flowById = new Map(flows.map((f) => [f.id, f]));
-      const ourNodes = new Set(store.current.domains.map((d) => engine.nodeId(d.id)));
+      const ourNodes = new Set(store.current.bridges.map((b) => engine.nodeId(b.id)));
       const copied = new Set(store.current.mirrors.map((m) => `${m.registryId}:${m.originId}`));
 
       const annotate = (r: { id: string; device_id: string }) => {
@@ -319,7 +398,19 @@ export function registerRestApi(
       return {
         ...m,
         proxyReceiverId: m.kind === 'receiver' ? key || null : null,
-        device: device ? { id: device.id, label: device.label, sourceDomain: device.sourceDomain, targetDomain: device.targetDomain, nat: device.nat } : null,
+        device: device
+          ? (() => {
+              const bridge = store.current.bridges.find((b) => b.id === device.bridgeId);
+              return {
+                id: device.id,
+                label: device.label,
+                bridge: bridge?.label ?? null,
+                sourceDomain: bridge?.sourceDomain ?? null,
+                targetDomain: bridge?.targetDomain ?? null,
+                nat: bridge?.nat ?? false,
+              };
+            })()
+          : null,
         channel,
       };
     });

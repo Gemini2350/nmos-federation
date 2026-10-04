@@ -2,7 +2,7 @@ import { createApp } from 'vue';
 import { createRouter, createWebHashHistory } from 'vue-router';
 import App from './App.vue';
 import Channels from './views/Channels.vue';
-import Devices from './views/Devices.vue';
+import Bridges from './views/Bridges.vue';
 import Copy from './views/Copy.vue';
 import Settings from './views/Settings.vue';
 
@@ -11,7 +11,7 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: '/channels' },
     { path: '/channels', component: Channels, name: 'Channels' },
-    { path: '/devices', component: Devices, name: 'Devices' },
+    { path: '/bridges', component: Bridges, name: 'Bridges' },
     { path: '/copy', component: Copy, name: 'Copy' },
     { path: '/settings', component: Settings, name: 'Settings' },
   ],

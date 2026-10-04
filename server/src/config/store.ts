@@ -80,6 +80,11 @@ export class ConfigStore {
       // turned NAT on cannot save anything at all — not even deleting an unrelated
       // device — until every interface is typed in. The domain simply cannot carry a
       // channel until then, and says so.
+      // An empty address produces an href like "http://:8081/" that a registry will
+      // happily store and no controller can use.
+      if (!d.iface.address) {
+        warn(`domain "${d.label || d.id}": no address — its node API is published as an unusable URL`);
+      }
       if (cfg.nat.enabled) {
         for (const fabric of ['red', 'blue'] as const) {
           if (!d.switchInterface[fabric]) {
@@ -114,17 +119,26 @@ export class ConfigStore {
     // every write rewrites the whole configuration, so one dangling reference would also
     // block deleting the very device that carries it. A detached device simply does not
     // register until its domain exists again.
-    for (const dev of cfg.devices) {
-      const name = dev.label || dev.id;
-      if (!domainIds.has(dev.sourceDomain)) warn(`device "${name}" is detached: no domain ${dev.sourceDomain}`);
-      if (!domainIds.has(dev.targetDomain)) warn(`device "${name}" is detached: no domain ${dev.targetDomain}`);
-      if (dev.sourceDomain === dev.targetDomain) err(`device "${name}": source and target domain are the same`);
-      for (const rid of dev.targetRegistries) {
+    const bridgeIds = new Set<string>();
+    for (const b of cfg.bridges) {
+      const name = b.label || b.id;
+      if (bridgeIds.has(b.id)) err(`duplicate bridge ID ${b.id}`);
+      bridgeIds.add(b.id);
+      if (!domainIds.has(b.sourceDomain)) warn(`bridge "${name}" is detached: no domain ${b.sourceDomain}`);
+      if (!domainIds.has(b.targetDomain)) warn(`bridge "${name}" is detached: no domain ${b.targetDomain}`);
+      if (b.sourceDomain === b.targetDomain) err(`bridge "${name}": both ends are the same domain`);
+      for (const rid of b.targetRegistries) {
         const reg = cfg.registries.find((r) => r.id === rid);
-        if (!reg) warn(`device "${name}": no registry ${rid} — that target is ignored`);
-        else if (reg.domainId !== dev.targetDomain) {
-          warn(`device "${name}": registry ${rid} is in domain ${reg.domainId}, not in ${dev.targetDomain} — that target is ignored`);
+        if (!reg) warn(`bridge "${name}": no registry ${rid} — that target is ignored`);
+        else if (reg.domainId !== b.targetDomain) {
+          warn(`bridge "${name}": registry ${rid} is in another domain — that target is ignored`);
         }
+      }
+    }
+
+    for (const dev of cfg.devices) {
+      if (!bridgeIds.has(dev.bridgeId)) {
+        warn(`device "${dev.label || dev.id}" is detached: no bridge ${dev.bridgeId}`);
       }
     }
 

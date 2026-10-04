@@ -86,21 +86,33 @@ export interface Channel {
   updatedAt: string;
 }
 
+/**
+ * A bridge between two domains — and the NMOS node everything under it belongs to.
+ *
+ * It carries the direction, the target registries and the NAT setting, so a device
+ * underneath has nothing to decide: it is a group of ports on this bridge. Fanning out
+ * into two separate networks is two bridges, because it is two NAT translations.
+ */
+export interface Bridge {
+  id: string;
+  /** The NMOS node's label, as every registry will show it. */
+  label: string;
+  /** Domain the virtual receivers live in. */
+  sourceDomain: DomainId;
+  /** Domain the virtual senders appear in. */
+  targetDomain: DomainId;
+  /** Registry IDs within the target domain; empty = all enabled ones of that domain. */
+  targetRegistries: string[];
+  /** NAT for everything on this bridge; false = SDPs are copied verbatim. */
+  nat: boolean;
+  enabled: boolean;
+}
+
+/** A group of ports on a bridge — one NMOS device under the bridge's node. */
 export interface FederationDevice {
   id: string;
   label: string;
-  /** Domain this device's virtual receivers live in. */
-  sourceDomain: DomainId;
-  /** Domain to translate into. One domain — fanning out into two separate networks
-   *  needs two NAT translations and therefore two devices. */
-  targetDomain: DomainId;
-  /** Registry IDs within the target domain to publish the virtual sender in.
-   *  Empty = all enabled registries of the target domain. */
-  targetRegistries: string[];
-  /** NAT for this device; false = the SDP is copied verbatim. */
-  nat: boolean;
-  /** Name of the mirror device in the target domain; empty = derived. */
-  mirrorLabel?: string;
+  bridgeId: string;
   receiverIds: string[];
 }
 

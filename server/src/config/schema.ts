@@ -1,4 +1,4 @@
-import type { Fabric, FederationDevice, VirtualReceiver } from '../types.js';
+import type { Bridge, Fabric, FederationDevice, VirtualReceiver } from '../types.js';
 import type { PoolConfig } from '../federation/pool.js';
 import type { AristaConfig } from '../switch/arista-eapi.js';
 
@@ -87,7 +87,57 @@ export function nextId(existing: string[]): string {
  * Fills in missing ids, so an API client does not have to invent them and the GUI never
  * has to show the field. Entries that already carry an id keep it untouched.
  */
+/**
+ * Older configurations put the direction, the target registries and the NAT flag on each
+ * device. Those belong to the bridge now, so devices sharing them are grouped into one —
+ * normally a single bridge per pair of domains, which is exactly what the node is meant
+ * to represent.
+ */
+function migrateDevicesToBridges(cfg: AppConfig): void {
+  const legacy = cfg.devices.filter((d) => !d.bridgeId);
+  if (!legacy.length) return;
+
+  const byShape = new Map<string, Bridge>();
+  for (const dev of legacy) {
+    const old = dev as unknown as {
+      sourceDomain?: string;
+      targetDomain?: string;
+      targetRegistries?: string[];
+      nat?: boolean;
+    };
+    const registries = [...(old.targetRegistries ?? [])].sort();
+    const shape = `${old.sourceDomain}|${old.targetDomain}|${old.nat}|${registries.join(',')}`;
+    let bridge = byShape.get(shape);
+    if (!bridge) {
+      const src = cfg.domains.find((d) => d.id === old.sourceDomain)?.label ?? old.sourceDomain ?? '?';
+      const tgt = cfg.domains.find((d) => d.id === old.targetDomain)?.label ?? old.targetDomain ?? '?';
+      bridge = {
+        id: nextId(cfg.bridges.map((b) => b.id)),
+        label: `${src} → ${tgt}`,
+        sourceDomain: old.sourceDomain ?? '',
+        targetDomain: old.targetDomain ?? '',
+        targetRegistries: old.targetRegistries ?? [],
+        nat: old.nat ?? true,
+        enabled: true,
+      };
+      cfg.bridges.push(bridge);
+      byShape.set(shape, bridge);
+    }
+    dev.bridgeId = bridge.id;
+    for (const key of ['sourceDomain', 'targetDomain', 'targetRegistries', 'nat']) {
+      delete (dev as unknown as Record<string, unknown>)[key];
+    }
+  }
+}
+
 export function normalizeConfig(cfg: AppConfig): AppConfig {
+  cfg.bridges ??= [];
+  migrateDevicesToBridges(cfg);
+  delete (cfg as unknown as Record<string, unknown>)['nodeLabel'];
+  for (const b of cfg.bridges) {
+    if (!b.label?.trim()) b.label = DEFAULT_BRIDGE_LABEL;
+    if (!b.id) b.id = nextId(cfg.bridges.map((x) => x.id));
+  }
   for (const d of cfg.domains) {
     // Added later; an older file simply has no leg order yet.
     if (d.firstLeg !== 'red' && d.firstLeg !== 'blue') d.firstLeg = 'red';
@@ -191,6 +241,8 @@ export interface AppConfig {
   domains: DomainConfig[];
   registries: RegistryConfig[];
   nat: NatConfig;
+  /** Each one is an NMOS node; everything else hangs off them. */
+  bridges: Bridge[];
   devices: FederationDevice[];
   receivers: VirtualReceiver[];
   /** Direct registry-to-registry copies. */
@@ -198,6 +250,8 @@ export interface AppConfig {
 }
 
 const emptyPool = (base: string): PoolConfig => ({ base, pairs: 64, sourceNat: null });
+
+export const DEFAULT_BRIDGE_LABEL = 'NMOS Federation';
 
 export const DEFAULT_CONFIG: AppConfig = {
   port: 8080,
@@ -229,10 +283,15 @@ export const DEFAULT_CONFIG: AppConfig = {
       blue: { host: '', user: '', password: '', tls: true, join: 'igmpStatic' },
     },
   },
+  bridges: [],
   devices: [],
   receivers: [],
   mirrors: [],
 };
+
+export function bridgeOf(cfg: AppConfig, device: FederationDevice): Bridge | undefined {
+  return cfg.bridges.find((b) => b.id === device.bridgeId);
+}
 
 export function domainById(cfg: AppConfig, id: string): DomainConfig {
   const d = cfg.domains.find((x) => x.id === id);

@@ -158,17 +158,18 @@ async function build(internal: Stub, partner: Stub, dir: string, extra?: Partial
       { id: 'int', label: 'internal', domainId: 'internal', mode: 'manual', ip: internal.ip, port: internal.port, version: 'v1.3', enabled: true },
       { id: 'regA', label: 'Partner A', domainId: 'partnerA', mode: 'manual', ip: partner.ip, port: partner.port, version: 'v1.3', enabled: true },
     ],
-    devices: [
+    bridges: [
       {
-        id: 'dev1',
-        label: 'Federation OUT',
+        id: 'b1',
+        label: 'NMOS Federation',
         sourceDomain: 'internal',
         targetDomain: 'partnerA',
         targetRegistries: ['regA'],
         nat: true,
-        receiverIds: [],
+        enabled: true,
       },
     ],
+    devices: [{ id: 'dev1', label: 'Federation OUT', bridgeId: 'b1', receiverIds: [] }],
     receivers: [],
     mirrors: [],
     ...extra,

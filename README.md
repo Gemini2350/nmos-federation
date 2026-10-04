@@ -74,9 +74,16 @@ The **Channels** page shows a status line per registry — resolved address, sta
 how many of our resources it holds, the age of the last heartbeat and the last error —
 plus a Test button that probes one registry without changing anything.
 
-Then create a **device** (source domain → target domain) and add virtual receivers to
-it. They appear in the registry immediately; connecting a source to one of them with
+Then create a **bridge** (from your domain to a partner's) — that is the NMOS node every
+registry will show. Add **devices** under it, and virtual receivers into those. The
+receivers appear in the registry immediately; connecting a source to one of them with
 your usual controller creates the virtual sender on the other side.
+
+```
+Bridge "Eigenes Haus → Partner A"   ← the node, named by you
+  ├─ Device "Kameras"               ← one NMOS device
+  └─ Device "Ton"
+```
 
 ## Copying existing resources
 
@@ -91,8 +98,8 @@ already there, without going through a virtual receiver.
   essence actually arrives. The original has to advertise an `sr-ctrl` control;
   receivers that do not are shown as not controllable.
 
-Both hang off a device, which supplies the direction, the target registries and the NAT
-setting.
+Both hang off a device, and through it off its bridge, which supplies the direction, the
+target registries and the NAT setting.
 
 `network_mode: host` is required — the software needs one interface with a real IP
 per domain (node href, manifest fetch, mDNS). Configuration and state live in

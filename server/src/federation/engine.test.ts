@@ -122,17 +122,18 @@ async function buildEngine(reg: { internal: StubRegistry; partnerA: StubRegistry
       { id: 'int', label: 'internal', domainId: 'internal', mode: 'manual', ip: reg.internal.ip, port: reg.internal.port, version: 'v1.3', enabled: true },
       { id: 'regA', label: 'Partner A', domainId: 'partnerA', mode: 'manual', ip: reg.partnerA.ip, port: reg.partnerA.port, version: 'v1.3', enabled: true },
     ],
-    devices: [
+    bridges: [
       {
-        id: 'dev1',
-        label: 'Federation OUT',
+        id: 'b1',
+        label: 'NMOS Federation',
         sourceDomain: 'internal',
         targetDomain: 'partnerA',
         targetRegistries: ['regA'],
         nat: true,
-        receiverIds: ['vrx1'],
+        enabled: true,
       },
     ],
+    devices: [{ id: 'dev1', label: 'Federation OUT', bridgeId: 'b1', receiverIds: ['vrx1'] }],
     receivers: [{ id: 'vrx1', label: 'Fed RX 1', deviceId: 'dev1', format: 'video', enabled: true }],
   };
 
@@ -267,12 +268,12 @@ test('end to end: connecting to a virtual receiver creates NAT and a published s
   assert.equal(again.allocation!.natGroupId, 100);
 });
 
-test('a registry gets our node even with no federation device configured', async (t) => {
+test('a bridge registers its node even with no device on it yet', async (t) => {
   const intReg = await startStubRegistry();
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
   const { engine, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
-  // A fresh installation: registries configured, nothing built on top of them yet.
+  // A bridge exists, but nothing has been put on it yet.
   cfg.devices = [];
   cfg.receivers = [];
 
@@ -289,7 +290,7 @@ test('a registry gets our node even with no federation device configured', async
   // forever while the status claims the registry was never contacted.
   assert.ok(
     intReg.posts.some((p) => p.type === 'node'),
-    'the node must be registered even with no device',
+    'the bridge is the node, so it registers on its own',
   );
   assert.equal(intReg.posts.filter((p) => p.type === 'device').length, 0);
   assert.ok(extReg.posts.some((p) => p.type === 'node'), 'and in the external domain too');
@@ -297,6 +298,77 @@ test('a registry gets our node even with no federation device configured', async
   const status = engine.registryStatus().find((r) => r.id === 'int')!;
   assert.notEqual(status.state, 'unknown', 'contact has happened, so the state must not say otherwise');
   assert.equal(status.resources.node, 1);
+});
+
+test('a registry shows one node per bridge and one device per device', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+  await engine.activate('vrx1', {
+    sender_id: null,
+    master_enable: true,
+    transport_file: { data: DUP_SDP, type: 'application/sdp' },
+    transport_params: [{}, {}],
+  });
+
+  const unique = (reg: StubRegistry, type: string) =>
+    new Set(reg.posts.filter((p) => p.type === type).map((p) => p.id));
+
+  // One node for the whole installation, the same id in both registries.
+  assert.equal(unique(intReg, 'node').size, 1);
+  assert.equal(unique(extReg, 'node').size, 1);
+  assert.deepEqual([...unique(intReg, 'node')], [...unique(extReg, 'node')], 'the same node on both sides of the bridge');
+
+  // One device, also the same id on both sides — no separate mirror.
+  assert.equal(unique(intReg, 'device').size, 1);
+  assert.equal(unique(extReg, 'device').size, 1);
+  assert.deepEqual([...unique(intReg, 'device')], [...unique(extReg, 'device')]);
+
+  // It carries its receivers on the source side and its senders on the target side.
+  const srcDev = intReg.posts.filter((p) => p.type === 'device').at(-1)!.data as { receivers: string[]; senders: string[] };
+  const tgtDev = extReg.posts.filter((p) => p.type === 'device').at(-1)!.data as { receivers: string[]; senders: string[] };
+  assert.equal(srcDev.receivers.length, 1);
+  assert.equal(srcDev.senders.length, 0);
+  assert.equal(tgtDev.senders.length, 1);
+  assert.equal(tgtDev.receivers.length, 0);
+
+  // And every resource hangs off that one node.
+  const nodeId = [...unique(intReg, 'node')][0];
+  for (const reg of [intReg, extReg]) {
+    for (const p of reg.posts.filter((x) => x.type === 'device')) {
+      assert.equal((p.data as { node_id: string }).node_id, nodeId);
+    }
+  }
+});
+
+test('the bridge name is the node name, and changing it renames the node', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+  assert.equal(intReg.posts.find((p) => p.type === 'node')!.data.label, 'NMOS Federation');
+
+  cfg.bridges[0]!.label = 'Brücke zu Partner A';
+  await engine.syncRegistries();
+  assert.equal(intReg.posts.filter((p) => p.type === 'node').at(-1)!.data.label, 'Brücke zu Partner A');
+  assert.equal(extReg.posts.filter((p) => p.type === 'node').at(-1)!.data.label, 'Brücke zu Partner A');
 });
 
 test('an unchanged sync re-registers nothing', async (t) => {
@@ -416,7 +488,7 @@ test('NAT off: the SDP is copied verbatim and the switch is left alone', async (
   const extReg = await startStubRegistry();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
   const { engine, drivers, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
-  cfg.devices[0]!.nat = false;
+  cfg.bridges[0]!.nat = false;
 
   t.after(async () => {
     await engine.stop();

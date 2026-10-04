@@ -17,6 +17,8 @@ const notice = ref<string | null>(null);
 const paging = ref<{ limit: number | null; pages: number; truncated: boolean } | null>(null);
 
 const device = computed(() => cfg.value?.devices.find((d) => d.id === deviceId.value) ?? null);
+/** Direction, target registries and NAT all live on the bridge the device hangs on. */
+const bridge = computed(() => cfg.value?.bridges.find((b) => b.id === device.value?.bridgeId) ?? null);
 const registries = computed(() => (cfg.value?.registries ?? []).filter((r) => r.enabled));
 
 /**
@@ -25,8 +27,8 @@ const registries = computed(() => (cfg.value?.registries ?? []).filter((r) => r.
  *  - a receiver proxy drives a receiver in the target domain from the source domain
  * So a registry only yields copyable resources if it sits in the matching domain.
  */
-const senderSource = computed(() => registries.value.find((r) => r.id === sourceRegistry.value)?.domainId === device.value?.sourceDomain);
-const receiverSource = computed(() => registries.value.find((r) => r.id === sourceRegistry.value)?.domainId === device.value?.targetDomain);
+const senderSource = computed(() => registries.value.find((r) => r.id === sourceRegistry.value)?.domainId === bridge.value?.sourceDomain);
+const receiverSource = computed(() => registries.value.find((r) => r.id === sourceRegistry.value)?.domainId === bridge.value?.targetDomain);
 
 const match = (label: string, dev: string) =>
   !filter.value || `${label} ${dev}`.toLowerCase().includes(filter.value.toLowerCase());
@@ -152,7 +154,7 @@ onMounted(load);
       <label>Target device
         <select v-model="deviceId">
           <option v-for="d in cfg?.devices ?? []" :key="d.id" :value="d.id">
-            {{ d.label }} — {{ domainName(d.sourceDomain) }} → {{ domainName(d.targetDomain) }}{{ d.nat ? '' : ' (no NAT)' }}
+            {{ cfg?.bridges.find((b) => b.id === d.bridgeId)?.label }} · {{ d.label }}
           </option>
         </select>
       </label>
@@ -163,19 +165,20 @@ onMounted(load);
       The registry returned more pages than this browse follows — the list may be incomplete.
     </p>
     <p v-if="!cfg?.devices.length" class="warn">
-      No devices yet. Create one under <RouterLink to="/devices">Devices</RouterLink> first — it supplies
-      the direction, the target registries and the NAT setting that a copy needs.
+      No devices yet. Create a bridge and a device under
+      <RouterLink to="/bridges">Bridges</RouterLink> first — the bridge supplies the direction, the target
+      registries and the NAT setting that a copy needs.
     </p>
   </section>
 
   <section v-if="senders.length || receivers.length">
-    <h3>Senders <small v-if="device">copyable from {{ domainName(device.sourceDomain) }}</small></h3>
+    <h3>Senders <small v-if="bridge">copyable from {{ domainName(bridge.sourceDomain) }}</small></h3>
     <!-- With no device there is nothing to say about domains yet; saying it anyway
          produced three contradictory messages and a blank domain name. -->
-    <p v-if="!device" class="warn">Pick a target device to copy anything.</p>
+    <p v-if="!bridge" class="warn">Pick a target device to copy anything.</p>
     <p v-else-if="!senderSource" class="warn">
-      Senders can only be copied from <strong>{{ domainName(device.sourceDomain) }}</strong>, the source
-      domain of “{{ device.label }}”. This registry is in
+      Senders can only be copied from <strong>{{ domainName(bridge.sourceDomain) }}</strong>, the source
+      domain of the bridge “{{ bridge.label }}”. This registry is in
       <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
     </p>
     <table v-else>
@@ -198,11 +201,11 @@ onMounted(load);
       </tbody>
     </table>
 
-    <h3>Receivers <small v-if="device">proxyable into {{ domainName(device.sourceDomain) }}</small></h3>
-    <p v-if="!device" class="warn">Pick a target device to copy anything.</p>
+    <h3>Receivers <small v-if="bridge">proxyable into {{ domainName(bridge.sourceDomain) }}</small></h3>
+    <p v-if="!bridge" class="warn">Pick a target device to copy anything.</p>
     <p v-else-if="!receiverSource" class="warn">
-      A receiver proxy drives a receiver in <strong>{{ domainName(device.targetDomain) }}</strong>, the
-      target domain of “{{ device.label }}”. This registry is in
+      A receiver proxy drives a receiver in <strong>{{ domainName(bridge.targetDomain) }}</strong>, the
+      target domain of the bridge “{{ bridge.label }}”. This registry is in
       <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
     </p>
     <table v-else>

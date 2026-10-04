@@ -35,10 +35,10 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
 
   /** NMOS receiver ID -> our virtual receiver. */
   const vrxByNmosId = (nmosId: string) =>
-    engine.config.receivers.find((r) => engine.receiverNmosId(r.id, domain.id) === nmosId);
+    engine.config.receivers.find((r) => engine.receiverNmosId(r.id) === nmosId);
 
   const channelBySenderNmosId = (nmosId: string) =>
-    engine.channels().find((c) => c.targetDomain === domain.id && engine.senderNmosId(c.receiverId, domain.id) === nmosId);
+    engine.channels().find((c) => c.targetDomain === domain.id && engine.senderNmosId(c.receiverId) === nmosId);
 
   // ---- Discovery paths ----------------------------------------------------
   app.get('/x-nmos/', async () => ['node/', 'connection/']);
@@ -49,7 +49,19 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
   app.get(`/x-nmos/connection/${CONN_VER}/single/`, async () => ['senders/', 'receivers/']);
 
   // ---- IS-04 --------------------------------------------------------------
-  app.get(`/x-nmos/node/${NODE_VER}/self`, async () => res().self);
+  /**
+   * `self` is a single node, but a domain can carry several — one per bridge touching
+   * it. The first is served here and all of them are listed under /nodes, which is what
+   * a registry gets anyway; a controller reaching this API already knows which node it
+   * came from.
+   */
+  app.get(`/x-nmos/node/${NODE_VER}/self`, async (_req, reply) => {
+    const first = res().nodes[0];
+    if (!first) return reply.code(404).send({ code: 404, error: 'no node in this domain', debug: null });
+    return first;
+  });
+
+  app.get(`/x-nmos/node/${NODE_VER}/nodes`, async () => res().nodes);
 
   for (const kind of ['devices', 'sources', 'flows', 'senders', 'receivers'] as const) {
     app.get(`/x-nmos/node/${NODE_VER}/${kind}`, async () => res()[kind === 'devices' ? 'devices' : kind]);

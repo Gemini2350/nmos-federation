@@ -68,19 +68,30 @@ export interface Switch {
   join: 'igmpStatic' | 'pim' | 'none';
 }
 
-export interface Device {
+/** A bridge between two domains, and the NMOS node everything under it belongs to. */
+export interface Bridge {
   id: string;
   label: string;
   sourceDomain: string;
   targetDomain: string;
   targetRegistries: string[];
   nat: boolean;
-  mirrorLabel?: string;
-  receiverIds: string[];
-  receivers?: VirtualReceiver[];
-  /** True when a domain it points at no longer exists — it registers nothing. */
+  enabled: boolean;
+  nodeId?: string;
+  devices?: number;
   detached?: boolean;
   missing?: { sourceDomain: string | null; targetDomain: string | null; registries: string[] };
+}
+
+/** A group of ports on a bridge — one NMOS device under the bridge's node. */
+export interface Device {
+  id: string;
+  label: string;
+  bridgeId: string;
+  receiverIds: string[];
+  receivers?: VirtualReceiver[];
+  bridge?: Bridge | null;
+  detached?: boolean;
 }
 
 export interface VirtualReceiver {
@@ -97,6 +108,7 @@ export interface Config {
   domains: Domain[];
   registries: Registry[];
   nat: { enabled: boolean; driver: 'arista-eapi' | 'mock'; groupIdRange: [number, number]; switches: Fabric2<Switch> };
+  bridges: Bridge[];
   devices: Device[];
   receivers: VirtualReceiver[];
 }
@@ -214,11 +226,21 @@ export interface Status {
   switches: Record<string, { reachable: boolean; version?: string; error?: string }>;
   registries: RegistryStatus[];
   pools: Record<string, { free: number; total: number; used: number[] }>;
+  bridges: {
+    id: string;
+    label: string;
+    nodeId: string;
+    sourceDomain: string;
+    targetDomain: string;
+    nat: boolean;
+    enabled: boolean;
+    usable: boolean;
+    devices: number;
+  }[];
   domains: {
     id: string;
     label: string;
     kind: string;
-    nodeId: string;
     address: string;
     /** null when no listener could be started for this domain. */
     nodeApiPort: number | null;
@@ -248,6 +270,14 @@ export const api = {
   config: () => req<Config>('/config'),
   saveConfig: (cfg: Config) => req<{ ok: boolean; issues: Issue[] }>('/config', { method: 'PUT', body: JSON.stringify(cfg) }),
   validateConfig: (cfg: Config) => req<{ issues: Issue[] }>('/config/validate', { method: 'POST', body: JSON.stringify(cfg) }),
+  bridges: () => req<Bridge[]>('/bridges'),
+  createBridge: (b: Partial<Bridge>) => req<Bridge>('/bridges', { method: 'POST', body: JSON.stringify(b) }),
+  updateBridge: (id: string, b: Partial<Bridge>) =>
+    req<Bridge & { rebuilt?: number; failed?: { receiverId: string; error: string }[] }>(`/bridges/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(b),
+    }),
+  deleteBridge: (id: string) => req<{ ok: boolean; removedDevices: number; removedReceivers: number }>(`/bridges/${id}`, { method: 'DELETE' }),
   devices: () => req<Device[]>('/devices'),
   createDevice: (d: Partial<Device>) => req<Device>('/devices', { method: 'POST', body: JSON.stringify(d) }),
   updateDevice: (id: string, d: Partial<Device>) =>

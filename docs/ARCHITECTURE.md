@@ -70,62 +70,33 @@ directly.
 
 ## 4. NMOS resource model
 
-The software is one NMOS **node per domain**.
+A **bridge** joins two domains and *is* an NMOS node. Every registry of either domain
+shows that node under the bridge's name, and everything else hangs off it:
 
 ```
-Node(internal)                        Node(partnerA)              Node(partnerB)
-  href = http://<int-ip>:8081           href = http://<extA>:8081   …
-  ├─ Device "Federation IN"             ├─ Device "Federation IN ▸ mirror"
-  │    └─ vRX 1..n                      │    └─ vTX 1..n
-  └─ Device "Federation OUT ▸ mirror"   └─ Device "Federation OUT"
-       └─ vTX 1..n                           └─ vRX 1..n
+Bridge "Eigenes Haus → Partner A"        ← the NMOS node, named by the operator
+  ├─ Device "Kameras zu Partner A"        ← one NMOS device
+  │    ├─ virtual receivers (source side)
+  │    └─ virtual senders    (target side)
+  └─ Device "Ton zu Partner A"
 ```
 
-Why one node per domain rather than a single node UUID in every registry: `node.href`,
-`api.endpoints` and `interfaces` must be **reachable from the respective domain**. An
-external controller has to fetch the vTX manifest (`/transportfile`), so over that
-domain's IP. Several registries **within** one domain do share a node — they see the
-same network.
+The bridge carries the direction, the target registries and the NAT setting, so a device
+has nothing to decide — it is a group of ports on that bridge. Fanning out into two
+separate networks is two bridges, because it is two NAT translations.
 
-### What the domain fields mean
+The same node id is registered in each of the bridge's two domains, each time carrying
+*that* domain's address in `href` and `api.endpoints`. A registry only ever receives
+resources of its own domain, so the address is always locally correct while the identity
+stays one. The same goes for a device: one id, appearing on the source side with its
+receivers and on the target side with its senders — there is no separate mirror.
 
-| Field | Meaning |
-|---|---|
-| **Our IP in this network** (`iface.address`) | the address **this host** holds in that network. It is published as `node.href` and `api.endpoints[].host`, so a controller in that domain fetches our resources and a virtual sender's `/transportfile` over it. The settings page offers the host's own interfaces rather than a free-text field, because a wrong value here is invisible until a controller tries to fetch a transport file. |
-| `iface.name` | OS interface name, used for `interface_bindings` and to look up the MAC for `interfaces[].port_id` |
-| **L3 interface red/blue** (`switchInterface`) | this domain's interface on each switch — SVI, routed port or port-channel. For a channel, ingress is the source domain's and egress the target domain's. Configured in the NAT section, since it describes how the domain hangs on the NAT device |
-| **First m= line** (`firstLeg`) | which fabric the first media section of an incoming SDP belongs to; the other leg takes the other fabric |
-| **Role** (`kind`) | marks which domain is your own house. It drives the defaults when creating a device and the "exactly one of these" check — the engine never branches on it, direction comes solely from a device's source and target domain |
+A registry therefore shows **one node per bridge touching its domain**, each with one
+device per device. A registry serving a domain with two bridges holds two nodes, which is
+the honest picture: they are two separate crossings.
 
-### IDs are keys, not labels
-
-A domain's and a registry's `id` is a key: devices refer to it through `sourceDomain`,
-`targetDomain` and `targetRegistries`, registries through `domainId`, copies through
-`registryId`. Changing one detaches everything pointing at it.
-
-So the GUI derives the id from the name while an entry is new and makes it **read-only
-once saved** — rename the name instead. The id stays visible because it is what appears
-in `config.json` and in log lines.
-
-Editing ids in `config.json` by hand is still possible, which is why a dangling
-reference is handled rather than rejected:
-
-- **A half-configured thing is a warning, not an error.** A missing L3 interface while
-  NAT is on, a registry whose address has not been typed yet, a reference that no longer
-  resolves — none of these are incoherent, they are work in progress. As errors they
-  blocked *every* save, including the delete meant to resolve them.
-- **A save is refused only for what it introduces.** Every write rewrites the whole
-  configuration, so judging it as a whole means one unrelated problem blocks every
-  operation. The error set before and after are compared, and only genuinely new errors
-  refuse the write; pre-existing ones come back as a warning.
-- Errors that remain: duplicate ids, no single internal domain, a device whose source and
-  target domain are the same, an invalid pool. Those are contradictions, not drafts. An
-  invalid pool no longer takes startup down with it either — that domain simply cannot
-  allocate.
-- The registration pass **skips** a detached device instead of throwing. Otherwise one
-  stale reference takes the whole pass, and with it startup, down with it.
-- As a backstop, **a save that strictly reduces the number of errors is allowed
-  through** even if errors remain. A broken configuration must never be a trap.
+Since a domain can carry several nodes, `/x-nmos/node/v1.3/self` answers with the first
+and all of them are listed under `/nodes`.
 
 ### Devices
 
@@ -238,8 +209,8 @@ Next to federation there is a second operating mode: copying a resource that alr
 exists in one registry straight into another, without a virtual receiver to connect to.
 A copy is created on request rather than by waiting for an IS-05 activation.
 
-Both kinds hang off a **federation device**, which supplies the direction, the target
-registries and the NAT setting — so internally a copy is the same thing as a
+Both kinds hang off a device, and through it off its **bridge**, which supplies the
+direction, the target registries and the NAT setting — so internally a copy is the same thing as a
 federation channel, only with a different trigger.
 
 ### Sender copy

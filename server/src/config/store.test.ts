@@ -25,17 +25,18 @@ function configWithDevice(): AppConfig {
       { id: 'int', label: 'Internal', domainId: 'internal', mode: 'manual', ip: '10.0.0.2', port: 80, version: 'v1.3', enabled: true },
       { id: 'regA', label: 'Partner A', domainId: 'partnerA', mode: 'manual', ip: '10.9.0.2', port: 80, version: 'v1.3', enabled: true },
     ],
-    devices: [
+    bridges: [
       {
-        id: 'dev1',
-        label: 'Federation OUT',
+        id: 'b1',
+        label: 'NMOS Federation',
         sourceDomain: 'internal',
         targetDomain: 'partnerA',
         targetRegistries: ['regA'],
         nat: false,
-        receiverIds: [],
+        enabled: true,
       },
     ],
+    devices: [{ id: 'dev1', label: 'Federation OUT', bridgeId: 'b1', receiverIds: [] }],
     receivers: [],
     mirrors: [],
   };
@@ -115,6 +116,16 @@ test('an unrelated half-configured domain does not block deleting a device', asy
   pruned.devices = [];
   await store.save(pruned);
   assert.equal(store.current.devices.length, 0);
+});
+
+test('a domain without an address is flagged, because its href would be unusable', async (t) => {
+  const { store, cleanup } = await freshStore();
+  t.after(cleanup);
+  const cfg = configWithDevice();
+  cfg.domains[1]!.iface.address = '';
+  const issues = await store.save(cfg);
+  assert.deepEqual(issues.filter((i) => i.level === 'error'), []);
+  assert.match(issues.map((i) => i.message).join(' '), /unusable URL/);
 });
 
 test('a registry without an address yet is a warning, not a refusal', async (t) => {
