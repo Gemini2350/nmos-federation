@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import { api, registryUrl, DEFAULT_REGISTRY_PORT, type Config, type DiscoveryResult, type Issue, type RegistryStatus } from '../api';
+import { onMounted, ref, watch } from 'vue';
+import { api, registryUrl, DEFAULT_REGISTRY_PORT, type Config, type DiscoveryResult, type HostInterface, type Issue, type RegistryStatus } from '../api';
 import RegistryStatusTable from '../components/RegistryStatusTable.vue';
 
 const cfg = ref<Config | null>(null);
@@ -55,9 +55,100 @@ async function loadRegistryStatus() {
   registryStatus.value = await api.registries().catch(() => []);
 }
 
+/**
+ * IDs that already exist on disk. They are keys: devices, registries and copies refer
+ * to them, so changing one detaches everything pointing at it. Editing them by hand is
+ * what locked an operator out of deleting a device, so they are read-only once saved —
+ * and derived from the name while an entry is still new.
+ */
+const hostInterfaces = ref<HostInterface[]>([]);
+
+/** The addresses this host actually holds — with network_mode: host, the real ones. */
+const usable = () => hostInterfaces.value.filter((i) => !i.internal);
+
+function pickInterface(domainIndex: number, address: string) {
+  const d = cfg.value?.domains[domainIndex];
+  const iface = hostInterfaces.value.find((i) => i.address === address);
+  if (!d || !iface) return;
+  d.iface.address = iface.address;
+  d.iface.name = iface.name;
+  // The fabric subnets default to the network this address sits in — the common case
+  // for a single-fabric setup, and a sane starting point for red/blue.
+  if (iface.cidr && !d.fabricSubnets.red && !d.fabricSubnets.blue) {
+    const network = iface.cidr.replace(/\/(\d+)$/, (_m, bits) => `/${bits}`);
+    d.fabricSubnets.red = network.replace(/^(\d+\.\d+\.\d+)\.\d+/, '$1.0');
+  }
+}
+
+const savedDomainIds = ref<Set<string>>(new Set());
+const savedRegistryIds = ref<Set<string>>(new Set());
+
+function slug(label: string, taken: Set<string>, fallback: string): string {
+  const base =
+    label
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24) || fallback;
+  let candidate = base;
+  let n = 2;
+  while (taken.has(candidate)) candidate = `${base}-${n++}`;
+  return candidate;
+}
+
+const isNewDomain = (id: string) => !savedDomainIds.value.has(id);
+const isNewRegistry = (id: string) => !savedRegistryIds.value.has(id);
+
+// While an entry is unsaved, keep its ID in step with the name the operator is typing.
+watch(
+  () => cfg.value?.domains.map((d) => `${d.id}\u0000${d.label}`).join('|'),
+  () => {
+    if (!cfg.value) return;
+    const taken = new Set(cfg.value.domains.map((d) => d.id));
+    for (const d of cfg.value.domains) {
+      if (!isNewDomain(d.id)) continue;
+      taken.delete(d.id);
+      const next = slug(d.label, taken, 'domain');
+      taken.add(next);
+      if (next !== d.id) {
+        for (const r of cfg.value.registries) if (r.domainId === d.id) r.domainId = next;
+        for (const dev of cfg.value.devices) {
+          if (dev.sourceDomain === d.id) dev.sourceDomain = next;
+          if (dev.targetDomain === d.id) dev.targetDomain = next;
+        }
+        d.id = next;
+      }
+    }
+  },
+);
+
+watch(
+  () => cfg.value?.registries.map((r) => `${r.id}\u0000${r.label}`).join('|'),
+  () => {
+    if (!cfg.value) return;
+    const taken = new Set(cfg.value.registries.map((r) => r.id));
+    for (const r of cfg.value.registries) {
+      if (!isNewRegistry(r.id)) continue;
+      taken.delete(r.id);
+      const next = slug(r.label, taken, 'registry');
+      taken.add(next);
+      if (next !== r.id) {
+        for (const dev of cfg.value.devices) {
+          dev.targetRegistries = dev.targetRegistries.map((x) => (x === r.id ? next : x));
+        }
+        r.id = next;
+      }
+    }
+  },
+);
+
 async function refresh() {
   try {
     cfg.value = await api.config();
+    savedDomainIds.value = new Set(cfg.value.domains.map((d) => d.id));
+    savedRegistryIds.value = new Set(cfg.value.registries.map((r) => r.id));
+    hostInterfaces.value = await api.interfaces().catch(() => []);
     await loadRegistryStatus();
     error.value = null;
   } catch (e) {
@@ -73,6 +164,7 @@ async function save() {
     issues.value = res.issues;
     saved.value = true;
     error.value = null;
+    await refresh();
   } catch (e) {
     error.value = (e as Error).message;
   }
@@ -84,11 +176,15 @@ async function check() {
 }
 
 function addDomain() {
+  // Default to an address this host actually has: typing it by hand is the step most
+  // likely to be wrong, and an unreachable node href is invisible until a controller
+  // tries to fetch a transport file.
+  const free = usable().find((i) => !cfg.value?.domains.some((d) => d.iface.address === i.address)) ?? usable()[0];
   cfg.value?.domains.push({
     id: `partner${cfg.value.domains.length}`,
     label: 'Partner',
     kind: 'external',
-    iface: { name: 'eth1', address: '' },
+    iface: { name: free?.name ?? 'eth1', address: free?.address ?? '' },
     fabricSubnets: { red: null, blue: null },
     switchInterface: { red: '', blue: '' },
     pool: { base: '239.200.0.0', pairs: 64, sourceNat: null },
@@ -148,21 +244,57 @@ onMounted(refresh);
       <div class="head"><h3>Domains</h3><button @click="addDomain">Add domain</button></div>
       <article v-for="(d, i) in cfg.domains" :key="i" class="box">
         <div class="row">
-          <label>ID <input v-model="d.id" /></label>
           <label>Name <input v-model="d.label" /></label>
+          <label :title="isNewDomain(d.id) ? 'derived from the name until saved' : 'internal key — rename the name instead'">
+            ID
+            <input :value="d.id" readonly class="ro" />
+          </label>
           <label>Kind
             <select v-model="d.kind"><option value="internal">internal</option><option value="external">external</option></select>
           </label>
-          <label>Interface <input v-model="d.iface.name" /></label>
-          <label>Node API address <input v-model="d.iface.address" /></label>
+          <label title="OS interface name, used for interface_bindings">Interface <input v-model="d.iface.name" /></label>
+          <label title="This host's IP in THIS network. It is published as node.href and api.endpoints[].host, so a controller in this domain fetches our resources and the sender's /transportfile over it.">
+            Our IP in this network
+            <select :value="d.iface.address" @change="pickInterface(i, ($event.target as HTMLSelectElement).value)">
+              <option v-for="h in usable()" :key="h.address" :value="h.address">
+                {{ h.name }} — {{ h.address }}{{ h.cidr ? ` (${h.cidr})` : '' }}
+              </option>
+              <option v-if="d.iface.address && !usable().some((h) => h.address === d.iface.address)" :value="d.iface.address">
+                {{ d.iface.address }} (not on this host)
+              </option>
+            </select>
+          </label>
           <label class="check"><input type="checkbox" v-model="d.enabled" /> enabled</label>
         </div>
+        <p class="hint">
+          <strong>Our IP in this network</strong> is where this software publishes its own NMOS Node API for
+          this domain — a controller in this network reaches our resources and the virtual sender's
+          <code>/transportfile</code> through it. It has to be an address this host actually holds in that
+          network. The ID is an internal key that devices and registries refer to; it follows the name while
+          the entry is new and is fixed once saved.
+        </p>
         <div class="row">
-          <label>Subnet red <input v-model="d.fabricSubnets.red" placeholder="10.1.1.0/24" /></label>
-          <label>Subnet blue <input v-model="d.fabricSubnets.blue" placeholder="10.1.2.0/24" /></label>
-          <label>L3 interface red <input v-model="d.switchInterface.red" placeholder="Vlan101" /></label>
-          <label>L3 interface blue <input v-model="d.switchInterface.blue" placeholder="Vlan102" /></label>
+          <label title="Source subnet of the red fabric in this domain. A stream's leg is assigned to a fabric by matching its source IP against these.">
+            Subnet red <input v-model="d.fabricSubnets.red" placeholder="10.1.1.0/24" />
+          </label>
+          <label title="Source subnet of the blue fabric in this domain.">
+            Subnet blue <input v-model="d.fabricSubnets.blue" placeholder="10.1.2.0/24" />
+          </label>
+          <label title="This domain's L3 interface on the RED switch — SVI, routed port or port-channel.">
+            L3 interface red <input v-model="d.switchInterface.red" placeholder="Vlan101" />
+          </label>
+          <label title="This domain's L3 interface on the BLUE switch.">
+            L3 interface blue <input v-model="d.switchInterface.blue" placeholder="Vlan102" />
+          </label>
         </div>
+        <p class="hint">
+          <strong>Subnet red/blue</strong> tell the software which fabric a stream's leg belongs to: the
+          leg's source IP is matched against them, and if neither matches, the order of the
+          <code>m=</code> lines decides. <strong>L3 interface red/blue</strong> is this domain's interface
+          on each switch. For a channel, ingress is the source domain's interface and egress the target
+          domain's — which is why they live on the domain rather than on the switch. Both are only needed
+          with NAT enabled.
+        </p>
         <div class="row">
           <label>Pool base (must be even) <input v-model="d.pool.base" /></label>
           <label>Pairs <input type="number" min="1" v-model.number="d.pool.pairs" /></label>
@@ -192,7 +324,7 @@ onMounted(refresh);
         </thead>
         <tbody>
           <tr v-for="(r, i) in cfg.registries" :key="i">
-            <td><input v-model="r.id" /></td>
+            <td><input :value="r.id" readonly class="ro" :title="isNewRegistry(r.id) ? 'derived from the name until saved' : 'internal key — rename the name instead'" /></td>
             <td><input v-model="r.label" /></td>
             <td><select v-model="r.domainId"><option v-for="d in cfg.domains" :key="d.id" :value="d.id">{{ d.id }}</option></select></td>
             <td><select v-model="r.mode"><option value="manual">manual</option><option value="dnssd">dnssd</option></select></td>
@@ -305,6 +437,7 @@ section { margin-bottom: 2rem; }
 label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }
 label.check { flex-direction: row; align-items: center; gap: 0.35rem; }
 input, select { padding: 0.3rem 0.4rem; }
+.ro { opacity: 0.6; background: #8881; cursor: not-allowed; }
 input[type='number'] { width: 6rem; }
 td input, td select { width: 100%; box-sizing: border-box; }
 td input[type='number'] { width: 5.5rem; }

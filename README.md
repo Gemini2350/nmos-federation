@@ -42,9 +42,13 @@ docker compose up -d --build
 
 Then open `http://<host>:8080` and configure it under **Settings**:
 
-1. **Domains** — one internal, one per partner network. Each needs an interface name,
-   the IP its node API is reachable on, the red/blue source subnets, the L3 interface
-   per switch, and a multicast pool whose base address is **even**.
+1. **Domains** — one internal, one per partner network. Pick **our IP in this network**
+   from the host's interfaces (that is where this software publishes its own node API for
+   that domain); give the red/blue **source subnets**, which is how a stream's leg is
+   assigned to a fabric; the **L3 interface** this domain has on each switch, needed only
+   with NAT enabled; and a multicast pool whose base address is **even**. The ID next to
+   the name is an internal key — devices refer to it, so it follows the name while the
+   entry is new and is fixed once saved.
 2. **Registries** — assign each to a domain and give it an **IP and port**, or use
    **DNS-SD**. The URL is assembled for you and shown next to the fields; the port
    defaults to 80. Several registries per domain are fine.

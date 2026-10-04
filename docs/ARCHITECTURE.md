@@ -87,6 +87,37 @@ external controller has to fetch the vTX manifest (`/transportfile`), so over th
 domain's IP. Several registries **within** one domain do share a node — they see the
 same network.
 
+### What the domain fields mean
+
+| Field | Meaning |
+|---|---|
+| **Our IP in this network** (`iface.address`) | the address **this host** holds in that network. It is published as `node.href` and `api.endpoints[].host`, so a controller in that domain fetches our resources and a virtual sender's `/transportfile` over it. The settings page offers the host's own interfaces rather than a free-text field, because a wrong value here is invisible until a controller tries to fetch a transport file. |
+| `iface.name` | OS interface name, used for `interface_bindings` and to look up the MAC for `interfaces[].port_id` |
+| **Subnet red/blue** (`fabricSubnets`) | source subnets of the two fabrics *in this domain*. A stream's leg is assigned to a fabric by matching its source IP against these; if neither matches, the order of the `m=` lines decides |
+| **L3 interface red/blue** (`switchInterface`) | this domain's interface on each switch — SVI, routed port or port-channel. For a channel, ingress is the source domain's and egress the target domain's, which is why they live on the domain rather than on the switch. Only needed with NAT enabled |
+
+### IDs are keys, not labels
+
+A domain's and a registry's `id` is a key: devices refer to it through `sourceDomain`,
+`targetDomain` and `targetRegistries`, registries through `domainId`, copies through
+`registryId`. Changing one detaches everything pointing at it.
+
+So the GUI derives the id from the name while an entry is new and makes it **read-only
+once saved** — rename the name instead. The id stays visible because it is what appears
+in `config.json` and in log lines.
+
+Editing ids in `config.json` by hand is still possible, which is why a dangling
+reference is handled rather than rejected:
+
+- **A reference that does not resolve is a warning, not an error**, and the device is
+  reported as *detached*: it registers nothing until its domain exists again. Making it
+  an error locked the operator out — every write rewrites the whole configuration, so one
+  stale reference also blocked deleting the very device that carried it.
+- The registration pass **skips** a detached device instead of throwing. Otherwise one
+  stale reference takes the whole pass, and with it startup, down with it.
+- As a backstop, **a save that strictly reduces the number of errors is allowed
+  through** even if errors remain. A broken configuration must never be a trap.
+
 ### Devices
 
 The operator creates devices (name, source domain, target domain, target registries,

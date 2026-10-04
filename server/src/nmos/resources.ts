@@ -140,6 +140,29 @@ export interface NodeIdentity {
   mac?: string | null;
 }
 
+/** IPv4 addresses this host holds, for the settings page to offer instead of free text. */
+export function listInterfaces(): { name: string; address: string; cidr: string | null; mac: string | null; internal: boolean }[] {
+  const out: { name: string; address: string; cidr: string | null; mac: string | null; internal: boolean }[] = [];
+  for (const [name, addrs] of Object.entries(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.family !== 'IPv4') continue;
+      out.push({
+        name,
+        address: addr.address,
+        cidr: addr.cidr ?? null,
+        mac: addr.mac && addr.mac !== '00:00:00:00:00:00' ? addr.mac.replace(/:/g, '-').toLowerCase() : null,
+        internal: addr.internal,
+      });
+    }
+  }
+  // Physical NICs first. On a Docker host the virtual bridges (docker0, br-*, veth*)
+  // would otherwise win the default, and a node href on a container bridge is reachable
+  // from nowhere useful.
+  const virtual = /^(docker|br-|bridge|veth|virbr|vmnet|utun|tun|tap|wg|zt|ham|tailscale)/i;
+  const rank = (i: { name: string; internal: boolean }) => (i.internal ? 2 : virtual.test(i.name) ? 1 : 0);
+  return out.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+}
+
 /**
  * Looks up the OS interface carrying `address` and returns its name and MAC in the
  * dash-separated form IS-04 expects. The MAC matters: `interfaces[].port_id` must be a

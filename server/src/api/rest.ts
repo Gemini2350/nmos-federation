@@ -5,6 +5,7 @@ import type { AppConfig } from '../config/schema.js';
 import type { FederationDevice, VirtualReceiver } from '../types.js';
 import { randomUUID } from 'node:crypto';
 import type { MirrorEntry } from '../config/schema.js';
+import { listInterfaces } from '../nmos/resources.js';
 import { log } from '../util/log.js';
 
 /**
@@ -22,6 +23,7 @@ import { log } from '../util/log.js';
  *   GET      /api/registries                   per-registry status
  *   POST     /api/registries/:id/probe          reachability test for one registry
  *   POST     /api/switch/:fabric/probe         connectivity test
+ *   GET      /api/interfaces                    this host's IPv4 addresses, to pick from
  *   GET      /api/discovery                     run DNS-SD now, with what was queried
  *   POST     /api/discovery/refresh             drop cached DNS-SD addresses
  *   GET      /api/registries/:id/browse         list a registry's senders and receivers
@@ -49,9 +51,22 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
   });
 
   // ---- Devices -----------------------------------------------------------
-  app.get('/api/devices', async () =>
-    store.current.devices.map((d) => ({ ...d, receivers: engine.receiversOf(d) })),
-  );
+  app.get('/api/devices', async () => {
+    const domainIds = new Set(store.current.domains.map((d) => d.id));
+    const registryIds = new Set(store.current.registries.map((r) => r.id));
+    return store.current.devices.map((d) => ({
+      ...d,
+      receivers: engine.receiversOf(d),
+      // A renamed or removed domain leaves the device pointing at nothing. Say so
+      // instead of letting it look configured but silently do nothing.
+      detached: !engine.isAttached(d),
+      missing: {
+        sourceDomain: domainIds.has(d.sourceDomain) ? null : d.sourceDomain,
+        targetDomain: domainIds.has(d.targetDomain) ? null : d.targetDomain,
+        registries: d.targetRegistries.filter((r) => !registryIds.has(r)),
+      },
+    }));
+  });
 
   app.post<{ Body: Partial<FederationDevice> }>('/api/devices', async (req, reply) => {
     const cfg = structuredClone(store.current);
@@ -211,6 +226,10 @@ export function registerRestApi(app: FastifyInstance, store: ConfigStore, engine
     if (!result) return reply.code(404).send({ error: `no such fabric: ${req.params.fabric}` });
     return result;
   });
+
+  // With network_mode: host these are the host's own interfaces — which is exactly what
+  // a domain's address has to be, so the settings page offers them instead of free text.
+  app.get('/api/interfaces', async () => listInterfaces());
 
   // ---- Discovery ----------------------------------------------------------
   app.get<{ Querystring: { domain?: string; version?: string } }>('/api/discovery', async (req) =>

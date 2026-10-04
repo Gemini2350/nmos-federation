@@ -81,6 +81,9 @@ export interface Device {
   mirrorLabel?: string;
   receiverIds: string[];
   receivers?: VirtualReceiver[];
+  /** True when a domain it points at no longer exists — it registers nothing. */
+  detached?: boolean;
+  missing?: { sourceDomain: string | null; targetDomain: string | null; registries: string[] };
 }
 
 export interface VirtualReceiver {
@@ -223,7 +226,16 @@ export interface Issue {
   message: string;
 }
 
+export interface HostInterface {
+  name: string;
+  address: string;
+  cidr: string | null;
+  mac: string | null;
+  internal: boolean;
+}
+
 export const api = {
+  interfaces: () => req<HostInterface[]>('/interfaces'),
   status: () => req<Status>('/status'),
   config: () => req<Config>('/config'),
   saveConfig: (cfg: Config) => req<{ ok: boolean; issues: Issue[] }>('/config', { method: 'PUT', body: JSON.stringify(cfg) }),

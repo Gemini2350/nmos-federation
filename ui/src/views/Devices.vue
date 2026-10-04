@@ -101,12 +101,22 @@ onMounted(refresh);
     </p>
   </section>
 
-  <article v-for="d in devices" :key="d.id" class="device">
+  <article v-for="d in devices" :key="d.id" :class="['device', { detached: d.detached }]">
     <header>
       <div>
         <strong>{{ d.label }}</strong>
+        <span v-if="d.detached" class="badge">detached</span>
         <small>{{ d.sourceDomain }} → {{ d.targetDomain }} ·
           {{ d.targetRegistries.length ? d.targetRegistries.join(', ') : 'all registries of the target domain' }}</small>
+        <small v-if="d.detached" class="bad">
+          Points at
+          {{ [d.missing?.sourceDomain, d.missing?.targetDomain].filter(Boolean).join(' and ') }}, which
+          {{ d.missing?.sourceDomain && d.missing?.targetDomain ? 'do' : 'does' }} not exist — this device registers nothing.
+          Recreate that domain under Settings, or change the device, or delete it.
+        </small>
+        <small v-else-if="d.missing?.registries.length" class="warn">
+          Unknown target registries ignored: {{ d.missing.registries.join(', ') }}
+        </small>
       </div>
       <div class="controls">
         <label class="check" :title="natGloballyOff ? 'NAT is off globally' : 'Rebuilds this device\'s channels'">
@@ -145,6 +155,8 @@ onMounted(refresh);
 
 <style scoped>
 .new, .device { border: 1px solid #8884; border-radius: 6px; padding: 1rem; margin-bottom: 1.25rem; }
+.device.detached { border-color: #d24b3e88; }
+.badge { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; background: #d24b3e; color: #fff; border-radius: 3px; padding: 0.1rem 0.35rem; margin-left: 0.5rem; }
 .new h3 { margin-top: 0; }
 .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
 label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }

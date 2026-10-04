@@ -160,6 +160,16 @@ export class Engine {
     );
   }
 
+  /**
+   * Whether a device's domains still exist. A rename or a removal leaves devices
+   * pointing at nothing; they must be skipped rather than throw, or one stale reference
+   * takes the whole registration pass — and with it the startup — down with it.
+   */
+  isAttached(device: FederationDevice): boolean {
+    const ids = new Set(this.cfg.domains.map((d) => d.id));
+    return ids.has(device.sourceDomain) && ids.has(device.targetDomain);
+  }
+
   receiversOf(device: FederationDevice): VirtualReceiver[] {
     return this.cfg.receivers.filter((r) => r.deviceId === device.id);
   }
@@ -190,6 +200,7 @@ export class Engine {
     const active = this.activeChannels();
 
     for (const device of this.cfg.devices) {
+      if (!this.isAttached(device)) continue;
       const vrxList = this.receiversOf(device);
 
       if (device.sourceDomain === domainId) {
@@ -297,6 +308,13 @@ export class Engine {
     }
 
     for (const device of this.cfg.devices) {
+      if (!this.isAttached(device)) {
+        log.warn(
+          { device: device.id, label: device.label, source: device.sourceDomain, target: device.targetDomain },
+          'device is detached from its domains — skipped until they exist again',
+        );
+        continue;
+      }
       const srcRegs = registriesOf(this.cfg, device.sourceDomain).map((r) => r.id);
       const tgtRegs = this.targetRegistryIds(device);
 
@@ -446,6 +464,8 @@ export class Engine {
     if (!vrx) throw new Error(`unknown virtual receiver ${vrxId}`);
     const device = this.cfg.devices.find((d) => d.id === vrx.deviceId);
     if (!device) throw new Error(`receiver ${vrxId} is not attached to a device`);
+    if (!this.isAttached(device))
+      throw new Error(`device "${device.label}" points at a domain that does not exist (${device.sourceDomain} → ${device.targetDomain})`);
     const sdp = conn.transport_file.data;
     if (!sdp) throw new Error('activation without a transport_file');
     return this.runChannel({
@@ -467,6 +487,8 @@ export class Engine {
     if (!mirror) throw new Error(`unknown sender copy ${mirrorId}`);
     const device = this.cfg.devices.find((d) => d.id === mirror.deviceId);
     if (!device) throw new Error(`sender copy ${mirrorId} is not attached to a device`);
+    if (!this.isAttached(device))
+      throw new Error(`device "${device.label}" points at a domain that does not exist (${device.sourceDomain} → ${device.targetDomain})`);
     const query = this.queries.get(mirror.registryId);
     if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
 

@@ -1,6 +1,7 @@
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DEFAULT_CONFIG, migrateRegistry, registryUrl, type AppConfig } from './schema.js';
+import { listInterfaces } from '../nmos/resources.js';
 import { validatePool } from '../federation/pool.js';
 import { overlappingPools } from '../federation/pools.js';
 import { log } from '../util/log.js';
@@ -32,7 +33,22 @@ export class ConfigStore {
       this.cfg.registries = this.cfg.registries.map(migrateRegistry);
       log.info({ dir: this.dir, domains: this.cfg.domains.length, registries: this.cfg.registries.length }, 'configuration loaded');
     } catch {
-      log.warn({ dir: this.dir }, 'no configuration found, using defaults');
+      // First start: the default 127.0.0.1 would publish a node href no controller can
+      // reach. Pick an address this host actually holds instead.
+      const host = listInterfaces().find((i) => !i.internal);
+      if (host) {
+        const internal = this.cfg.domains.find((d) => d.kind === 'internal');
+        if (internal) {
+          internal.iface = { name: host.name, address: host.address };
+          if (host.cidr) {
+            internal.fabricSubnets.red = host.cidr.replace(/^(\d+\.\d+\.\d+)\.\d+/, '$1.0');
+          }
+        }
+      }
+      log.warn(
+        { dir: this.dir, ...(host ? { address: `${host.name} ${host.address}` } : {}) },
+        'no configuration found, using defaults',
+      );
     }
     return this.cfg;
   }
@@ -40,6 +56,7 @@ export class ConfigStore {
   validate(cfg: AppConfig): ConfigIssue[] {
     const issues: ConfigIssue[] = [];
     const err = (message: string) => issues.push({ level: 'error', message });
+    const warn = (message: string) => issues.push({ level: 'warning', message });
 
     const internal = cfg.domains.filter((d) => d.kind === 'internal');
     if (internal.length !== 1) err(`exactly one internal domain required, configured: ${internal.length}`);
@@ -65,7 +82,7 @@ export class ConfigStore {
     for (const r of cfg.registries) {
       if (registryIds.has(r.id)) err(`duplicate registry ID ${r.id}`);
       registryIds.add(r.id);
-      if (!domainIds.has(r.domainId)) err(`registries.${r.id}: unknown domain ${r.domainId}`);
+        if (!domainIds.has(r.domainId)) warn(`registry "${r.label || r.id}" is detached: no domain ${r.domainId}`);
       if (r.mode === 'manual') {
         if (!r.ip) err(`registries.${r.id}: IP or hostname missing`);
         if (r.port !== undefined && (!Number.isInteger(r.port) || r.port < 1 || r.port > 65535)) {
@@ -75,17 +92,28 @@ export class ConfigStore {
       }
     }
 
+    // A reference that no longer resolves — because a domain or registry was renamed or
+    // removed — is a WARNING, not an error. Making it an error locks the operator out:
+    // every write rewrites the whole configuration, so one dangling reference would also
+    // block deleting the very device that carries it. A detached device simply does not
+    // register until its domain exists again.
     for (const dev of cfg.devices) {
-      if (!domainIds.has(dev.sourceDomain)) err(`devices.${dev.id}: unknown source domain ${dev.sourceDomain}`);
-      if (!domainIds.has(dev.targetDomain)) err(`devices.${dev.id}: unknown target domain ${dev.targetDomain}`);
-      if (dev.sourceDomain === dev.targetDomain) err(`devices.${dev.id}: source and target domain are the same`);
+      const name = dev.label || dev.id;
+      if (!domainIds.has(dev.sourceDomain)) warn(`device "${name}" is detached: no domain ${dev.sourceDomain}`);
+      if (!domainIds.has(dev.targetDomain)) warn(`device "${name}" is detached: no domain ${dev.targetDomain}`);
+      if (dev.sourceDomain === dev.targetDomain) err(`device "${name}": source and target domain are the same`);
       for (const rid of dev.targetRegistries) {
         const reg = cfg.registries.find((r) => r.id === rid);
-        if (!reg) err(`devices.${dev.id}: unknown registry ${rid}`);
+        if (!reg) warn(`device "${name}": no registry ${rid} — that target is ignored`);
         else if (reg.domainId !== dev.targetDomain) {
-          err(`devices.${dev.id}: registry ${rid} is in domain ${reg.domainId}, not in ${dev.targetDomain}`);
+          warn(`device "${name}": registry ${rid} is in domain ${reg.domainId}, not in ${dev.targetDomain} — that target is ignored`);
         }
       }
+    }
+
+    for (const m of cfg.mirrors) {
+      if (!cfg.devices.some((d) => d.id === m.deviceId)) warn(`copy of "${m.originLabel}": its device is gone`);
+      if (!registryIds.has(m.registryId)) warn(`copy of "${m.originLabel}": no registry ${m.registryId}`);
     }
 
     const capacity = cfg.nat.groupIdRange[1] - cfg.nat.groupIdRange[0] + 1;
@@ -103,7 +131,20 @@ export class ConfigStore {
   async save(cfg: AppConfig): Promise<ConfigIssue[]> {
     const issues = this.validate(cfg);
     const errors = issues.filter((i) => i.level === 'error');
-    if (errors.length) throw new Error(errors.map((e) => e.message).join('; '));
+    if (errors.length) {
+      // A configuration that is already broken must not trap the operator. Every write
+      // rewrites the whole file, so refusing outright would also refuse the delete that
+      // fixes it. A save that strictly reduces the number of errors is allowed through.
+      const before = this.validate(this.cfg).filter((i) => i.level === 'error').length;
+      if (!(before > 0 && errors.length < before)) {
+        throw new Error(errors.map((e) => e.message).join('; '));
+      }
+      log.warn({ before, after: errors.length }, 'saved a configuration that still has errors, but fewer than before');
+      issues.push({
+        level: 'warning',
+        message: `saved with ${errors.length} remaining problem(s) — it was ${before} before`,
+      });
+    }
     await mkdir(this.dir, { recursive: true });
     const tmp = join(this.dir, 'config.json.tmp');
     await writeFile(tmp, JSON.stringify(cfg, null, 2), 'utf8');
