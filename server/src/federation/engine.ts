@@ -137,6 +137,8 @@ export class Engine {
 
   setDomainPort(domainId: string, port: number): void {
     this.domainPorts.set(domainId, port);
+    // A bind can succeed late (address appeared after start) — the old error is stale.
+    this.nodeApiErrors.delete(domainId);
   }
 
   /**

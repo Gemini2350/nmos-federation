@@ -721,7 +721,10 @@ already routed.
   (node/connection API). The NMOS API runs **one listener per domain**, bound to that
   domain's IP, which is what makes the same port usable several times. If two domains
   share an IP (lab setup), the second takes the next free port and `node.href`
-  follows.
+  follows. A domain whose address is not on the host yet — after a reboot Docker
+  typically starts the container before DHCP has configured the interface — is retried
+  every 5 s; once it binds, the registries are resynced so the href carries the real
+  port.
 - **Docker** `network_mode: host` is required: the software needs one interface with
   a real IP per domain (node href, manifest fetch, mDNS). The alternative would be
   macvlan with several networks.

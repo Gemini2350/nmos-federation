@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 
 import { ConfigStore } from './config/store.js';
-import { registriesOf } from './config/schema.js';
+import { registriesOf, type DomainConfig } from './config/schema.js';
 import { StateStore } from './federation/state.js';
 import { PoolManager } from './federation/pools.js';
 import { Engine } from './federation/engine.js';
@@ -52,7 +52,10 @@ async function main() {
 
   // --- NMOS APIs: one listener per domain on that domain's IP ---------------
   const nmosApps: FastifyInstance[] = [];
-  for (const domain of cfg.domains.filter((d) => d.enabled)) {
+  /** Domains whose address is not (yet) on this host, retried until it is. */
+  const waitingForAddress = new Map<string, DomainConfig>();
+
+  const bindNodeApi = async (domain: DomainConfig): Promise<void> => {
     // Controllers differ in whether they add or strip a trailing slash, and the hrefs
     // we publish must resolve either way — see nmos/node-api.ts.
     const app = Fastify({ logger: false, routerOptions: { ignoreTrailingSlash: true } });
@@ -61,38 +64,64 @@ async function main() {
     // If two domains share an IP (lab setup), the configured port is already
     // taken. Take the next free one and set the href accordingly — better than
     // leaving a domain without a node API.
-    let bound = false;
     let lastError: Error | null = null;
-    for (let offset = 0; offset < 10 && !bound; offset++) {
+    for (let offset = 0; offset < 10; offset++) {
       const port = cfg.nmosPort + offset;
       try {
         await app.listen({ host: domain.iface.address, port });
         engine.setDomainPort(domain.id, port);
         nmosApps.push(app);
-        bound = true;
+        waitingForAddress.delete(domain.id);
         log.info(
           { domain: domain.id, address: `${domain.iface.address}:${port}`, ...(offset ? { note: 'configured port was taken' } : {}) },
           'node API bound',
         );
+        return;
       } catch (e) {
         lastError = e as Error;
-        if ((e as { code?: string }).code !== 'EADDRINUSE') {
-          log.error({ domain: domain.id, address: domain.iface.address, err: String(e) }, 'node API could not bind');
-          break;
-        }
+        if ((e as { code?: string }).code !== 'EADDRINUSE') break;
       }
     }
-    if (!bound) {
-      const code = (lastError as { code?: string } | null)?.code;
-      const reason =
-        code === 'EADDRNOTAVAIL'
-          ? `${domain.iface.address} is not an address of this host`
-          : (lastError?.message ?? 'could not bind');
-      engine.markNodeApiUnavailable(domain.id, reason);
-      log.error({ domain: domain.id, address: domain.iface.address, reason }, 'node API could not bind — domain stays without an API');
-      await app.close();
+    await app.close();
+    const code = (lastError as { code?: string } | null)?.code;
+    if (code === 'EADDRNOTAVAIL') {
+      // Typically a boot race: Docker starts the container before DHCP has handed the
+      // interface its address. Binding once and giving up left the domain without a
+      // node API until someone restarted the container by hand.
+      engine.markNodeApiUnavailable(domain.id, `${domain.iface.address} is not an address of this host (yet) — retrying`);
+      if (!waitingForAddress.has(domain.id)) {
+        log.warn({ domain: domain.id, address: domain.iface.address }, 'address not on this host — node API retries until it appears');
+      }
+      waitingForAddress.set(domain.id, domain);
+      return;
     }
-  }
+    const reason = lastError?.message ?? 'could not bind';
+    engine.markNodeApiUnavailable(domain.id, reason);
+    log.error({ domain: domain.id, address: domain.iface.address, reason }, 'node API could not bind — domain stays without an API');
+  };
+
+  for (const domain of cfg.domains.filter((d) => d.enabled)) await bindNodeApi(domain);
+
+  const ADDRESS_RETRY_MS = 5_000;
+  let retrying = false;
+  const addressRetry = setInterval(async () => {
+    if (retrying || waitingForAddress.size === 0) return;
+    retrying = true;
+    try {
+      const before = waitingForAddress.size;
+      // In configuration order, so domains sharing an address get the same ports as
+      // they would have at a clean start.
+      for (const domain of [...waitingForAddress.values()]) await bindNodeApi(domain);
+      // The published hrefs carry the bound port, which may differ from the default —
+      // re-register so the registries point at a listener that exists.
+      if (waitingForAddress.size < before) await engine.syncRegistries();
+    } catch (e) {
+      log.error({ err: String(e) }, 'node API retry failed');
+    } finally {
+      retrying = false;
+    }
+  }, ADDRESS_RETRY_MS);
+  addressRetry.unref();
 
   // --- GUI + REST ----------------------------------------------------------
   const gui = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024, routerOptions: { ignoreTrailingSlash: true } });
@@ -136,6 +165,7 @@ async function main() {
 
   const shutdown = async () => {
     log.info({}, 'shutting down');
+    clearInterval(addressRetry);
     await engine.stop();
     await Promise.allSettled([gui.close(), ...nmosApps.map((a) => a.close())]);
     process.exit(0);
