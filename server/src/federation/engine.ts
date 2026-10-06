@@ -567,12 +567,30 @@ export class Engine {
     );
   }
 
+  /**
+   * Registries are independent of each other, so they are synced in parallel — an
+   * IS-05 PATCH waits for this, and one registry after the other made a switch with
+   * three target registries take three times as long. Order only matters within one
+   * registry, which syncRegistry keeps.
+   */
   async syncRegistries(registryIds?: string[]): Promise<void> {
-    const ids = registryIds ?? [...this.registries.keys()];
-    for (const id of ids) {
-      const client = this.registries.get(id);
-      if (client) await this.syncRegistry(client);
-    }
+    const ids = [...new Set(registryIds ?? this.registries.keys())];
+    await Promise.all(
+      ids.map((id) => {
+        const client = this.registries.get(id);
+        return client ? this.syncRegistry(client) : undefined;
+      }),
+    );
+  }
+
+  /**
+   * Every registry a channel touches: its sender's target registries, and the source
+   * domain's, where the virtual receiver lives. The receiver's `subscription` changes
+   * with every activation — leaving those registries to the 30 s reconcile meant a
+   * controller reading the connection from the registry saw it up to 30 s late.
+   */
+  private channelRegistryIds(channel: Pick<Channel, 'publishedIn' | 'sourceDomain'>): string[] {
+    return [...channel.publishedIn, ...registriesOf(this.cfg, channel.sourceDomain).map((r) => r.id)];
   }
 
   // -- Lifecycle -----------------------------------------------------------
@@ -834,7 +852,7 @@ export class Engine {
       channel.updatedAt = new Date().toISOString();
       this.deps.state.upsertChannel(channel);
       await this.deps.state.save();
-      await this.syncRegistries(channel.publishedIn);
+      await this.syncRegistries(this.channelRegistryIds(channel));
 
       // A proxy receiver only becomes useful here: the original receiver in the
       // target domain is pointed at the sender we just published.
@@ -917,11 +935,10 @@ export class Engine {
       }
     }
 
-    const registries = channel.publishedIn.length ? channel.publishedIn : undefined;
     channel.state = 'withdrawing';
     channel.updatedAt = new Date().toISOString();
     this.deps.state.upsertChannel(channel);
-    await this.syncRegistries(registries);
+    await this.syncRegistries(this.channelRegistryIds(channel));
 
     if (channel.allocation) {
       channel.state = 'unprogramming';

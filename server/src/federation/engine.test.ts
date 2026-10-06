@@ -545,3 +545,35 @@ test('an unusable SDP fails before the switch is touched', async (t) => {
   assert.equal(state.current.channels[0]!.allocation, null, 'the pool must be released');
   assert.equal(extReg.posts.filter((p) => p.type === 'sender').length, 0);
 });
+
+test('an activation reaches the receiver subscription in the source registry at once, not with the next reconcile', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, state } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+
+  const subscriptions = () =>
+    intReg.posts.filter((p) => p.type === 'receiver').map((p) => p.data.subscription as { sender_id: string | null; active: boolean });
+
+  // What the node API's PATCH does: active state first, then the federation chain.
+  const conn = {
+    sender_id: 'real-sender-uuid',
+    master_enable: true,
+    transport_file: { data: DUP_SDP, type: 'application/sdp' },
+    transport_params: [{}, {}],
+  };
+  state.connection('vrx1').active = conn;
+  await engine.activate('vrx1', conn);
+  assert.deepEqual(subscriptions().at(-1), { sender_id: 'real-sender-uuid', active: true });
+
+  state.connection('vrx1').active = { ...conn, sender_id: null, master_enable: false };
+  await engine.deactivate('vrx1');
+  assert.deepEqual(subscriptions().at(-1), { sender_id: null, active: false });
+});

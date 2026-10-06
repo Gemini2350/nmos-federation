@@ -512,6 +512,13 @@ reconciler loop (interval plus triggers) compares desired against actual:
 Deviations are corrected, not just logged. That is what lets the system survive a
 container restart, a switch reload and a registry restart without hand-holding.
 
+The reconciler is the safety net, not the delivery path. An activation syncs every
+registry it touches before the PATCH answers — the target registries for the sender,
+and the source domain's for the virtual receiver, whose `subscription` changes with
+every switch. Before that was the case, a controller reading the connection from the
+registry saw it up to one reconcile interval (30 s) late. Registries are synced in
+parallel; order only matters within one registry.
+
 ## 7. SDP transformation
 
 Input: the `transport_file` from the vRX's IS-05 activation.
