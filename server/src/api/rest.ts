@@ -413,8 +413,17 @@ export function registerRestApi(
       const key = m.kind === 'sender' ? `mirror-${m.id}` : (store.current.receivers.find((r) => r.proxyFor?.mirrorId === m.id)?.id ?? '');
       const channel = channels.find((c) => c.receiverId === key) ?? null;
       const device = store.current.devices.find((d) => d.id === m.deviceId) ?? null;
+      const shared = engine.mirrorRegistries(m);
       return {
         ...m,
+        // The name the copy carries in the registries. A proxy's lives on its receiver,
+        // which can also be renamed on the Bridges page.
+        name:
+          m.kind === 'receiver'
+            ? (store.current.receivers.find((r) => r.id === key)?.label ?? m.label ?? proxyLabel(m.originLabel))
+            : m.label || m.originLabel,
+        registries: shared.chosen,
+        registryChoices: shared.choices,
         proxyReceiverId: m.kind === 'receiver' ? key || null : null,
         device: device
           ? (() => {
@@ -496,6 +505,42 @@ export function registerRestApi(
       }
     }
     return mirror;
+  });
+
+  // Name and where it is shared. Neither touches the stream: a renamed or re-shared
+  // sender copy keeps its NAT and multicast groups, only its registrations move.
+  app.put<{ Params: { id: string }; Body: { label?: string; registries?: string[] } }>('/api/mirrors/:id', async (req, reply) => {
+    const cfg = structuredClone(store.current);
+    const mirror = cfg.mirrors.find((m) => m.id === req.params.id);
+    if (!mirror) return reply.code(404).send({ error: 'unknown copy' });
+    const b = req.body ?? {};
+
+    if (b.label !== undefined) {
+      const label = b.label.trim();
+      if (!label) return reply.code(400).send({ error: 'a copy needs a name' });
+      mirror.label = label;
+      if (mirror.kind === 'receiver') {
+        const proxy = cfg.receivers.find((r) => r.proxyFor?.mirrorId === mirror.id);
+        if (proxy) proxy.label = label;
+      }
+    }
+    if (b.registries !== undefined) {
+      const { choices } = engine.mirrorRegistries(mirror);
+      const unknown = b.registries.filter((id) => !choices.includes(id));
+      if (unknown.length) {
+        return reply.code(400).send({ error: `not a registry of that domain: ${unknown.join(', ')}` });
+      }
+      if (!b.registries.length) return reply.code(400).send({ error: 'a copy has to be shared in at least one registry' });
+      mirror.registries = b.registries;
+    }
+
+    try {
+      await store.save(cfg);
+      await engine.applyMirrorChange(mirror.id);
+      return mirror;
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
   });
 
   app.post<{ Params: { id: string } }>('/api/mirrors/:id/refresh', async (req, reply) => {

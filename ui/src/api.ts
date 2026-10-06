@@ -183,6 +183,11 @@ export interface Mirror {
   originLabel: string;
   label?: string;
   enabled: boolean;
+  /** The name the copy carries in the registries. */
+  name: string;
+  /** Where it is shared, and where it could be. */
+  registries: string[];
+  registryChoices: string[];
   proxyReceiverId: string | null;
   device: { id: string; label: string; sourceDomain: string; targetDomain: string; nat: boolean } | null;
   channel: Channel | null;
@@ -330,6 +335,8 @@ export const api = {
     format?: 'video' | 'audio' | 'data';
   }) => req<Mirror>('/mirrors', { method: 'POST', body: JSON.stringify(body) }),
   refreshMirror: (id: string) => req<Channel>(`/mirrors/${id}/refresh`, { method: 'POST' }),
+  updateMirror: (id: string, change: { label?: string; registries?: string[] }) =>
+    req<Mirror>(`/mirrors/${id}`, { method: 'PUT', body: JSON.stringify(change) }),
   deleteMirror: (id: string) => req<{ ok: boolean }>(`/mirrors/${id}`, { method: 'DELETE' }),
   events: () => new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/events`),
 };

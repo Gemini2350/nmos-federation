@@ -249,6 +249,22 @@ everything after that is the ordinary channel path. `POST /api/mirrors/<id>/refr
 re-reads the manifest and rebuilds — that is how a changed origin SDP is picked up,
 since nothing notifies us.
 
+### Name and sharing per copy
+
+Every copy can be renamed and shared individually, without touching its stream:
+
+- a **sender copy** is published in the registries of the bridge's target domain —
+  by default the bridge's target registries, but any subset of that domain's
+  registries can be chosen per copy, including ones the bridge does not publish into
+  (such a registry then gets the node and only the devices that have a sender there);
+- a **receiver proxy** is offered in the registries of the bridge's source domain —
+  by default all of them, or a chosen subset.
+
+Changing either only moves registrations: the NAT and the multicast groups stay as
+they are, and a deselected registry has the copy removed. At least one registry is
+always kept; chosen registries that are later disabled drop out, and if none is left
+the default applies again.
+
 ### Receiver proxy
 
 A copied receiver is a real ordering point, not a decorative IS-04 entry:

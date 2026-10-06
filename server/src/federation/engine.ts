@@ -384,8 +384,51 @@ export class Engine {
   }
 
   /**
+   * Where a copy is shared, and what it could be shared in. A sender copy is published
+   * on the target side, a receiver proxy is offered on the source side. Registries that
+   * were chosen and have since been disabled drop out; if none is left, the default
+   * applies rather than the copy silently vanishing from every registry.
+   */
+  mirrorRegistries(mirror: MirrorEntry): { chosen: string[]; choices: string[] } {
+    const device = this.cfg.devices.find((d) => d.id === mirror.deviceId);
+    const bridge = device ? this.bridgeFor(device) : undefined;
+    if (!bridge) return { chosen: [], choices: [] };
+    const domainId = mirror.kind === 'sender' ? bridge.targetDomain : bridge.sourceDomain;
+    const choices = registriesOf(this.cfg, domainId).map((r) => r.id);
+    const fallback = mirror.kind === 'sender' ? this.targetRegistryIds(bridge) : choices;
+    const picked = (mirror.registries ?? []).filter((id) => choices.includes(id));
+    return { chosen: picked.length ? picked : fallback, choices };
+  }
+
+  /** Registries a channel's sender is published in: the copy's choice, else the bridge's. */
+  private publishTargets(key: string, bridge: Bridge): string[] {
+    const mirror = this.mirrorOf(key);
+    return mirror ? this.mirrorRegistries(mirror).chosen : this.targetRegistryIds(bridge);
+  }
+
+  /**
+   * After a copy's name or registries changed: republish where it now belongs. The
+   * registry clients are kept, not rebuilt — their bookkeeping is what lets a registry
+   * that was deselected have the copy removed again.
+   */
+  async applyMirrorChange(mirrorId: string): Promise<void> {
+    const channel = this.deps.state.channelFor(Engine.mirrorKey(mirrorId));
+    const mirror = this.cfg.mirrors.find((m) => m.id === mirrorId);
+    const device = mirror && this.cfg.devices.find((d) => d.id === mirror.deviceId);
+    const bridge = device ? this.bridgeFor(device) : undefined;
+    if (channel && bridge && channel.state === 'active') {
+      channel.publishedIn = this.publishTargets(channel.receiverId, bridge);
+      channel.updatedAt = new Date().toISOString();
+      this.deps.state.upsertChannel(channel);
+      await this.deps.state.save();
+    }
+    await this.syncRegistries();
+  }
+
+  /**
    * Desired state per registry. Node and devices go to every registry that holds
-   * anything of ours; senders only to their device's target registries.
+   * anything of ours; senders only to their device's target registries, or to the ones
+   * a sender copy was given; receiver proxies only to the ones they were given.
    */
   registrationPlan(): Map<string, Resource[]> {
     const plan = new Map<string, Resource[]>();
@@ -411,22 +454,33 @@ export class Engine {
           const dev = srcRes.devices.find((d) => d.id === devId);
           if (dev) add(registryId, { type: 'device', data: dev });
           for (const vrx of this.receiversOf(device)) {
+            const mirror = vrx.proxyFor && this.cfg.mirrors.find((m) => m.id === vrx.proxyFor!.mirrorId);
+            if (mirror && !this.mirrorRegistries(mirror).chosen.includes(registryId)) continue;
             const rx = srcRes.receivers.find((r) => r.id === this.receiverNmosId(vrx.id));
             if (rx) add(registryId, { type: 'receiver', data: rx });
           }
         }
       }
 
-      for (const registryId of tgtRegs) {
+      // Every registry of the target domain is considered, not just the bridge's: a
+      // sender copy may be shared in one the bridge does not publish into. Such a
+      // registry gets the node and only the devices that have a sender there.
+      for (const registryId of registriesOf(this.cfg, bridge.targetDomain).map((r) => r.id)) {
+        const bridgeWide = tgtRegs.includes(registryId);
+        const here = (deviceId: string) =>
+          this.activeChannels().filter((c) => c.deviceId === deviceId && this.publishTargets(c.receiverId, bridge).includes(registryId));
+        if (!bridgeWide && !devices.some((d) => here(d.id).length)) continue;
         const self = tgtRes.nodes.find((n) => n.id === nodeId);
         if (self) add(registryId, { type: 'node', data: self });
         for (const device of devices) {
+          const channels = here(device.id);
+          if (!bridgeWide && !channels.length) continue;
           const devId = this.deviceId(device.id);
           // The same device id as on the source side, carrying its senders instead of
           // its receivers — one device per group of ports, wherever it shows up.
           const dev = tgtRes.devices.find((d) => d.id === devId);
           if (dev) add(registryId, { type: 'device', data: dev });
-          for (const channel of this.activeChannels().filter((c) => c.deviceId === device.id)) {
+          for (const channel of channels) {
             const vrxId = channel.receiverId;
             const src = tgtRes.sources.find((x) => x.id === this.sourceNmosId(vrxId));
             const flow = tgtRes.flows.find((f) => f.id === this.flowNmosId(vrxId));
@@ -849,7 +903,7 @@ export class Engine {
       this.deps.state.upsertChannel(channel);
 
       channel.state = 'active';
-      channel.publishedIn = this.targetRegistryIds(bridge);
+      channel.publishedIn = this.publishTargets(key, bridge);
       channel.updatedAt = new Date().toISOString();
       this.deps.state.upsertChannel(channel);
       await this.deps.state.save();

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api, type BrowseReceiver, type BrowseSender, type Config, type Mirror } from '../api';
-import { domainName, primeFromConfig, registryName, registryNames } from '../names';
+import { domainName, primeFromConfig, registryName } from '../names';
+import EditableName from '../components/EditableName.vue';
 
 const cfg = ref<Config | null>(null);
 const mirrors = ref<Mirror[]>([]);
@@ -47,60 +48,128 @@ async function load() {
   }
 }
 
-async function browse() {
+/**
+ * `quiet` re-reads after a copy without emptying the lists first. Emptying them made the
+ * tables vanish and come back, and the page jumped under the pointer every time.
+ */
+async function browse(quiet = false) {
   if (!sourceRegistry.value) return;
-  busy.value = true;
-  senders.value = [];
-  receivers.value = [];
+  if (!quiet) {
+    busy.value = true;
+    senders.value = [];
+    receivers.value = [];
+    selected.sender.clear();
+    selected.receiver.clear();
+  }
   try {
     const res = await api.browse(sourceRegistry.value);
     senders.value = res.senders;
     receivers.value = res.receivers;
     paging.value = res.paging;
     error.value = null;
-    // The page count is the sum over senders, receivers, devices and flows — reporting
-    // it as "N pages" next to a sender count read as nonsense. Say what it means.
-    const paged = res.paging.limit
-      ? ` · this registry caps a page at ${res.paging.limit}, so the list was fetched in ${res.paging.pages} requests`
-      : '';
-    notice.value = `${res.senders.length} senders, ${res.receivers.length} receivers${paged}`;
+    if (!quiet) {
+      // The page count is the sum over senders, receivers, devices and flows — reporting
+      // it as "N pages" next to a sender count read as nonsense. Say what it means.
+      const paged = res.paging.limit && res.paging.pages > 4
+        ? ` · this registry caps a page at ${res.paging.limit}, so the list was fetched in ${res.paging.pages} requests`
+        : '';
+      notify(`${res.senders.length} senders, ${res.receivers.length} receivers${paged}`);
+    }
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
-    busy.value = false;
+    if (!quiet) busy.value = false;
   }
 }
 
 const formatOf = (format: string): 'video' | 'audio' | 'data' =>
   format.endsWith(':audio') ? 'audio' : format.endsWith(':data') ? 'data' : 'video';
 
-async function copy(kind: 'sender' | 'receiver', item: BrowseSender | BrowseReceiver) {
+/** Rows ticked for copying, per table. Cleared when another registry is browsed. */
+const selected = reactive({ sender: new Set<string>(), receiver: new Set<string>() });
+
+const copyableSender = (s: BrowseSender) => !s.copied && !s.ours && !!s.manifest_href;
+const copyableReceiver = (r: BrowseReceiver) => !r.copied && !r.ours && r.controllable;
+const copyableSenders = computed(() => visibleSenders.value.filter(copyableSender));
+const copyableReceivers = computed(() => visibleReceivers.value.filter(copyableReceiver));
+
+function toggle(kind: 'sender' | 'receiver', id: string, on: boolean) {
+  if (on) selected[kind].add(id);
+  else selected[kind].delete(id);
+}
+function toggleAll(kind: 'sender' | 'receiver', on: boolean) {
+  const rows = kind === 'sender' ? copyableSenders.value : copyableReceivers.value;
+  for (const r of rows) toggle(kind, r.id, on);
+}
+const allTicked = (kind: 'sender' | 'receiver') => {
+  const rows = kind === 'sender' ? copyableSenders.value : copyableReceivers.value;
+  return rows.length > 0 && rows.every((r) => selected[kind].has(r.id));
+};
+
+/** Messages float over the page instead of being inserted above the tables. */
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+function notify(text: string) {
+  notice.value = text;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => (notice.value = null), 6000);
+}
+
+async function copySelected(kind: 'sender' | 'receiver') {
   if (!deviceId.value) {
     error.value = 'pick a target device first';
     return;
   }
+  const rows = (kind === 'sender' ? senders.value : receivers.value).filter((r) => selected[kind].has(r.id));
   busy.value = true;
-  try {
-    await api.createMirror({
-      kind,
-      deviceId: deviceId.value,
-      registryId: sourceRegistry.value,
-      originId: item.id,
-      originDeviceId: item.device_id,
-      originLabel: item.label,
-      ...(kind === 'receiver' ? { format: formatOf((item as BrowseReceiver).format) } : {}),
-    });
-    notice.value =
+  const failed: string[] = [];
+  let done = 0;
+  for (const item of rows) {
+    notify(`${kind === 'sender' ? 'Copying' : 'Proxying'} ${done + 1} of ${rows.length}: ${item.label}…`);
+    try {
+      await api.createMirror({
+        kind,
+        deviceId: deviceId.value,
+        registryId: sourceRegistry.value,
+        originId: item.id,
+        originDeviceId: item.device_id,
+        originLabel: item.label,
+        ...(kind === 'receiver' ? { format: formatOf((item as BrowseReceiver).format) } : {}),
+      });
+      // Marked in place, so the row changes its last cell and nothing else moves.
+      item.copied = true;
+      selected[kind].delete(item.id);
+      done++;
+    } catch (e) {
+      failed.push(`${item.label}: ${(e as Error).message}`);
+    }
+  }
+  busy.value = false;
+  error.value = failed.length ? failed.join(' · ') : null;
+  if (done) {
+    notify(
       kind === 'sender'
-        ? `"${item.label}" copied — NAT programmed and published`
-        : `"${item.label}" proxied — connect a stream to the proxy to drive it`;
+        ? `${done} sender(s) copied — NAT programmed and published`
+        : `${done} receiver(s) proxied — connect a stream to a proxy to drive the original`,
+    );
+  }
+  await Promise.all([load(), browse(true)]);
+}
+
+/** Name and registries of an existing copy; the stream itself is not touched. */
+async function updateMirror(m: Mirror, change: { label?: string; registries?: string[] }) {
+  try {
+    await api.updateMirror(m.id, change);
     error.value = null;
-    await Promise.all([load(), browse()]);
+    await load();
   } catch (e) {
     error.value = (e as Error).message;
-  } finally {
-    busy.value = false;
   }
+}
+
+function toggleShare(m: Mirror, registryId: string, on: boolean) {
+  const next = on ? [...m.registries, registryId] : m.registries.filter((id) => id !== registryId);
+  // Order as offered, so the stored list does not depend on the clicking order.
+  void updateMirror(m, { registries: m.registryChoices.filter((id) => next.includes(id)) });
 }
 
 async function run(fn: () => Promise<unknown>) {
@@ -141,13 +210,15 @@ onMounted(load);
     target domain and publishes the copy there. A <strong>receiver</strong> copy creates a proxy in the
     source domain: connect a stream to it and the original receiver is driven over IS-05.
   </p>
-  <p v-if="error" class="bad">{{ error }}</p>
-  <p v-if="notice" class="notice">{{ notice }}</p>
+  <div class="toasts" aria-live="polite">
+    <p v-if="error" class="toast bad" @click="error = null" title="click to dismiss">{{ error }}</p>
+    <p v-if="notice" class="toast notice">{{ notice }}</p>
+  </div>
 
   <section class="box">
     <div class="row">
       <label>Source registry
-        <select v-model="sourceRegistry" @change="browse">
+        <select v-model="sourceRegistry" @change="browse()">
           <option v-for="r in registries" :key="r.id" :value="r.id">{{ r.label }} — {{ domainName(r.domainId) }}</option>
         </select>
       </label>
@@ -159,7 +230,7 @@ onMounted(load);
         </select>
       </label>
       <label>Filter <input v-model="filter" placeholder="label or device" /></label>
-      <button :disabled="busy || !sourceRegistry" @click="browse">{{ busy ? 'working…' : 'Browse' }}</button>
+      <button :disabled="busy || !sourceRegistry" @click="browse()">{{ busy ? 'working…' : 'Browse' }}</button>
     </div>
     <p v-if="paging?.truncated" class="warn">
       The registry returned more pages than this browse follows — the list may be incomplete.
@@ -181,25 +252,43 @@ onMounted(load);
       domain of the bridge “{{ bridge.label }}”. This registry is in
       <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
     </p>
-    <table v-else>
-      <thead><tr><th>Sender</th><th>Device</th><th>Essence</th><th></th></tr></thead>
-      <tbody>
-        <tr v-for="s in visibleSenders" :key="s.id">
-          <td><strong>{{ s.label }}</strong></td>
-          <td>{{ s.deviceLabel }}<small v-if="s.ours">one of ours</small></td>
-          <td>
-            <template v-if="s.flow">{{ s.flow.media_type }}<small v-if="s.flow.frame_width">{{ s.flow.frame_width }}×{{ s.flow.frame_height }}</small></template>
-            <small v-else>unknown</small>
-          </td>
-          <td>
-            <span v-if="s.copied" class="ok">copied</span>
-            <span v-else-if="s.ours" class="muted" title="copying our own copy would loop">—</span>
-            <span v-else-if="!s.manifest_href" class="muted" title="no manifest_href, so there is no SDP to read">no manifest</span>
-            <button v-else :disabled="busy" @click="copy('sender', s)">Copy</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <template v-else>
+      <div class="bulk">
+        <button :disabled="busy || !selected.sender.size" @click="copySelected('sender')">
+          Copy selected ({{ selected.sender.size }})
+        </button>
+      </div>
+      <table class="pick">
+        <colgroup><col class="c-check" /><col /><col class="c-dev" /><col class="c-ess" /><col class="c-state" /></colgroup>
+        <thead>
+          <tr>
+            <th><input type="checkbox" :checked="allTicked('sender')" :disabled="busy || !copyableSenders.length" title="all copyable" @change="toggleAll('sender', ($event.target as HTMLInputElement).checked)" /></th>
+            <th>Sender</th><th>Device</th><th>Essence</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="s in visibleSenders" :key="s.id" :class="{ ticked: selected.sender.has(s.id) }">
+            <td>
+              <!-- A row that cannot be ticked keeps an invisible box, so it is exactly as tall
+                   as one that can and marking a row copied moves nothing below it. -->
+              <input v-if="copyableSender(s)" type="checkbox" :disabled="busy" :checked="selected.sender.has(s.id)" @change="toggle('sender', s.id, ($event.target as HTMLInputElement).checked)" />
+              <input v-else type="checkbox" disabled class="placeholder" aria-hidden="true" tabindex="-1" />
+            </td>
+            <td><strong>{{ s.label }}</strong></td>
+            <td>{{ s.deviceLabel }}<small v-if="s.ours">one of ours</small></td>
+            <td>
+              <template v-if="s.flow">{{ s.flow.media_type }}<small v-if="s.flow.frame_width">{{ s.flow.frame_width }}×{{ s.flow.frame_height }}</small></template>
+              <small v-else>unknown</small>
+            </td>
+            <td>
+              <span v-if="s.copied" class="ok">copied</span>
+              <span v-else-if="s.ours" class="muted" title="copying our own copy would loop">—</span>
+              <span v-else-if="!s.manifest_href" class="muted" title="no manifest_href, so there is no SDP to read">no manifest</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </template>
 
     <h3>Receivers <small v-if="bridge">proxyable into {{ domainName(bridge.sourceDomain) }}</small></h3>
     <p v-if="!bridge" class="warn">Pick a target device to copy anything.</p>
@@ -208,34 +297,67 @@ onMounted(load);
       target domain of the bridge “{{ bridge.label }}”. This registry is in
       <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
     </p>
-    <table v-else>
-      <thead><tr><th>Receiver</th><th>Device</th><th>Accepts</th><th>Currently</th><th></th></tr></thead>
-      <tbody>
-        <tr v-for="r in visibleReceivers" :key="r.id">
-          <td><strong>{{ r.label }}</strong></td>
-          <td>{{ r.deviceLabel }}<small v-if="r.ours">one of ours</small></td>
-          <td>{{ (r.caps?.media_types ?? []).join(', ') || '—' }}</td>
-          <td><small>{{ r.subscription?.active ? `connected to ${r.subscription.sender_id}` : 'idle' }}</small></td>
-          <td>
-            <span v-if="r.copied" class="ok">copied</span>
-            <span v-else-if="r.ours" class="muted">—</span>
-            <span v-else-if="!r.controllable" class="muted" title="advertises no sr-ctrl control, so it cannot be driven over IS-05">not controllable</span>
-            <button v-else :disabled="busy" @click="copy('receiver', r)">Proxy</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <template v-else>
+      <div class="bulk">
+        <button :disabled="busy || !selected.receiver.size" @click="copySelected('receiver')">
+          Proxy selected ({{ selected.receiver.size }})
+        </button>
+      </div>
+      <table class="pick">
+        <colgroup><col class="c-check" /><col /><col class="c-dev" /><col class="c-ess" /><col class="c-cur" /><col class="c-state" /></colgroup>
+        <thead>
+          <tr>
+            <th><input type="checkbox" :checked="allTicked('receiver')" :disabled="busy || !copyableReceivers.length" title="all proxyable" @change="toggleAll('receiver', ($event.target as HTMLInputElement).checked)" /></th>
+            <th>Receiver</th><th>Device</th><th>Accepts</th><th>Currently</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in visibleReceivers" :key="r.id" :class="{ ticked: selected.receiver.has(r.id) }">
+            <td>
+              <!-- A row that cannot be ticked keeps an invisible box, so it is exactly as tall
+                   as one that can and marking a row copied moves nothing below it. -->
+              <input v-if="copyableReceiver(r)" type="checkbox" :disabled="busy" :checked="selected.receiver.has(r.id)" @change="toggle('receiver', r.id, ($event.target as HTMLInputElement).checked)" />
+              <input v-else type="checkbox" disabled class="placeholder" aria-hidden="true" tabindex="-1" />
+            </td>
+            <td><strong>{{ r.label }}</strong></td>
+            <td>{{ r.deviceLabel }}<small v-if="r.ours">one of ours</small></td>
+            <td>{{ (r.caps?.media_types ?? []).join(', ') || '—' }}</td>
+            <td><small>{{ r.subscription?.active ? `connected to ${r.subscription.sender_id}` : 'idle' }}</small></td>
+            <td>
+              <span v-if="r.copied" class="ok">proxied</span>
+              <span v-else-if="r.ours" class="muted">—</span>
+              <span v-else-if="!r.controllable" class="muted" title="advertises no sr-ctrl control, so it cannot be driven over IS-05">not controllable</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </template>
   </section>
 
   <section>
     <h3>Existing copies</h3>
     <table v-if="mirrors.length">
-      <thead><tr><th>Origin</th><th>Kind</th><th>Direction</th><th>State</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Kind</th><th>Direction</th><th>Shared in</th><th>State</th><th></th></tr></thead>
       <tbody>
         <tr v-for="m in mirrors" :key="m.id">
-          <td><strong>{{ m.label || m.originLabel }}</strong><small>from {{ registryName(m.registryId) }}</small></td>
+          <td>
+            <strong><EditableName :value="m.name" :disabled="busy" @save="(label) => updateMirror(m, { label })" /></strong>
+            <small>{{ m.name !== m.originLabel ? `${m.originLabel} · ` : '' }}from {{ registryName(m.registryId) }}</small>
+          </td>
           <td>{{ m.kind === 'sender' ? 'sender copy' : 'receiver proxy' }}</td>
           <td><small v-if="m.device">{{ domainName(m.device.sourceDomain) }} → {{ domainName(m.device.targetDomain) }}{{ m.device.nat ? '' : ' (no NAT)' }}</small></td>
+          <td class="share">
+            <label v-for="id in m.registryChoices" :key="id" class="check" :title="m.kind === 'sender' ? 'publish the copied sender here' : 'offer the proxy receiver here'">
+              <input
+                type="checkbox"
+                :checked="m.registries.includes(id)"
+                :disabled="busy || (m.registries.length === 1 && m.registries.includes(id))"
+                @change="toggleShare(m, id, ($event.target as HTMLInputElement).checked)"
+              />
+              {{ registryName(id) }}
+            </label>
+            <small v-if="!m.registryChoices.length">no registry in that domain</small>
+          </td>
           <td :class="stateClass(m)">{{ stateText(m) }}</td>
           <td class="actions">
             <button v-if="m.kind === 'sender'" :disabled="busy" @click="run(() => api.refreshMirror(m.id))" title="re-read the origin SDP and rebuild">Refresh</button>
@@ -265,4 +387,21 @@ td small { display: block; opacity: 0.6; }
 .warn { color: #c08a2e; font-size: 0.85rem; }
 .notice { color: #2e9e4f; }
 .muted { opacity: 0.5; }
+.bulk { margin: 0.2rem 0 0.4rem; }
+/* Fixed columns: ticking a row or marking it copied changes nothing else's width. */
+table.pick { table-layout: fixed; width: 100%; }
+table.pick td { overflow-wrap: anywhere; }
+.c-check { width: 2.2rem; }
+.c-dev { width: 22%; }
+.c-ess { width: 16%; }
+.c-cur { width: 20%; }
+.c-state { width: 9rem; }
+tr.ticked { background: #4a8ad41a; }
+.placeholder { visibility: hidden; }
+.share { display: flex; flex-wrap: wrap; gap: 0.2rem 0.75rem; }
+label.check { flex-direction: row; align-items: center; gap: 0.3rem; font-size: 0.85rem; white-space: nowrap; }
+.toasts { position: fixed; right: 1rem; bottom: 1rem; display: flex; flex-direction: column; gap: 0.5rem; max-width: min(36rem, calc(100vw - 2rem)); z-index: 50; }
+.toast { margin: 0; padding: 0.6rem 0.85rem; border-radius: 6px; background: Canvas; color: CanvasText; border: 1px solid #8886; box-shadow: 0 4px 16px #0003; font-size: 0.9rem; }
+.toast.bad { border-color: #d24b3e; color: #d24b3e; cursor: pointer; }
+.toast.notice { border-color: #2e9e4f; }
 </style>

@@ -413,3 +413,101 @@ test('an unreachable origin is fetched once, not every reconcile', async (t) => 
   const rebuilt = await engine.copySender(mirrorId);
   assert.equal(rebuilt.state, 'active');
 });
+
+test('a sender copy is shared only where it was given, and moves when that changes', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const partnerB = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      {
+        id: mirrorId,
+        kind: 'sender',
+        deviceId: 'dev1',
+        registryId: 'int',
+        originId: ORIGIN_SENDER,
+        originDeviceId: ORIGIN_DEVICE,
+        originLabel: 'CAM07 Video',
+        enabled: true,
+        // Not one the bridge publishes into: a copy may be shared beyond it.
+        registries: ['regB'],
+      },
+    ],
+  });
+  cfg.registries.push({ id: 'regB', label: 'Partner B', domainId: 'partnerA', mode: 'manual', ip: partnerB.ip, port: partnerB.port, version: 'v1.3', enabled: true });
+  t.after(async () => {
+    await engine.stop();
+    for (const s of [internal, partner, partnerB]) s.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+  const channel = await engine.copySender(mirrorId);
+  assert.deepEqual(channel.publishedIn, ['regB']);
+  assert.ok(partnerB.posts.some((p) => p.type === 'sender'), 'shared in Partner B');
+  assert.ok(partnerB.posts.some((p) => p.type === 'node') && partnerB.posts.some((p) => p.type === 'device'), 'with its node and device');
+  assert.equal(partner.posts.filter((p) => p.type === 'sender').length, 0, 'not in Partner A');
+  assert.deepEqual(engine.mirrorRegistries(cfg.mirrors[0]!), { chosen: ['regB'], choices: ['regA', 'regB'] });
+
+  // Re-shared into A only: it leaves B and appears in A, the stream untouched.
+  const groups = channel.allocation!.groups;
+  cfg.mirrors[0]!.registries = ['regA'];
+  await engine.applyMirrorChange(mirrorId);
+  assert.ok(partnerB.deletes.some((u) => u.includes('/senders/')), 'removed from Partner B');
+  assert.ok(partner.posts.some((p) => p.type === 'sender'), 'now in Partner A');
+  assert.deepEqual(engine.channels()[0]!.allocation!.groups, groups, 'the NAT is not rebuilt');
+
+  // A rename reaches the registry as a new version of the same sender.
+  cfg.mirrors[0]!.label = 'Studio feed 1';
+  await engine.applyMirrorChange(mirrorId);
+  assert.equal(partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.label, 'Studio feed 1');
+});
+
+test('a receiver proxy is offered only in the source registries it was given', async (t) => {
+  const internal = await startStub();
+  const internal2 = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      {
+        id: mirrorId,
+        kind: 'receiver',
+        deviceId: 'dev1',
+        registryId: 'regA',
+        originId: ORIGIN_RECEIVER,
+        originDeviceId: ORIGIN_DEVICE,
+        originLabel: 'MON03',
+        enabled: true,
+        registries: ['int2'],
+      },
+    ],
+    receivers: [
+      {
+        id: 'proxy-rx',
+        label: 'Proxy MON03',
+        deviceId: 'dev1',
+        format: 'video',
+        enabled: true,
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId },
+      },
+      { id: 'plain-rx', label: 'RX 1', deviceId: 'dev1', format: 'video', enabled: true },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy-rx', 'plain-rx'];
+  cfg.registries.push({ id: 'int2', label: 'internal 2', domainId: 'internal', mode: 'manual', ip: internal2.ip, port: internal2.port, version: 'v1.3', enabled: true });
+  t.after(async () => {
+    await engine.stop();
+    for (const s of [internal, internal2, partner]) s.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await engine.start();
+  const labels = (s: Stub) => s.posts.filter((p) => p.type === 'receiver').map((p) => p.data.label);
+  assert.deepEqual(labels(internal2).sort(), ['Proxy MON03', 'RX 1']);
+  // A plain virtual receiver still goes everywhere; only the proxy is restricted.
+  assert.deepEqual(labels(internal), ['RX 1']);
+});

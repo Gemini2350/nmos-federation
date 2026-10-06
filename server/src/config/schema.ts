@@ -235,6 +235,12 @@ export interface MirrorEntry {
   originLabel: string;
   /** Overrides the label of the copy; empty = the origin's label. */
   label?: string;
+  /**
+   * Where this copy is shared. A sender copy: registries of the bridge's target domain
+   * (default: the bridge's target registries). A receiver proxy: registries of the
+   * bridge's source domain (default: all of them). Empty = the default.
+   */
+  registries?: string[];
   enabled: boolean;
 }
 
