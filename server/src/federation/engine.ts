@@ -351,6 +351,7 @@ export class Engine {
                 label,
                 `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
                 [domain.iface.name],
+                essence,
               ),
             ),
           );

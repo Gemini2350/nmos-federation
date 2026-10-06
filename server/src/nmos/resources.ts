@@ -42,6 +42,10 @@ export interface EssenceParams {
     components: { name: string; width: number; height: number; bit_depth: number }[];
   };
   audio?: { channels: number; sampleRate: number; bitDepth: number };
+  /** JPEG XS (BCP-006-01): copied verbatim from the fmtp, only what is present. */
+  coded?: { profile?: string; level?: string; sublevel?: string };
+  /** What BCP-006-01 wants on the sender: `b=AS` in kbit/s and the ST 2110-21 type. */
+  sender?: { bitRate?: number; st2110_21SenderType?: string };
 }
 
 const COLORSPACE: Record<string, string> = { BT709: 'BT709', BT2020: 'BT2020', BT2100: 'BT2100', BT601: 'BT601' };
@@ -79,7 +83,7 @@ export function essenceFromSdp(sdp: string | ParsedSdp): EssenceParams {
   const label = sessionName(parsed);
   const encoding = media.rtpmap?.encoding?.toLowerCase() ?? '';
 
-  if (media.type === 'video' && encoding === 'raw') {
+  if (media.type === 'video' && (encoding === 'raw' || encoding === 'jxsv')) {
     const f = media.fmtp;
     const width = Number(f['width']);
     const height = Number(f['height']);
@@ -91,19 +95,33 @@ export function essenceFromSdp(sdp: string | ParsedSdp): EssenceParams {
     if (!sampling) throw new Error('fmtp without sampling');
     const interlaceMode =
       'segmented' in f ? 'progressive_segmented_frame' : 'interlace' in f ? 'interlaced_tff' : 'progressive';
+    const video = {
+      frameWidth: width,
+      frameHeight: height,
+      grainRate: grainRate(f['exactframerate']),
+      interlaceMode,
+      colorspace: COLORSPACE[(f['colorimetry'] ?? 'BT709').toUpperCase()] ?? 'BT709',
+      transferCharacteristic: TCS[(f['tcs'] ?? 'SDR').toUpperCase()] ?? 'SDR',
+      depth,
+      components: components(sampling, width, height, depth),
+    };
+    if (encoding === 'raw') {
+      return { format: 'urn:x-nmos:format:video', mediaType: 'video/raw', label, video };
+    }
+    // ST 2110-22 JPEG XS. The stream is never decoded here — only described — so what
+    // the SDP states is passed through as BCP-006-01 names it.
+    const bitRate = media.lines.map((l) => /^b=AS:(\d+)/.exec(l)?.[1]).find(Boolean);
+    const tp = f['tp'];
+    const pick = (k: string) => (f[k] ? { [k]: f[k] } : {});
     return {
       format: 'urn:x-nmos:format:video',
-      mediaType: 'video/raw',
+      mediaType: 'video/jxsv',
       label,
-      video: {
-        frameWidth: width,
-        frameHeight: height,
-        grainRate: grainRate(f['exactframerate']),
-        interlaceMode,
-        colorspace: COLORSPACE[(f['colorimetry'] ?? 'BT709').toUpperCase()] ?? 'BT709',
-        transferCharacteristic: TCS[(f['tcs'] ?? 'SDR').toUpperCase()] ?? 'SDR',
-        depth,
-        components: components(sampling, width, height, depth),
+      video,
+      coded: { ...pick('profile'), ...pick('level'), ...pick('sublevel') },
+      sender: {
+        ...(bitRate ? { bitRate: Number(bitRate) } : {}),
+        ...(tp ? { st2110_21SenderType: tp } : {}),
       },
     };
   }
@@ -322,6 +340,7 @@ export function buildFlow(
       colorspace: essence.video.colorspace,
       transfer_characteristic: essence.video.transferCharacteristic,
       components: essence.video.components,
+      ...(essence.coded ?? {}),
     };
   }
   if (essence.audio) {
@@ -341,8 +360,10 @@ export function buildSender(
   label: string,
   manifestHref: string,
   interfaceBindings: string[],
+  essence?: Pick<EssenceParams, 'sender'>,
   version = nmosVersion(),
 ) {
+  const extra = essence?.sender;
   return {
     id,
     version,
@@ -356,6 +377,8 @@ export function buildSender(
     interface_bindings: interfaceBindings,
     subscription: { receiver_id: null, active: true },
     caps: {},
+    ...(extra?.bitRate !== undefined ? { bit_rate: extra.bitRate } : {}),
+    ...(extra?.st2110_21SenderType ? { st2110_21_sender_type: `urn:x-nmos:st2110_21_sender_type:${extra.st2110_21SenderType}` } : {}),
   };
 }
 
@@ -385,7 +408,7 @@ export function buildReceiver(
 }
 
 export const MEDIA_TYPES: Record<'video' | 'audio' | 'data', { format: NmosFormat; mediaTypes: string[] }> = {
-  video: { format: 'urn:x-nmos:format:video', mediaTypes: ['video/raw'] },
+  video: { format: 'urn:x-nmos:format:video', mediaTypes: ['video/raw', 'video/jxsv'] },
   audio: { format: 'urn:x-nmos:format:audio', mediaTypes: ['audio/L24', 'audio/L16'] },
   data: { format: 'urn:x-nmos:format:data', mediaTypes: ['video/smpte291'] },
 };

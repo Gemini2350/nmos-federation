@@ -114,6 +114,14 @@ parameters (`format`, `media_type`, `frame_width/height`, `exactframerate`,
 from the incoming SDP, not guessed. If parsing fails the channel goes to `failed`
 rather than publishing a wrongly described sender.
 
+Supported essences: ST 2110-20 (`video/raw`), ST 2110-22 JPEG XS (`video/jxsv`),
+ST 2110-30/31 PCM (`audio/L16`, `L24`, `L32`) and ST 2110-40 (`video/smpte291`). For
+JPEG XS the flow also carries `profile`/`level`/`sublevel` and the sender `bit_rate`
+(from `b=AS`) and `st2110_21_sender_type` (from `TP=`), as BCP-006-01 asks — copied
+from the SDP, never computed. Video receivers advertise `video/raw` and `video/jxsv`.
+Other codecs (H.264, H.265, …) are refused: their SDP does not carry frame size and
+rate, so the flow could not be described honestly.
+
 ### Schema conformance
 
 Every resource is validated against the **official IS-04 v1.3 schemas** in the test

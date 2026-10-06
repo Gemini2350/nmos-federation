@@ -194,3 +194,52 @@ test('a connected receiver validates too', () => {
     ),
   );
 });
+
+// A Matrox IPMX sender exactly as a controller PATCHed it — the activation that failed
+// with "unsupported essence: m=video rtpmap=jxsv".
+const JXSV_SDP = [
+  'v=0',
+  'o=- 37248276889600 37248276889600 IN IP4 10.1.1.65',
+  's=Matrox5 IPMX - DA21508 Video Sender 0',
+  't=0 0',
+  'm=video 5004 RTP/AVP 112',
+  'c=IN IP4 239.111.0.43/128',
+  'b=AS:199750',
+  'a=rtcp:5005',
+  'a=source-filter: incl IN IP4 239.111.0.43 10.1.1.65',
+  'a=rtpmap:112 jxsv/90000',
+  'a=fmtp:112 packetmode=0; profile=High444.12; level=2k-1; sublevel=Sublev4bpp; transmode=1; sampling=YCbCr-4:4:4; width=1920; height=1080; exactframerate=24995/1000; depth=8; PM=2110GPM; interlace; TROFF=2809; IPMX; colorimetry=BT709; TCS=SDR; RANGE=NARROW; measuredpixclk=74237000; htotal=2640; vtotal=1125; SSN=ST2110-22:2019; TP=2110TPW',
+  'a=mediaclk:sender',
+  'a=ts-refclk:ptp=IEEE1588-2008:EC-46-70-FF-FE-0D-19-57:0',
+  '',
+].join('\r\n');
+
+test('a JPEG XS (ST 2110-22) SDP is described as BCP-006-01 asks', () => {
+  const essence = essenceFromSdp(JXSV_SDP);
+  assert.equal(essence.mediaType, 'video/jxsv');
+  assert.equal(essence.video!.frameWidth, 1920);
+  assert.equal(essence.video!.interlaceMode, 'interlaced_tff');
+  assert.deepEqual(essence.video!.grainRate, { numerator: 24995, denominator: 1000 });
+  assert.deepEqual(essence.coded, { profile: 'High444.12', level: '2k-1', sublevel: 'Sublev4bpp' });
+  assert.deepEqual(essence.sender, { bitRate: 199750, st2110_21SenderType: '2110TPW' });
+});
+
+test('a JPEG XS flow, source and sender validate', () => {
+  const essence = essenceFromSdp(JXSV_SDP);
+  check('source_generic.json', buildSource('a3a3a3a3-1111-5111-8111-111111111111', 'd1d1d1d1-1111-5111-8111-111111111111', 'JXS', essence));
+  const flow = buildFlow('b3b3b3b3-1111-5111-8111-111111111111', 'a3a3a3a3-1111-5111-8111-111111111111', 'd1d1d1d1-1111-5111-8111-111111111111', 'JXS', essence);
+  check('flow_video_coded.json', flow);
+  assert.equal(flow.media_type, 'video/jxsv');
+  const sender = buildSender(
+    'c3c3c3c3-1111-5111-8111-111111111111',
+    'b3b3b3b3-1111-5111-8111-111111111111',
+    'd1d1d1d1-1111-5111-8111-111111111111',
+    'JXS',
+    'http://10.1.0.10:8081/x-nmos/connection/v1.1/single/senders/c3c3c3c3-1111-5111-8111-111111111111/transportfile',
+    ['eth0'],
+    essence,
+  );
+  check('sender.json', sender);
+  assert.equal(sender.bit_rate, 199750);
+  assert.equal(sender.st2110_21_sender_type, 'urn:x-nmos:st2110_21_sender_type:2110TPW');
+});
