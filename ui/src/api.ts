@@ -294,6 +294,8 @@ export const api = {
   deleteDevice: (id: string) => req<{ ok: boolean }>(`/devices/${id}`, { method: 'DELETE' }),
   addReceivers: (deviceId: string, body: { count: number; pattern: string; format: VirtualReceiver['format'] }) =>
     req<VirtualReceiver[]>(`/devices/${deviceId}/receivers`, { method: 'POST', body: JSON.stringify(body) }),
+  renameReceiver: (id: string, label: string) =>
+    req<VirtualReceiver>(`/receivers/${id}`, { method: 'PUT', body: JSON.stringify({ label }) }),
   deleteReceiver: (id: string) => req<{ ok: boolean }>(`/receivers/${id}`, { method: 'DELETE' }),
   channels: () => req<Channel[]>('/channels'),
   dropChannel: (receiverId: string) => req<{ ok: boolean }>(`/channels/${receiverId}`, { method: 'DELETE' }),

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_REGISTRY_PORT, migrateRegistry, registryUrl, type RegistryConfig } from './schema.js';
+import { DEFAULT_CONFIG, DEFAULT_REGISTRY_PORT, migrateRegistry, normalizeConfig, proxyLabel, registryUrl, type RegistryConfig } from './schema.js';
 
 const base: RegistryConfig = {
   id: 'r1',
@@ -64,4 +64,21 @@ test('migration leaves an already converted entry alone and drops the stale url'
 test('an unparseable url survives for validation to reject', () => {
   const migrated = migrateRegistry({ ...base, url: 'not a url' });
   assert.equal(migrated.ip, undefined);
+});
+
+test('receiver proxies carry "Proxy" in front, so the number stays at the end', () => {
+  assert.equal(proxyLabel('Monitor 3'), 'Proxy Monitor 3');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.mirrors = [
+    { id: 'm1', kind: 'receiver', deviceId: 'd', registryId: '1', originId: 'o1', originDeviceId: 'od', originLabel: 'Monitor 3', enabled: true },
+    { id: 'm2', kind: 'receiver', deviceId: 'd', registryId: '1', originId: 'o2', originDeviceId: 'od', originLabel: 'Monitor 4', enabled: true },
+  ];
+  cfg.receivers = [
+    { id: 'r1', label: 'Monitor 3 (proxy)', deviceId: 'd', format: 'video', enabled: true, proxyFor: { registryId: '1', receiverId: 'o1', deviceId: 'od', mirrorId: 'm1' } },
+    // Renamed by the operator: not ours to touch.
+    { id: 'r2', label: 'Gallery right', deviceId: 'd', format: 'video', enabled: true, proxyFor: { registryId: '1', receiverId: 'o2', deviceId: 'od', mirrorId: 'm2' } },
+  ];
+  normalizeConfig(cfg);
+  assert.equal(cfg.receivers[0]!.label, 'Proxy Monitor 3');
+  assert.equal(cfg.receivers[1]!.label, 'Gallery right');
 });

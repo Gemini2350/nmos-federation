@@ -271,7 +271,7 @@ test('a proxy receiver drives the original receiver over IS-05', async (t) => {
     receivers: [
       {
         id: proxyId,
-        label: 'MON03 (proxy)',
+        label: 'Proxy MON03',
         deviceId: 'dev1',
         format: 'video',
         enabled: true,
@@ -290,7 +290,7 @@ test('a proxy receiver drives the original receiver over IS-05', async (t) => {
 
   await engine.start();
   // The proxy is a normal virtual receiver in the source domain.
-  assert.ok(internal.posts.some((p) => p.type === 'receiver' && p.data.label === 'MON03 (proxy)'));
+  assert.ok(internal.posts.some((p) => p.type === 'receiver' && p.data.label === 'Proxy MON03'));
 
   const channel = await engine.activate(proxyId, {
     sender_id: 'local-sender',
@@ -334,7 +334,7 @@ test('a proxy stays usable when the original receiver refuses the patch', async 
     receivers: [
       {
         id: proxyId,
-        label: 'Unreachable (proxy)',
+        label: 'Proxy Unreachable',
         deviceId: 'dev1',
         format: 'video',
         enabled: true,

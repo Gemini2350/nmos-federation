@@ -134,6 +134,12 @@ export function normalizeConfig(cfg: AppConfig): AppConfig {
   cfg.bridges ??= [];
   migrateDevicesToBridges(cfg);
   delete (cfg as unknown as Record<string, unknown>)['nodeLabel'];
+  // Proxies named by the old scheme, "<origin> (proxy)", get the new one. One the
+  // operator renamed is left alone: only the exact generated form is touched.
+  for (const r of cfg.receivers ?? []) {
+    const origin = r.proxyFor && cfg.mirrors?.find((m) => m.id === r.proxyFor!.mirrorId)?.originLabel;
+    if (origin && r.label === `${origin} (proxy)`) r.label = proxyLabel(origin);
+  }
   for (const b of cfg.bridges) {
     if (!b.label?.trim()) b.label = DEFAULT_BRIDGE_LABEL;
     if (!b.id) b.id = nextId(cfg.bridges.map((x) => x.id));
@@ -252,6 +258,13 @@ export interface AppConfig {
 const emptyPool = (base: string): PoolConfig => ({ base, pairs: 64, sourceNat: null });
 
 export const DEFAULT_BRIDGE_LABEL = 'NMOS Federation';
+
+/**
+ * Name of a receiver proxy. "Proxy" goes in front: origin labels typically end in a
+ * number ("Monitor 3"), and a controller sorting or scanning a list reads that number
+ * last — "Monitor 3 (proxy)" buried it.
+ */
+export const proxyLabel = (originLabel: string): string => `Proxy ${originLabel}`;
 
 export const DEFAULT_CONFIG: AppConfig = {
   port: 8080,

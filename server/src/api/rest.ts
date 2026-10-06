@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { MirrorEntry } from '../config/schema.js';
 import type { Bridge } from '../types.js';
 import { listInterfaces } from '../nmos/resources.js';
-import { nextId } from '../config/schema.js';
+import { nextId, proxyLabel } from '../config/schema.js';
 import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
 
@@ -270,6 +270,24 @@ export function registerRestApi(
     },
   );
 
+  // Renaming only. Format and device shape what a receiver is; changing those is a
+  // remove and add.
+  app.put<{ Params: { id: string }; Body: { label?: string } }>('/api/receivers/:id', async (req, reply) => {
+    const cfg = structuredClone(store.current);
+    const vrx = cfg.receivers.find((r) => r.id === req.params.id);
+    if (!vrx) return reply.code(404).send({ error: 'unknown receiver' });
+    const label = req.body.label?.trim();
+    if (!label) return reply.code(400).send({ error: 'a receiver needs a name' });
+    vrx.label = label;
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+      return vrx;
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
   app.delete<{ Params: { id: string } }>('/api/receivers/:id', async (req, reply) => {
     await engine.deactivate(req.params.id);
     const cfg = structuredClone(store.current);
@@ -448,7 +466,7 @@ export function registerRestApi(
       const vrxId = randomUUID();
       cfg.receivers.push({
         id: vrxId,
-        label: mirror.label || `${mirror.originLabel} (proxy)`,
+        label: mirror.label || proxyLabel(mirror.originLabel),
         deviceId: device.id,
         format: b.format ?? 'video',
         enabled: true,

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { api, type Bridge, type Config, type Device, type VirtualReceiver } from '../api';
 import { domainName, primeFromConfig, registryNames } from '../names';
 import InfoHint from '../components/InfoHint.vue';
+import EditableName from '../components/EditableName.vue';
 
 const cfg = ref<Config | null>(null);
 const bridges = ref<Bridge[]>([]);
@@ -93,7 +94,7 @@ onMounted(refresh);
   <section class="new">
     <h3>New bridge</h3>
     <div class="row">
-      <label><span>Name <InfoHint text="This is the NMOS node's label, as every registry will show it." /></span><input v-model="draft.label" /></label>
+      <label><span>Name <InfoHint text="The NMOS node's label, as every registry will show it. &quot;NMOS Federation&quot; is only the suggestion — name it after what it connects. Rename it any time by clicking the name." /></span><input v-model="draft.label" placeholder="NMOS Federation" /></label>
       <label><span>From</span>
         <select v-model="draft.sourceDomain">
           <option v-for="d in domains" :key="d.id" :value="d.id">{{ d.label }}</option>
@@ -124,7 +125,7 @@ onMounted(refresh);
   <article v-for="b in bridges" :key="b.id" :class="['bridge', { detached: b.detached }]">
     <header>
       <div>
-        <strong>{{ b.label }}</strong>
+        <strong><EditableName :value="b.label" fallback="NMOS Federation" :disabled="busy" @save="(label) => patchBridge(b, { label })" /></strong>
         <span v-if="b.detached" class="badge">detached</span>
         <small>
           node · {{ domainName(b.sourceDomain) }} → {{ domainName(b.targetDomain) }} ·
@@ -147,14 +148,14 @@ onMounted(refresh);
 
     <article v-for="d in devicesOf(b.id)" :key="d.id" class="device">
       <header>
-        <strong>{{ d.label }}</strong>
+        <strong><EditableName :value="d.label" :disabled="busy" @save="(label) => run(() => api.updateDevice(d.id, { label }))" /></strong>
         <button :disabled="busy" @click="run(() => api.deleteDevice(d.id))">Remove device</button>
       </header>
       <table v-if="d.receivers?.length">
         <thead><tr><th>Virtual receiver</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="vrx in d.receivers" :key="vrx.id">
-            <td>{{ vrx.label }}</td>
+            <td><EditableName :value="vrx.label" :disabled="busy" @save="(label) => run(() => api.renameReceiver(vrx.id, label))" /></td>
             <td>{{ vrx.format }}</td>
             <td>{{ vrx.enabled ? 'yes' : 'no' }}</td>
             <td><button :disabled="busy" @click="run(() => api.deleteReceiver(vrx.id))">Remove</button></td>
