@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { QueryClient, REQUESTED_PAGE_LIMIT } from './query-client.js';
+import { QUERY_DOWNGRADE, QueryClient, REQUESTED_PAGE_LIMIT } from './query-client.js';
 import type { RegistryConfig } from '../config/schema.js';
 
 /**
@@ -30,7 +30,7 @@ const LIMIT = 10;
  * that answers an unwanted limit with 400 instead of capping it.
  */
 async function startPagingStub(
-  opts: { total?: number; limitHeader?: boolean; maxLimit?: number; rejectLimit?: boolean; linkNextOnNewest?: boolean } = {},
+  opts: { total?: number; limitHeader?: boolean; maxLimit?: number; rejectLimit?: boolean; rejectDowngrade?: boolean; linkNextOnNewest?: boolean } = {},
 ): Promise<PagingStub> {
   const total = opts.total ?? TOTAL;
   const maxLimit = opts.maxLimit ?? LIMIT;
@@ -53,6 +53,10 @@ async function startPagingStub(
     }
     const until = url.searchParams.get('paging.until');
     const since = url.searchParams.get('paging.since');
+    if (opts.rejectDowngrade && url.searchParams.has('query.downgrade')) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return res.end('{"code":400,"error":"query.downgrade not supported"}');
+    }
     const hasLimitParam = url.searchParams.has('paging.limit');
     if (hasLimitParam && opts.rejectLimit) {
       res.writeHead(400, { 'content-type': 'application/json' });
@@ -180,6 +184,29 @@ test('the newest page is not followed forwards, even when the registry links rel
   await new QueryClient(stub.cfg).getAll('senders');
   assert.ok(stub.queries.every((q) => !q.includes('paging.since')), `walked forwards: ${stub.queries.join(' | ')}`);
   assert.equal(stub.queries.length, 1);
+});
+
+test('every query, paged walk included, asks for older registrations too', async (t) => {
+  // A v1.3 query only returns v1.3 registrations; on a live central registry that hid
+  // nearly every device. query.downgrade has to ride along on every page, or the walk
+  // returns the older resources on page one and loses them on page two.
+  const stub = await startPagingStub({ total: 25, maxLimit: 10 });
+  t.after(() => stub.server.close());
+  const result = await new QueryClient(stub.cfg).getAll<{ id: string }>('senders');
+  assert.equal(result.items.length, 25);
+  assert.ok(stub.queries.length > 1, 'paged');
+  for (const q of stub.queries) assert.ok(q.includes(`query.downgrade=${QUERY_DOWNGRADE}`), `missing downgrade: ${q}`);
+});
+
+test('a registry that refuses the downgrade is asked again without it, limit kept', async (t) => {
+  const stub = await startPagingStub({ total: 6, rejectDowngrade: true });
+  t.after(() => stub.server.close());
+  const client = new QueryClient(stub.cfg);
+  assert.equal((await client.getAll<{ id: string }>('senders')).items.length, 6);
+  stub.queries.length = 0;
+  await client.getAll('senders');
+  assert.ok(stub.queries.every((q) => !q.includes('query.downgrade')), 'remembered');
+  assert.ok(stub.queries.every((q) => q.includes('paging.limit')), 'the limit is not dropped with it');
 });
 
 test('a registry that rejects the limit is asked again without one', async (t) => {

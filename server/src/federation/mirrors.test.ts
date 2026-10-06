@@ -52,10 +52,11 @@ interface Stub {
   patches: { receiverId: string; body: Record<string, unknown> }[];
   manifestHits: number;
   manifestDown?: boolean;
+  queries: string[];
 }
 
 async function startStub(): Promise<Stub> {
-  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false } as unknown as Stub;
+  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [] } as unknown as Stub;
   const server = createServer((req, res) => {
     const url = req.url ?? '';
     const json = (code: number, body: unknown) => {
@@ -74,7 +75,8 @@ async function startStub(): Promise<Stub> {
       return res.end(SDP);
     }
     if (req.method === 'GET' && url.includes('/x-nmos/query/')) {
-      const tail = url.split('/x-nmos/query/v1.3/')[1] ?? '';
+      stub.queries.push(url);
+      const tail = (url.split('/x-nmos/query/v1.3/')[1] ?? '').split('?')[0]!;
       const sender = {
         id: ORIGIN_SENDER,
         label: 'CAM07 Video',
@@ -301,6 +303,8 @@ test('a proxy receiver drives the original receiver over IS-05', async (t) => {
 
   assert.equal(channel.state, 'active');
   assert.equal(channel.remoteReceiver?.connected, true, channel.remoteReceiver?.error ?? '');
+  // The device lookup is downgraded too: a v1.2-registered device is a 404 at plain v1.3.
+  assert.ok(partner.queries.some((u) => u.includes(`/devices/${ORIGIN_DEVICE}?query.downgrade=v1.0`)), partner.queries.join(' | '));
   assert.equal(drivers.red.applied.size, 1, 'NAT is programmed for a proxy too');
 
   // The original receiver was patched with our published sender and the rewritten SDP.

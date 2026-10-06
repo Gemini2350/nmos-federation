@@ -328,6 +328,23 @@ stated at all. With a limit stated, `0:0` is therefore taken as the end. A regis
 refuses the parameter with 400 is asked again without it, and that is remembered for the
 client's lifetime.
 
+Every query also carries `query.downgrade=v1.0`. A Query API returns only resources
+registered at its own version unless asked otherwise, so a v1.3 query hides every
+device that registers at v1.2 or older. Measured on a live central registry: 4 senders
+and 5 devices at plain v1.3, 148 senders and 29 devices with the downgrade. Single
+lookups are downgraded too — nmos-cpp answers a plain v1.3 lookup of a v1.2 device with
+409, which made a proxy unable to find that device's connection API. A registry that
+refuses the parameter (400) is asked again without it, and that is remembered.
+
+### IS-04 / IS-05 versions
+
+| Direction | Versions |
+|---|---|
+| Registering our resources | v1.3 or v1.2 per registry (Settings). The payloads validate against the official v1.3 **and** v1.2 schemas, and nmos-cpp accepts them at both. |
+| Reading a registry (Copy page, proxies, orphan cleanup) | the registry's version plus `query.downgrade=v1.0` — everything down to v1.0 |
+| Driving a foreign receiver (proxy) | IS-05 v1.1 or v1.0, whichever the device advertises (highest wins) |
+| Our own node API | IS-04 Node API v1.3, IS-05 Connection API v1.1 |
+
 The paging statistics reach the GUI, so a registry whose pagination outruns the page
 cap is visible rather than quietly returning a short list.
 

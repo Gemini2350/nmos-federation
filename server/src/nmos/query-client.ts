@@ -58,6 +58,16 @@ const MAX_PAGES = 100;
  * walking the registry's default of 10 turns a few dozen round trips into a handful.
  */
 export const REQUESTED_PAGE_LIMIT = 1000;
+
+/**
+ * Oldest version a query may be downgraded to. A Query API returns only resources
+ * registered at its own version unless asked otherwise (IS-04 "Query Parameters"), so a
+ * v1.3 query silently hides every device that registers at v1.2 — on a live central
+ * registry that was 4 senders shown out of more than 100. `query.downgrade` adds the
+ * older registrations as they are; IS-04 "Upgrade Path" recommends exactly this for
+ * Query API clients.
+ */
+export const QUERY_DOWNGRADE = 'v1.0';
 /** The cursor a registry reports when there is nothing further in that direction. */
 const EMPTY_CURSOR = '0:0';
 
@@ -119,6 +129,8 @@ export interface PagedResult<T> {
 export class QueryClient {
   /** False once the registry refused a requested limit; then we go without one. */
   private limitAccepted = true;
+  /** Cleared once the registry refuses `query.downgrade`; remembered like the limit. */
+  private downgradeAccepted = true;
 
   /**
    * @param resolveRegistry resolves the registration API's base URL — the registry
@@ -157,9 +169,30 @@ export class QueryClient {
   devices = async () => (await this.getAll<QueryDevice>('devices')).items;
   flows = async () => (await this.getAll<QueryFlow>('flows')).items;
 
-  sender = async (id: string) => getJson<QuerySender>(`${await this.base()}/senders/${id}`);
-  receiver = async (id: string) => getJson<QueryReceiver>(`${await this.base()}/receivers/${id}`);
-  device = async (id: string) => getJson<QueryDevice>(`${await this.base()}/devices/${id}`);
+  sender = async (id: string) => this.getOne<QuerySender>(`senders/${id}`);
+  receiver = async (id: string) => this.getOne<QueryReceiver>(`receivers/${id}`);
+  device = async (id: string) => this.getOne<QueryDevice>(`devices/${id}`);
+
+  private downgradeParam(): Record<string, string> {
+    return this.downgradeAccepted ? { 'query.downgrade': QUERY_DOWNGRADE } : {};
+  }
+
+  /**
+   * One resource, downgraded like the collections: a device registered at v1.2 is a 404
+   * on a plain v1.3 lookup, which made a proxy for its receiver fail to find its
+   * connection API although the receiver was listed.
+   */
+  private async getOne<T>(path: string): Promise<T> {
+    const url = `${await this.base()}/${path}`;
+    const params = this.downgradeParam();
+    let res = await getRaw(Object.keys(params).length ? withParams(url, params) : url);
+    if (res.status === 400 && Object.keys(params).length) {
+      this.downgradeAccepted = false;
+      res = await getRaw(url);
+    }
+    if (!res.ok) throw new QueryError(`HTTP ${res.status}`);
+    return (await res.json()) as T;
+  }
 
   /**
    * Fetches a complete resource collection, following IS-04 query API pagination.
@@ -195,17 +228,27 @@ export class QueryClient {
     // request ever goes out without a limit, which matters because one registry answers a
     // parameterless request with a self-contradictory `X-Paging-Since: 0:0` while older
     // pages exist. The probe that used to learn the registry's default is gone with it.
-    let baseUrl = this.limitAccepted ? withParams(base, { 'paging.limit': REQUESTED_PAGE_LIMIT }) : base;
+    const urlFor = () => {
+      const params = { ...(this.limitAccepted ? { 'paging.limit': REQUESTED_PAGE_LIMIT } : {}), ...this.downgradeParam() };
+      return Object.keys(params).length ? withParams(base, params) : base;
+    };
+    let baseUrl = urlFor();
     let limit: number | null = null;
     // Fetch the first page once and walk outwards from it. Running each direction from
     // scratch fetched the base twice per collection, which on a registry that answers in
     // a few hundred milliseconds is time spent on a page already in hand.
     let first = await getRaw(baseUrl);
-    // A registry should cap a limit it does not like, but one that rejects it outright
-    // still deserves an answer: retry once without a limit and remember it.
+    // A registry should cap a limit it does not like, but one that rejects a parameter
+    // outright still deserves an answer. The downgrade goes first — it is the one an
+    // older registry is likelier not to know — then the limit; each is remembered.
+    if (first.status === 400 && this.downgradeAccepted) {
+      this.downgradeAccepted = false;
+      baseUrl = urlFor();
+      first = await getRaw(baseUrl);
+    }
     if (first.status === 400 && this.limitAccepted) {
       this.limitAccepted = false;
-      baseUrl = base;
+      baseUrl = urlFor();
       first = await getRaw(baseUrl);
     }
     if (!first.ok) throw new QueryError(`HTTP ${first.status}`);
