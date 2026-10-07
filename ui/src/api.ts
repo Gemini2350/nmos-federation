@@ -111,6 +111,7 @@ export interface Device {
     state: string | null;
     error: string | null;
     group: string | null;
+    role: string | null;
     groupHint: GroupHint | null;
   }[];
   bridge?: Bridge | null;
@@ -125,8 +126,10 @@ export interface VirtualReceiver {
   enabled: boolean;
   /** Domain it is offered in; its stream flows to the bridge's other domain. */
   side?: string;
-  /** Natural group set by the operator (BCP-002-01); the role is derived. */
+  /** Natural group set by the operator (BCP-002-01). */
   group?: string;
+  /** Role within it; empty = the original's, or derived from the format. */
+  role?: string;
 }
 
 export interface Config {
@@ -327,8 +330,8 @@ export const api = {
   deleteDevice: (id: string) => req<{ ok: boolean }>(`/devices/${id}`, { method: 'DELETE' }),
   addReceivers: (deviceId: string, body: { count: number; pattern: string; format: VirtualReceiver['format']; side?: string }) =>
     req<VirtualReceiver[]>(`/devices/${deviceId}/receivers`, { method: 'POST', body: JSON.stringify(body) }),
-  setReceiverGroup: (id: string, group: string) =>
-    req<VirtualReceiver>(`/receivers/${id}`, { method: 'PUT', body: JSON.stringify({ group }) }),
+  setReceiverGroup: (id: string, change: { group?: string; role?: string }) =>
+    req<VirtualReceiver>(`/receivers/${id}`, { method: 'PUT', body: JSON.stringify(change) }),
   renameReceiver: (id: string, label: string) =>
     req<VirtualReceiver>(`/receivers/${id}`, { method: 'PUT', body: JSON.stringify({ label }) }),
   deleteReceiver: (id: string) => req<{ ok: boolean }>(`/receivers/${id}`, { method: 'DELETE' }),
@@ -365,7 +368,7 @@ export const api = {
     format?: 'video' | 'audio' | 'data';
   }) => req<Mirror>('/mirrors', { method: 'POST', body: JSON.stringify(body) }),
   refreshMirror: (id: string) => req<Channel>(`/mirrors/${id}/refresh`, { method: 'POST' }),
-  updateMirror: (id: string, change: { label?: string; registries?: string[]; group?: string }) =>
+  updateMirror: (id: string, change: { label?: string; registries?: string[]; group?: string; role?: string }) =>
     req<Mirror>(`/mirrors/${id}`, { method: 'PUT', body: JSON.stringify(change) }),
   mirrorWatch: () => req<{ registryId: string; state: 'connecting' | 'open' | 'retrying'; error: string | null }[]>('/mirrors/watch'),
   deleteMirror: (id: string) => req<{ ok: boolean }>(`/mirrors/${id}`, { method: 'DELETE' }),

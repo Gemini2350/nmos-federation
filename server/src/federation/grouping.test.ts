@@ -56,3 +56,17 @@ test('tags carry the hint in the registered form', () => {
   assert.deepEqual(grouphintTags({ group: 'Cam 1', role: 'Video 1' }), { [GROUPHINT]: ['Cam 1:Video 1'] });
   assert.deepEqual(grouphintTags(undefined), {});
 });
+
+test('a role typed by the operator replaces the original or derived one', () => {
+  const hints = groupHints([
+    { key: 'a1', format: 'audio', group: 'Cam 1', role: 'Ton L/R' },
+    { key: 'a2', format: 'audio', group: 'Cam 1' },
+    { key: 'copy', format: 'video', role: 'Programm', origin: { hint: 'Service 01:Video 1:device', deviceId: 'vb' } },
+    { key: 'lonely', format: 'audio', role: 'Ton 5.1' },
+  ]);
+  assert.deepEqual(hints.get('a1'), { group: 'Cam 1', role: 'Ton L/R' });
+  // Own roles do not take a number, so the next derived one is still "Audio 1".
+  assert.deepEqual(hints.get('a2'), { group: 'Cam 1', role: 'Audio 1' });
+  assert.deepEqual(hints.get('copy'), { group: 'Service 01', role: 'Programm', scope: 'device' }, 'inherited group, own role');
+  assert.equal(hints.has('lonely'), false, 'a role without any group is no group');
+});

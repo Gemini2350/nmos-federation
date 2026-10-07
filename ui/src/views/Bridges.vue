@@ -185,7 +185,7 @@ onMounted(refresh);
         <button :disabled="busy" @click="run(() => api.deleteDevice(d.id))">Remove device</button>
       </header>
       <table v-if="d.receivers?.length">
-        <thead><tr><th>Virtual receiver</th><th>Group <InfoHint text="Natural grouping (BCP-002-01): controllers show ports of one group together — video, audio and ancillary of one source. A copy keeps its original's group (shown in grey); type a name to regroup it, clear it to go back. The role is kept from the original or derived from the format." /></th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
+        <thead><tr><th>Virtual receiver</th><th>Group <InfoHint text="Natural grouping (BCP-002-01): controllers show ports of one group together — video, audio and ancillary of one source. A copy keeps its original's group (shown in grey); type a name to regroup it, clear it to go back. Below it the role, likewise: grey is the original's or the one derived from the format, typed text replaces it." /></th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="vrx in d.receivers" :key="vrx.id">
             <td>
@@ -198,9 +198,17 @@ onMounted(refresh);
                 allow-empty
                 chain="group"
                 :placeholder="vrx.groupHint?.group ?? '—'"
-                @save="(group) => rename(() => api.setReceiverGroup(vrx.id, group))"
+                @save="(group) => rename(() => api.setReceiverGroup(vrx.id, { group }))"
               />
-              <small v-if="vrx.groupHint" class="orig">{{ vrx.groupHint.role }}</small>
+              <div v-if="vrx.groupHint || vrx.role" class="role">
+                <EditableName
+                  :value="vrx.role ?? ''"
+                  allow-empty
+                  chain="role"
+                  :placeholder="vrx.groupHint?.role ?? 'role'"
+                  @save="(role) => rename(() => api.setReceiverGroup(vrx.id, { role }))"
+                />
+              </div>
             </td>
             <td><small class="dir">{{ direction(d, vrx) }}</small></td>
             <td>{{ vrx.format }}</td>
@@ -225,7 +233,15 @@ onMounted(refresh);
                 :placeholder="c.groupHint?.group ?? '—'"
                 @save="(group) => rename(() => api.updateMirror(c.id, { group }))"
               />
-              <small v-if="c.groupHint" class="orig">{{ c.groupHint.role }}</small>
+              <div v-if="c.groupHint || c.role" class="role">
+                <EditableName
+                  :value="c.role ?? ''"
+                  allow-empty
+                  chain="role"
+                  :placeholder="c.groupHint?.role ?? 'role'"
+                  @save="(role) => rename(() => api.updateMirror(c.id, { role }))"
+                />
+              </div>
             </td>
             <td><small class="dir">{{ c.from ? `${domainName(c.from)} → ${domainName(c.to ?? '')}` : '—' }}</small></td>
             <td :class="c.state === 'active' ? 'ok' : c.state === 'failed' ? 'bad' : 'warn'" :title="c.error ?? ''">{{ c.state ?? 'not built yet' }}</td>
@@ -286,6 +302,7 @@ small { display: block; opacity: 0.65; }
 .notice { color: #2e9e4f; }
 .both { align-self: center; font-size: 1.2rem; opacity: 0.6; padding-bottom: 0.2rem; }
 .dir { opacity: 0.75; white-space: nowrap; }
+.role { font-size: 0.8rem; opacity: 0.8; margin-top: 0.1rem; }
 .orig { display: block; font-size: 0.75rem; opacity: 0.55; margin-top: 0.1rem; }
 table.copies { margin-top: 0.6rem; }
 .ok { color: #2e9e4f; }

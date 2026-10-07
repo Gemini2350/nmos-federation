@@ -250,6 +250,7 @@ export function registerRestApi(
             state: channel?.state ?? null,
             error: channel?.error ?? null,
             group: m.group ?? null,
+            role: m.role ?? null,
             groupHint: hints.get(`mirror-${m.id}`) ?? null,
           };
         }),
@@ -359,7 +360,7 @@ export function registerRestApi(
 
   // Renaming only. Format and device shape what a receiver is; changing those is a
   // remove and add.
-  app.put<{ Params: { id: string }; Body: { label?: string; group?: string } }>('/api/receivers/:id', async (req, reply) => {
+  app.put<{ Params: { id: string }; Body: { label?: string; group?: string; role?: string } }>('/api/receivers/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
     const vrx = cfg.receivers.find((r) => r.id === req.params.id);
     if (!vrx) return reply.code(404).send({ error: 'unknown receiver' });
@@ -374,6 +375,12 @@ export function registerRestApi(
       if (group.includes(':')) return reply.code(400).send({ error: 'a group name cannot contain ":" — it separates group and role' });
       if (group) vrx.group = group;
       else delete vrx.group;
+    }
+    if (req.body.role !== undefined) {
+      const role = req.body.role.trim();
+      if (role.includes(':')) return reply.code(400).send({ error: 'a role cannot contain ":" — it separates group and role' });
+      if (role) vrx.role = role;
+      else delete vrx.role;
     }
     try {
       await store.save(cfg);
@@ -639,7 +646,7 @@ export function registerRestApi(
 
   // Name and where it is shared. Neither touches the stream: a renamed or re-shared
   // sender copy keeps its NAT and multicast groups, only its registrations move.
-  app.put<{ Params: { id: string }; Body: { label?: string; registries?: string[]; group?: string } }>('/api/mirrors/:id', async (req, reply) => {
+  app.put<{ Params: { id: string }; Body: { label?: string; registries?: string[]; group?: string; role?: string } }>('/api/mirrors/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
     const mirror = cfg.mirrors.find((m) => m.id === req.params.id);
     if (!mirror) return reply.code(404).send({ error: 'unknown copy' });
@@ -662,6 +669,14 @@ export function registerRestApi(
         mirror.kind === 'receiver' ? (cfg.receivers.find((r) => r.proxyFor?.mirrorId === mirror.id) ?? mirror) : mirror;
       if (group) target.group = group;
       else delete target.group;
+    }
+    if (b.role !== undefined) {
+      const role = b.role.trim();
+      if (role.includes(':')) return reply.code(400).send({ error: 'a role cannot contain ":" — it separates group and role' });
+      const target: { role?: string } =
+        mirror.kind === 'receiver' ? (cfg.receivers.find((r) => r.proxyFor?.mirrorId === mirror.id) ?? mirror) : mirror;
+      if (role) target.role = role;
+      else delete target.role;
     }
     if (b.registries !== undefined) {
       const { choices } = engine.mirrorRegistries(mirror);

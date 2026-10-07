@@ -137,6 +137,8 @@ export interface VirtualReceiver {
    * Empty = a proxy keeps its original's group, a free receiver has none.
    */
   group?: string;
+  /** Role within the group, set by the operator; empty = the original's, or derived. */
+  role?: string;
   /**
    * Set when this receiver is a proxy for a real receiver in the other domain: once
    * a stream is connected here, the original is driven over IS-05 so the essence

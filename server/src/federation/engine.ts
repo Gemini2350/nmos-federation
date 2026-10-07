@@ -364,6 +364,7 @@ export class Engine {
         key: vrx.id,
         format: vrx.format,
         group: vrx.group,
+        role: vrx.role,
         ...(mirror ? { origin: { hint: mirror.originGroupHint, deviceId: mirror.originDeviceId, deviceLabel: mirror.originDeviceLabel } } : {}),
       };
     });
@@ -376,6 +377,7 @@ export class Engine {
         key,
         format,
         group: m.group,
+        role: m.role,
         origin: { hint: m.originGroupHint, deviceId: m.originDeviceId, deviceLabel: m.originDeviceLabel },
       });
     }

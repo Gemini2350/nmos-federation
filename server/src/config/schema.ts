@@ -283,6 +283,8 @@ export interface MirrorEntry {
   enabled: boolean;
   /** Natural group set by the operator for a sender copy (a proxy keeps it on its receiver). */
   group?: string;
+  /** Role within it, likewise; empty = the original's. */
+  role?: string;
   /**
    * The original's group hint (BCP-002-01) and its device's label, read when the copy
    * was made. `undefined` = not read yet, `null` = the original has none.

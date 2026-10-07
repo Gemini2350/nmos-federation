@@ -12,6 +12,9 @@
  *  2. for a copy, the original's own hint;
  *  3. nothing.
  *
+ * The role can be overridden the same way, on top of whichever group applies. A role
+ * alone does not make a group: without a group there is nothing to be a role in.
+ *
  * One federation device can hold copies of several original devices, and group names
  * are only unique per device ("Receive0" exists on every SDI card). Two originals from
  * different devices with the same group name would merge into one group here, so such
@@ -51,6 +54,8 @@ export interface Port {
   format: 'video' | 'audio' | 'data';
   /** Group the operator set; empty = none. */
   group?: string;
+  /** Role the operator set; empty = the original's, or derived from the format. */
+  role?: string;
   /** For a copy: the original's hint and the device it sits on. */
   origin?: { hint: string | null | undefined; deviceId: string; deviceLabel?: string | null };
 }
@@ -75,16 +80,22 @@ export function groupHints(ports: Port[]): Map<string, GroupHint> {
   const pendingRole: Port[] = [];
   for (const p of ports) {
     const own = p.group?.trim();
+    const ownRole = p.role?.trim();
     const inherited = parseGroupHint(p.origin?.hint);
     if (own) {
-      if (inherited) out.set(p.key, { group: own, role: inherited.role });
+      if (ownRole) out.set(p.key, { group: own, role: ownRole });
+      else if (inherited) out.set(p.key, { group: own, role: inherited.role });
       else pendingRole.push(p);
       continue;
     }
     if (!inherited || !p.origin) continue;
     const clash = (devicesPerGroup.get(inherited.group)?.size ?? 0) > 1;
     const prefix = p.origin.deviceLabel?.trim() || p.origin.deviceId.slice(0, 8);
-    out.set(p.key, { ...inherited, group: clash ? `${prefix} / ${inherited.group}` : inherited.group });
+    out.set(p.key, {
+      ...inherited,
+      group: clash ? `${prefix} / ${inherited.group}` : inherited.group,
+      ...(ownRole ? { role: ownRole } : {}),
+    });
   }
 
   // Free virtual receivers in a group: number the roles per format, in port order.
