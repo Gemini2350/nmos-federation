@@ -18,18 +18,20 @@ const notice = ref<string | null>(null);
 const paging = ref<{ limit: number | null; pages: number; truncated: boolean } | null>(null);
 
 const device = computed(() => cfg.value?.devices.find((d) => d.id === deviceId.value) ?? null);
-/** Direction, target registries and NAT all live on the bridge the device hangs on. */
+/** Registries and NAT live on the bridge the device hangs on. */
 const bridge = computed(() => cfg.value?.bridges.find((b) => b.id === device.value?.bridgeId) ?? null);
 const registries = computed(() => (cfg.value?.registries ?? []).filter((r) => r.enabled));
 
 /**
- * The direction is fixed by the device, and it differs per kind:
- *  - a sender copy reads from the device's source domain and publishes into its target
- *  - a receiver proxy drives a receiver in the target domain from the source domain
- * So a registry only yields copyable resources if it sits in the matching domain.
+ * A bridge has no direction, so a copy runs away from the registry it comes from: a
+ * sender copy is published in the bridge's other domain, a receiver proxy is offered
+ * there. The registry only has to sit in one of the bridge's two domains.
  */
-const senderSource = computed(() => registries.value.find((r) => r.id === sourceRegistry.value)?.domainId === bridge.value?.sourceDomain);
-const receiverSource = computed(() => registries.value.find((r) => r.id === sourceRegistry.value)?.domainId === bridge.value?.targetDomain);
+const originDomain = computed(() => registries.value.find((r) => r.id === sourceRegistry.value)?.domainId ?? '');
+const inBridge = computed(() => !!bridge.value && bridge.value.domains.includes(originDomain.value));
+const otherSide = computed(() =>
+  bridge.value ? (bridge.value.domains[0] === originDomain.value ? bridge.value.domains[1] : bridge.value.domains[0]) : '',
+);
 
 const match = (label: string, dev: string) =>
   !filter.value || `${label} ${dev}`.toLowerCase().includes(filter.value.toLowerCase());
@@ -205,10 +207,11 @@ onMounted(load);
 <template>
   <h2>Copy between registries</h2>
   <p class="lead">
-    Copies an existing resource directly, without going through a virtual receiver.
+    Copies an existing resource directly, without going through a virtual receiver, in either
+    direction of the bridge — away from the registry you browse.
     A <strong>sender</strong> copy reads the original's SDP from its manifest, NATs the stream into the
-    target domain and publishes the copy there. A <strong>receiver</strong> copy creates a proxy in the
-    source domain: connect a stream to it and the original receiver is driven over IS-05.
+    bridge's other domain and publishes the copy there. A <strong>receiver</strong> copy creates a proxy in
+    the other domain: connect a stream to it and the original receiver is driven over IS-05.
   </p>
   <div class="toasts" aria-live="polite">
     <p v-if="error" class="toast bad" @click="error = null" title="click to dismiss">{{ error }}</p>
@@ -243,14 +246,14 @@ onMounted(load);
   </section>
 
   <section v-if="senders.length || receivers.length">
-    <h3>Senders <small v-if="bridge">copyable from {{ domainName(bridge.sourceDomain) }}</small></h3>
+    <h3>Senders <small v-if="inBridge">copied from {{ domainName(originDomain) }} into {{ domainName(otherSide) }}</small></h3>
     <!-- With no device there is nothing to say about domains yet; saying it anyway
          produced three contradictory messages and a blank domain name. -->
     <p v-if="!bridge" class="warn">Pick a target device to copy anything.</p>
-    <p v-else-if="!senderSource" class="warn">
-      Senders can only be copied from <strong>{{ domainName(bridge.sourceDomain) }}</strong>, the source
-      domain of the bridge “{{ bridge.label }}”. This registry is in
-      <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
+    <p v-else-if="!inBridge" class="warn">
+      This registry is in <strong>{{ domainName(originDomain) }}</strong>, which the bridge
+      “{{ bridge.label }}” does not join — it connects {{ domainName(bridge.domains[0]) }} and
+      {{ domainName(bridge.domains[1]) }}.
     </p>
     <template v-else>
       <div class="bulk">
@@ -290,12 +293,11 @@ onMounted(load);
       </table>
     </template>
 
-    <h3>Receivers <small v-if="bridge">proxyable into {{ domainName(bridge.sourceDomain) }}</small></h3>
+    <h3>Receivers <small v-if="inBridge">proxied into {{ domainName(otherSide) }}, driving them in {{ domainName(originDomain) }}</small></h3>
     <p v-if="!bridge" class="warn">Pick a target device to copy anything.</p>
-    <p v-else-if="!receiverSource" class="warn">
-      A receiver proxy drives a receiver in <strong>{{ domainName(bridge.targetDomain) }}</strong>, the
-      target domain of the bridge “{{ bridge.label }}”. This registry is in
-      <strong>{{ domainName(registries.find((r) => r.id === sourceRegistry)?.domainId ?? '') }}</strong>.
+    <p v-else-if="!inBridge" class="warn">
+      This registry is in <strong>{{ domainName(originDomain) }}</strong>, which the bridge
+      “{{ bridge.label }}” does not join.
     </p>
     <template v-else>
       <div class="bulk">
@@ -345,7 +347,7 @@ onMounted(load);
             <small>{{ m.name !== m.originLabel ? `${m.originLabel} · ` : '' }}from {{ registryName(m.registryId) }}</small>
           </td>
           <td>{{ m.kind === 'sender' ? 'sender copy' : 'receiver proxy' }}</td>
-          <td><small v-if="m.device">{{ domainName(m.device.sourceDomain) }} → {{ domainName(m.device.targetDomain) }}{{ m.device.nat ? '' : ' (no NAT)' }}</small></td>
+          <td><small v-if="m.device?.from">{{ domainName(m.device.from) }} → {{ domainName(m.device.to ?? '') }}{{ m.device.nat ? '' : ' (no NAT)' }}</small></td>
           <td class="share">
             <label v-for="id in m.registryChoices" :key="id" class="check" :title="m.kind === 'sender' ? 'publish the copied sender here' : 'offer the proxy receiver here'">
               <input

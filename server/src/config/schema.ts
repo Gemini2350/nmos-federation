@@ -12,7 +12,7 @@ import type { AristaConfig } from '../switch/arista-eapi.js';
  */
 export interface DomainConfig {
   /**
-   * Opaque key. Devices refer to it through sourceDomain/targetDomain, registries
+   * Opaque key. Bridges refer to it through domains, receivers through side, registries
    * through domainId — so it must never change once anything points at it. New entries
    * get the next free number; it is not shown in the GUI and carries no meaning.
    * Older configurations with names like "internal" keep working: it is just a string.
@@ -39,7 +39,7 @@ export interface DomainConfig {
 }
 
 export interface RegistryConfig {
-  /** Opaque key, see DomainConfig.id. Devices refer to it through targetRegistries. */
+  /** Opaque key, see DomainConfig.id. Bridges and copies refer to it through registries. */
   id: string;
   label: string;
   /** Domain this registry is reached through. */
@@ -114,9 +114,8 @@ function migrateDevicesToBridges(cfg: AppConfig): void {
       bridge = {
         id: nextId(cfg.bridges.map((b) => b.id)),
         label: `${src} → ${tgt}`,
-        sourceDomain: old.sourceDomain ?? '',
-        targetDomain: old.targetDomain ?? '',
-        targetRegistries: old.targetRegistries ?? [],
+        domains: [old.sourceDomain ?? '', old.targetDomain ?? ''],
+        registries: old.targetRegistries ?? [],
         nat: old.nat ?? true,
         enabled: true,
       };
@@ -130,9 +129,49 @@ function migrateDevicesToBridges(cfg: AppConfig): void {
   }
 }
 
+/**
+ * Bridges used to carry a direction (source → target, target registries only). The
+ * direction now belongs to each port, so a directed bridge becomes an undirected one:
+ * its domains in the old order, its target registry choice kept as it was — that list
+ * only names registries of the old target domain, which per-domain semantics leave
+ * the old source side at "all", exactly as before. Every receiver on it keeps the
+ * side it always had: the old source.
+ */
+function migrateDirectedBridges(cfg: AppConfig): void {
+  for (const b of cfg.bridges) {
+    const old = b as unknown as { sourceDomain?: string; targetDomain?: string; targetRegistries?: string[] };
+    if (old.sourceDomain === undefined && old.targetDomain === undefined) continue;
+    const source = old.sourceDomain ?? '';
+    b.domains = [source, old.targetDomain ?? ''];
+    b.registries ??= old.targetRegistries ?? [];
+    const devices = new Set(cfg.devices.filter((d) => d.bridgeId === b.id).map((d) => d.id));
+    for (const r of cfg.receivers ?? []) if (devices.has(r.deviceId) && !r.side) r.side = source;
+    delete old.sourceDomain;
+    delete old.targetDomain;
+    delete old.targetRegistries;
+  }
+}
+
+/** The domain of a bridge that is not `domainId`; undefined when it is not one of them. */
+export function otherDomain(bridge: Bridge, domainId: string): string | undefined {
+  if (bridge.domains[0] === domainId) return bridge.domains[1];
+  if (bridge.domains[1] === domainId) return bridge.domains[0];
+  return undefined;
+}
+
 export function normalizeConfig(cfg: AppConfig): AppConfig {
   cfg.bridges ??= [];
   migrateDevicesToBridges(cfg);
+  migrateDirectedBridges(cfg);
+  for (const b of cfg.bridges) {
+    if (!Array.isArray(b.domains) || b.domains.length !== 2) b.domains = [b.domains?.[0] ?? '', b.domains?.[1] ?? ''];
+    b.registries ??= [];
+  }
+  for (const r of cfg.receivers ?? []) {
+    const device = cfg.devices.find((d) => d.id === r.deviceId);
+    const bridge = device && cfg.bridges.find((b) => b.id === device.bridgeId);
+    if (bridge && (!r.side || !bridge.domains.includes(r.side))) r.side = bridge.domains[0];
+  }
   delete (cfg as unknown as Record<string, unknown>)['nodeLabel'];
   // Proxies named by the old scheme, "<origin> (proxy)", get the new one. One the
   // operator renamed is left alone: only the exact generated form is touched.
@@ -236,9 +275,9 @@ export interface MirrorEntry {
   /** Overrides the label of the copy; empty = the origin's label. */
   label?: string;
   /**
-   * Where this copy is shared. A sender copy: registries of the bridge's target domain
-   * (default: the bridge's target registries). A receiver proxy: registries of the
-   * bridge's source domain (default: all of them). Empty = the default.
+   * Where this copy is shared — always the other domain than the one it was copied
+   * from: a sender copy is published there, a receiver proxy offered there. Default
+   * (empty): the bridge's registries in that domain.
    */
   registries?: string[];
   enabled: boolean;

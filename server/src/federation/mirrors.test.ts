@@ -174,9 +174,8 @@ async function build(internal: Stub, partner: Stub, dir: string, extra?: Partial
       {
         id: 'b1',
         label: 'NMOS Federation',
-        sourceDomain: 'internal',
-        targetDomain: 'partnerA',
-        targetRegistries: ['regA'],
+        domains: ['internal', 'partnerA'],
+        registries: ['regA'],
         nat: true,
         enabled: true,
       },
@@ -514,4 +513,60 @@ test('a receiver proxy is offered only in the source registries it was given', a
   assert.deepEqual(labels(internal2).sort(), ['Proxy MON03', 'RX 1']);
   // A plain virtual receiver still goes everywhere; only the proxy is restricted.
   assert.deepEqual(labels(internal), ['RX 1']);
+});
+
+test('copies run away from the registry they come from — the bridge has no direction', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const senderCopy = randomUUID();
+  const receiverCopy = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      // A partner sender, copied into the internal domain.
+      { id: senderCopy, kind: 'sender', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', enabled: true },
+      // An internal receiver, proxied into the partner domain.
+      { id: receiverCopy, kind: 'receiver', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true },
+    ],
+    receivers: [
+      {
+        id: 'proxy-back',
+        label: 'Proxy MON03',
+        deviceId: 'dev1',
+        format: 'video',
+        enabled: true,
+        side: 'partnerA',
+        proxyFor: { registryId: 'int', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId: receiverCopy },
+      },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy-back'];
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+
+  const channel = await engine.copySender(senderCopy);
+  assert.equal(channel.sourceDomain, 'partnerA');
+  assert.equal(channel.targetDomain, 'internal');
+  assert.equal(channel.allocation!.domainId, 'internal');
+  assert.ok(internal.posts.some((p) => p.type === 'sender' && p.data.label === 'CAM07 Video'), 'published internally');
+  assert.equal(partner.posts.filter((p) => p.type === 'sender').length, 0);
+  assert.deepEqual(engine.mirrorRegistries(cfg.mirrors[0]!).choices, ['int']);
+
+  // The proxy is offered at the partner, and driving it patches the internal original.
+  assert.ok(partner.posts.some((p) => p.type === 'receiver' && p.data.label === 'Proxy MON03'));
+  assert.equal(internal.posts.filter((p) => p.type === 'receiver').length, 0);
+  const proxied = await engine.activate('proxy-back', {
+    sender_id: 'partner-sender',
+    master_enable: true,
+    transport_file: { data: SDP, type: 'application/sdp' },
+    transport_params: [{}, {}],
+  });
+  assert.equal(proxied.targetDomain, 'internal');
+  assert.equal(proxied.remoteReceiver?.connected, true, proxied.remoteReceiver?.error ?? '');
+  assert.equal(internal.patches.at(-1)!.receiverId, ORIGIN_RECEIVER);
 });

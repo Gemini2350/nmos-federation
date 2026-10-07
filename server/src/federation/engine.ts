@@ -1,5 +1,5 @@
 import type { AppConfig, DomainConfig } from '../config/schema.js';
-import { bridgeOf, domainById, legOrder, registriesOf } from '../config/schema.js';
+import { bridgeOf, domainById, legOrder, otherDomain, registriesOf } from '../config/schema.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
 import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
@@ -243,13 +243,13 @@ export class Engine {
     const bridge = this.bridgeFor(device);
     if (!bridge) return false;
     const ids = new Set(this.cfg.domains.map((d) => d.id));
-    return ids.has(bridge.sourceDomain) && ids.has(bridge.targetDomain);
+    return bridge.domains.every((d) => ids.has(d));
   }
 
   /** Bridges that are switched on and whose two domains both exist. */
   usableBridges(): Bridge[] {
     const ids = new Set(this.cfg.domains.filter((d) => d.enabled).map((d) => d.id));
-    return this.cfg.bridges.filter((b) => b.enabled && ids.has(b.sourceDomain) && ids.has(b.targetDomain));
+    return this.cfg.bridges.filter((b) => b.enabled && b.domains[0] !== b.domains[1] && b.domains.every((d) => ids.has(d)));
   }
 
   devicesOf(bridge: Bridge): FederationDevice[] {
@@ -259,12 +259,41 @@ export class Engine {
   /** Every node a registry in this domain holds — one per bridge touching it. */
   nodeIdsFor(domainId: string): string[] {
     return this.usableBridges()
-      .filter((b) => b.sourceDomain === domainId || b.targetDomain === domainId)
+      .filter((b) => b.domains.includes(domainId))
       .map((b) => this.nodeId(b.id));
   }
 
   receiversOf(device: FederationDevice): VirtualReceiver[] {
     return this.cfg.receivers.filter((r) => r.deviceId === device.id);
+  }
+
+  /** Domain a virtual receiver is offered in; its stream flows to the bridge's other one. */
+  sideOf(vrx: VirtualReceiver, bridge: Bridge): string {
+    return vrx.side && bridge.domains.includes(vrx.side) ? vrx.side : bridge.domains[0];
+  }
+
+  /**
+   * The bridge's registries in one of its domains: the ones listed on the bridge there,
+   * or every enabled registry of that domain when the bridge lists none of them.
+   */
+  registriesOn(bridge: Bridge, domainId: string): string[] {
+    const all = registriesOf(this.cfg, domainId).map((r) => r.id);
+    const listed = bridge.registries.filter((id) => all.includes(id));
+    return listed.length ? listed : all;
+  }
+
+  /**
+   * Which way a copy runs. `origin` is the domain it was copied from — where the
+   * original sender or receiver lives — and `other` the domain the copy appears in: a
+   * sender copy is published there, a receiver proxy offered there. Null when the
+   * origin registry is in neither of the bridge's domains.
+   */
+  mirrorDirection(mirror: MirrorEntry): { bridge: Bridge; origin: string; other: string } | null {
+    const device = this.cfg.devices.find((d) => d.id === mirror.deviceId);
+    const bridge = device ? this.bridgeFor(device) : undefined;
+    const origin = this.cfg.registries.find((r) => r.id === mirror.registryId)?.domainId;
+    const other = bridge && origin ? otherDomain(bridge, origin) : undefined;
+    return bridge && origin && other ? { bridge, origin, other } : null;
   }
 
   /** Only active channels carry a published sender. */
@@ -294,19 +323,17 @@ export class Engine {
     const active = this.activeChannels();
 
     for (const bridge of this.usableBridges()) {
-      const isSource = bridge.sourceDomain === domainId;
-      const isTarget = bridge.targetDomain === domainId;
-      if (!isSource && !isTarget) continue;
+      if (!bridge.domains.includes(domainId)) continue;
 
       nodes.push(this.nodeResource(bridge, domain));
 
       for (const device of this.devicesOf(bridge)) {
         const devId = this.deviceId(device.id);
-        const vrxList = this.receiversOf(device);
-
-        // Receivers live on the source side, senders on the target side. The same
-        // device appears on both, carrying whatever exists there.
-        if (isSource) {
+        // A receiver lives in the domain it is offered in, the sender its stream becomes
+        // in the other one. The same device appears in both, carrying whatever exists
+        // there — receivers of one direction next to senders of the other.
+        const vrxList = this.receiversOf(device).filter((v) => this.sideOf(v, bridge) === domainId);
+        {
           for (const vrx of vrxList) {
             const conn = this.deps.state.connection(vrx.id).active;
             const caps = MEDIA_TYPES[vrx.format];
@@ -326,7 +353,7 @@ export class Engine {
           }
         }
 
-        const mine = isTarget ? active.filter((c) => c.deviceId === device.id) : [];
+        const mine = active.filter((c) => c.deviceId === device.id && c.targetDomain === domainId);
         for (const channel of mine) {
           const essence = this.essenceOf(channel);
           if (!essence) continue;
@@ -365,7 +392,7 @@ export class Engine {
               device.label,
               this.controlHref(domain),
               mine.map((c) => this.senderNmosId(c.receiverId)),
-              isSource ? vrxList.map((v) => this.receiverNmosId(v.id)) : [],
+              vrxList.map((v) => this.receiverNmosId(v.id)),
             ),
             `device:${domainId}:${devId}`,
           ),
@@ -376,34 +403,24 @@ export class Engine {
     return { nodes, devices, receivers, senders, sources, flows };
   }
 
-  /** Which registries a bridge publishes into on its target side. */
-  private targetRegistryIds(bridge: Bridge): string[] {
-    const all = registriesOf(this.cfg, bridge.targetDomain).map((r) => r.id);
-    if (!bridge.targetRegistries.length) return all;
-    return bridge.targetRegistries.filter((id) => all.includes(id));
-  }
-
   /**
-   * Where a copy is shared, and what it could be shared in. A sender copy is published
-   * on the target side, a receiver proxy is offered on the source side. Registries that
-   * were chosen and have since been disabled drop out; if none is left, the default
-   * applies rather than the copy silently vanishing from every registry.
+   * Where a copy is shared, and what it could be shared in: registries of the domain
+   * the copy appears in. Registries that were chosen and have since been disabled drop
+   * out; if none is left, the default applies rather than the copy silently vanishing
+   * from every registry.
    */
   mirrorRegistries(mirror: MirrorEntry): { chosen: string[]; choices: string[] } {
-    const device = this.cfg.devices.find((d) => d.id === mirror.deviceId);
-    const bridge = device ? this.bridgeFor(device) : undefined;
-    if (!bridge) return { chosen: [], choices: [] };
-    const domainId = mirror.kind === 'sender' ? bridge.targetDomain : bridge.sourceDomain;
-    const choices = registriesOf(this.cfg, domainId).map((r) => r.id);
-    const fallback = mirror.kind === 'sender' ? this.targetRegistryIds(bridge) : choices;
+    const dir = this.mirrorDirection(mirror);
+    if (!dir) return { chosen: [], choices: [] };
+    const choices = registriesOf(this.cfg, dir.other).map((r) => r.id);
     const picked = (mirror.registries ?? []).filter((id) => choices.includes(id));
-    return { chosen: picked.length ? picked : fallback, choices };
+    return { chosen: picked.length ? picked : this.registriesOn(dir.bridge, dir.other), choices };
   }
 
   /** Registries a channel's sender is published in: the copy's choice, else the bridge's. */
-  private publishTargets(key: string, bridge: Bridge): string[] {
+  private publishTargets(key: string, bridge: Bridge, targetDomain: string): string[] {
     const mirror = this.mirrorOf(key);
-    return mirror ? this.mirrorRegistries(mirror).chosen : this.targetRegistryIds(bridge);
+    return mirror ? this.mirrorRegistries(mirror).chosen : this.registriesOn(bridge, targetDomain);
   }
 
   /**
@@ -417,7 +434,7 @@ export class Engine {
     const device = mirror && this.cfg.devices.find((d) => d.id === mirror.deviceId);
     const bridge = device ? this.bridgeFor(device) : undefined;
     if (channel && bridge && channel.state === 'active') {
-      channel.publishedIn = this.publishTargets(channel.receiverId, bridge);
+      channel.publishedIn = this.publishTargets(channel.receiverId, bridge, channel.targetDomain);
       channel.updatedAt = new Date().toISOString();
       this.deps.state.upsertChannel(channel);
       await this.deps.state.save();
@@ -439,55 +456,55 @@ export class Engine {
     };
 
     for (const bridge of this.usableBridges()) {
-      const srcRegs = registriesOf(this.cfg, bridge.sourceDomain).map((r) => r.id);
-      const tgtRegs = this.targetRegistryIds(bridge);
-      const srcRes = this.domainResources(bridge.sourceDomain);
-      const tgtRes = this.domainResources(bridge.targetDomain);
       const nodeId = this.nodeId(bridge.id);
       const devices = this.devicesOf(bridge);
 
-      for (const registryId of srcRegs) {
-        const self = srcRes.nodes.find((n) => n.id === nodeId);
-        if (self) add(registryId, { type: 'node', data: self });
-        for (const device of devices) {
-          const devId = this.deviceId(device.id);
-          const dev = srcRes.devices.find((d) => d.id === devId);
-          if (dev) add(registryId, { type: 'device', data: dev });
-          for (const vrx of this.receiversOf(device)) {
-            const mirror = vrx.proxyFor && this.cfg.mirrors.find((m) => m.id === vrx.proxyFor!.mirrorId);
-            if (mirror && !this.mirrorRegistries(mirror).chosen.includes(registryId)) continue;
-            const rx = srcRes.receivers.find((r) => r.id === this.receiverNmosId(vrx.id));
-            if (rx) add(registryId, { type: 'receiver', data: rx });
-          }
-        }
-      }
+      // Both domains alike: each holds the receivers offered there and the senders that
+      // streams from the other side became. Every registry of the domain is considered,
+      // not just the bridge's: a copy may be shared in one the bridge does not list, and
+      // such a registry gets the node and only the devices that have something there.
+      for (const domainId of bridge.domains) {
+        const res = this.domainResources(domainId);
+        const self = res.nodes.find((n) => n.id === nodeId);
+        const bridgeWide = this.registriesOn(bridge, domainId);
 
-      // Every registry of the target domain is considered, not just the bridge's: a
-      // sender copy may be shared in one the bridge does not publish into. Such a
-      // registry gets the node and only the devices that have a sender there.
-      for (const registryId of registriesOf(this.cfg, bridge.targetDomain).map((r) => r.id)) {
-        const bridgeWide = tgtRegs.includes(registryId);
-        const here = (deviceId: string) =>
-          this.activeChannels().filter((c) => c.deviceId === deviceId && this.publishTargets(c.receiverId, bridge).includes(registryId));
-        if (!bridgeWide && !devices.some((d) => here(d.id).length)) continue;
-        const self = tgtRes.nodes.find((n) => n.id === nodeId);
-        if (self) add(registryId, { type: 'node', data: self });
-        for (const device of devices) {
-          const channels = here(device.id);
-          if (!bridgeWide && !channels.length) continue;
-          const devId = this.deviceId(device.id);
-          // The same device id as on the source side, carrying its senders instead of
-          // its receivers — one device per group of ports, wherever it shows up.
-          const dev = tgtRes.devices.find((d) => d.id === devId);
-          if (dev) add(registryId, { type: 'device', data: dev });
-          for (const channel of channels) {
-            const vrxId = channel.receiverId;
-            const src = tgtRes.sources.find((x) => x.id === this.sourceNmosId(vrxId));
-            const flow = tgtRes.flows.find((f) => f.id === this.flowNmosId(vrxId));
-            const sender = tgtRes.senders.find((x) => x.id === this.senderNmosId(vrxId));
-            if (src) add(registryId, { type: 'source', data: src });
-            if (flow) add(registryId, { type: 'flow', data: flow });
-            if (sender) add(registryId, { type: 'sender', data: sender });
+        for (const registryId of registriesOf(this.cfg, domainId).map((r) => r.id)) {
+          const wide = bridgeWide.includes(registryId);
+          const held = devices.map((device) => ({
+            device,
+            receivers: this.receiversOf(device).filter((vrx) => {
+              if (this.sideOf(vrx, bridge) !== domainId) return false;
+              const mirror = vrx.proxyFor && this.cfg.mirrors.find((m) => m.id === vrx.proxyFor!.mirrorId);
+              return mirror ? this.mirrorRegistries(mirror).chosen.includes(registryId) : wide;
+            }),
+            channels: this.activeChannels().filter(
+              (c) =>
+                c.deviceId === device.id &&
+                c.targetDomain === domainId &&
+                this.publishTargets(c.receiverId, bridge, domainId).includes(registryId),
+            ),
+          }));
+          if (!wide && !held.some((h) => h.receivers.length || h.channels.length)) continue;
+
+          if (self) add(registryId, { type: 'node', data: self });
+          for (const { device, receivers, channels } of held) {
+            if (!wide && !receivers.length && !channels.length) continue;
+            const devId = this.deviceId(device.id);
+            const dev = res.devices.find((d) => d.id === devId);
+            if (dev) add(registryId, { type: 'device', data: dev });
+            for (const vrx of receivers) {
+              const rx = res.receivers.find((r) => r.id === this.receiverNmosId(vrx.id));
+              if (rx) add(registryId, { type: 'receiver', data: rx });
+            }
+            for (const channel of channels) {
+              const vrxId = channel.receiverId;
+              const src = res.sources.find((x) => x.id === this.sourceNmosId(vrxId));
+              const flow = res.flows.find((f) => f.id === this.flowNmosId(vrxId));
+              const sender = res.senders.find((x) => x.id === this.senderNmosId(vrxId));
+              if (src) add(registryId, { type: 'source', data: src });
+              if (flow) add(registryId, { type: 'flow', data: flow });
+              if (sender) add(registryId, { type: 'sender', data: sender });
+            }
           }
         }
       }
@@ -745,10 +762,13 @@ export class Engine {
     }
     const sdp = conn.transport_file.data;
     if (!sdp) throw new Error('activation without a transport_file');
+    const from = this.sideOf(vrx, bridge);
     return this.runChannel({
       key: vrxId,
       device,
       bridge,
+      from,
+      to: otherDomain(bridge, from)!,
       sdp,
       originSenderId: conn.sender_id,
       ...(vrx.proxyFor ? { proxy: vrx.proxyFor } : {}),
@@ -769,6 +789,8 @@ export class Engine {
     if (!bridge || !this.isAttached(device)) {
       throw new Error(`device "${device.label}" is not on a usable bridge`);
     }
+    const dir = this.mirrorDirection(mirror);
+    if (!dir) throw new Error(`the copy's registry is in neither domain of bridge "${bridge.label}"`);
     const query = this.queries.get(mirror.registryId);
     if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
 
@@ -793,8 +815,8 @@ export class Engine {
           receiverId: key,
           deviceId: device.id,
           mirrorId,
-          sourceDomain: bridge.sourceDomain,
-          targetDomain: bridge.targetDomain,
+          sourceDomain: dir.origin,
+          targetDomain: dir.other,
           state: 'failed',
           originSdp: null,
           originSenderId: mirror.originId,
@@ -817,6 +839,8 @@ export class Engine {
       key,
       device,
       bridge,
+      from: dir.origin,
+      to: dir.other,
       sdp,
       originSenderId: sender.id,
       mirrorId,
@@ -831,12 +855,15 @@ export class Engine {
     key: string;
     device: FederationDevice;
     bridge: Bridge;
+    /** Domain the stream comes from and the one its sender is published in. */
+    from: string;
+    to: string;
     sdp: string;
     originSenderId: string | null;
     mirrorId?: string;
     proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
   }): Promise<Channel> {
-    const { key, device, bridge, sdp } = opts;
+    const { key, device, bridge, sdp, from, to } = opts;
 
     await this.deactivate(key); // switching over = tear the old federation down cleanly
 
@@ -845,8 +872,8 @@ export class Engine {
       receiverId: key,
       deviceId: device.id,
       ...(opts.mirrorId ? { mirrorId: opts.mirrorId } : {}),
-      sourceDomain: bridge.sourceDomain,
-      targetDomain: bridge.targetDomain,
+      sourceDomain: from,
+      targetDomain: to,
       state: 'allocating',
       originSdp: sdp,
       originSenderId: opts.originSenderId,
@@ -858,8 +885,8 @@ export class Engine {
       updatedAt: new Date().toISOString(),
     };
 
-    const source = domainById(this.cfg, bridge.sourceDomain);
-    const target = domainById(this.cfg, bridge.targetDomain);
+    const source = domainById(this.cfg, from);
+    const target = domainById(this.cfg, to);
     let programmed = false;
 
     try {
@@ -877,7 +904,7 @@ export class Engine {
 
       const useNat = this.cfg.nat.enabled && bridge.nat;
       if (useNat) {
-        channel.allocation = this.deps.pools.allocate(bridge.targetDomain);
+        channel.allocation = this.deps.pools.allocate(to);
         channel.state = 'programming';
         const plan = buildChannelPlan(channel, this.cfg);
         await programChannel(this.deps.drivers, plan);
@@ -903,7 +930,7 @@ export class Engine {
       this.deps.state.upsertChannel(channel);
 
       channel.state = 'active';
-      channel.publishedIn = this.publishTargets(key, bridge);
+      channel.publishedIn = this.publishTargets(key, bridge, to);
       channel.updatedAt = new Date().toISOString();
       this.deps.state.upsertChannel(channel);
       await this.deps.state.save();
@@ -940,8 +967,8 @@ export class Engine {
       log.info(
         {
           channel: channel.id,
-          from: bridge.sourceDomain,
-          to: bridge.targetDomain,
+          from,
+          to,
           groups: channel.allocation?.groups,
           natGroupId: channel.allocation?.natGroupId,
           registries: channel.publishedIn,
@@ -1073,7 +1100,7 @@ export class Engine {
    * so the GUI never silently hides a registry.
    */
   registryStatus() {
-    const used = new Set(this.usableBridges().flatMap((b) => [b.sourceDomain, b.targetDomain]));
+    const used = new Set(this.usableBridges().flatMap((b) => b.domains));
     return this.cfg.registries.map((reg) => {
       const client = this.registries.get(reg.id);
       if (client) {
@@ -1157,8 +1184,8 @@ export class Engine {
         id: b.id,
         label: b.label,
         nodeId: this.nodeId(b.id),
-        sourceDomain: b.sourceDomain,
-        targetDomain: b.targetDomain,
+        domains: b.domains,
+        registries: b.registries,
         nat: b.nat,
         enabled: b.enabled,
         usable: this.usableBridges().some((x) => x.id === b.id),

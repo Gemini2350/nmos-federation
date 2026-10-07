@@ -82,3 +82,17 @@ test('receiver proxies carry "Proxy" in front, so the number stays at the end', 
   assert.equal(cfg.receivers[0]!.label, 'Proxy Monitor 3');
   assert.equal(cfg.receivers[1]!.label, 'Gallery right');
 });
+
+test('a directed bridge from an older file becomes undirected, every port keeping its direction', () => {
+  const cfg = structuredClone(DEFAULT_CONFIG) as unknown as Record<string, unknown> & typeof DEFAULT_CONFIG;
+  (cfg as any).bridges = [{ id: '1', label: 'Out', sourceDomain: 'a', targetDomain: 'b', targetRegistries: ['rb2'], nat: true, enabled: true }];
+  cfg.devices = [{ id: 'd1', label: 'D', bridgeId: '1', receiverIds: ['r1'] }];
+  cfg.receivers = [{ id: 'r1', label: 'R', deviceId: 'd1', format: 'video', enabled: true }];
+  normalizeConfig(cfg);
+  const b = cfg.bridges[0] as unknown as Record<string, unknown>;
+  assert.deepEqual(b['domains'], ['a', 'b']);
+  // Only a registry of the old target was listed, so the old source side stays "all".
+  assert.deepEqual(b['registries'], ['rb2']);
+  assert.ok(!('sourceDomain' in b) && !('targetDomain' in b) && !('targetRegistries' in b));
+  assert.equal(cfg.receivers[0]!.side, 'a', 'offered where it always was');
+});

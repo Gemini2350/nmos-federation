@@ -29,9 +29,8 @@ function configWithDevice(): AppConfig {
       {
         id: 'b1',
         label: 'NMOS Federation',
-        sourceDomain: 'internal',
-        targetDomain: 'partnerA',
-        targetRegistries: ['regA'],
+        domains: ['internal', 'partnerA'],
+        registries: ['regA'],
         nat: false,
         enabled: true,
       },

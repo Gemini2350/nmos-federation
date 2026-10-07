@@ -124,14 +124,13 @@ export class ConfigStore {
       const name = b.label || b.id;
       if (bridgeIds.has(b.id)) err(`duplicate bridge ID ${b.id}`);
       bridgeIds.add(b.id);
-      if (!domainIds.has(b.sourceDomain)) warn(`bridge "${name}" is detached: no domain ${b.sourceDomain}`);
-      if (!domainIds.has(b.targetDomain)) warn(`bridge "${name}" is detached: no domain ${b.targetDomain}`);
-      if (b.sourceDomain === b.targetDomain) err(`bridge "${name}": both ends are the same domain`);
-      for (const rid of b.targetRegistries) {
+      for (const d of b.domains) if (!domainIds.has(d)) warn(`bridge "${name}" is detached: no domain ${d}`);
+      if (b.domains[0] === b.domains[1]) err(`bridge "${name}": both ends are the same domain`);
+      for (const rid of b.registries) {
         const reg = cfg.registries.find((r) => r.id === rid);
-        if (!reg) warn(`bridge "${name}": no registry ${rid} — that target is ignored`);
-        else if (reg.domainId !== b.targetDomain) {
-          warn(`bridge "${name}": registry ${rid} is in another domain — that target is ignored`);
+        if (!reg) warn(`bridge "${name}": no registry ${rid} — it is ignored`);
+        else if (!b.domains.includes(reg.domainId)) {
+          warn(`bridge "${name}": registry ${rid} is in neither of its domains — it is ignored`);
         }
       }
     }
@@ -145,6 +144,12 @@ export class ConfigStore {
     for (const m of cfg.mirrors) {
       if (!cfg.devices.some((d) => d.id === m.deviceId)) warn(`copy of "${m.originLabel}": its device is gone`);
       if (!registryIds.has(m.registryId)) warn(`copy of "${m.originLabel}": no registry ${m.registryId}`);
+      const device = cfg.devices.find((d) => d.id === m.deviceId);
+      const bridge = device && cfg.bridges.find((b) => b.id === device.bridgeId);
+      const from = cfg.registries.find((r) => r.id === m.registryId)?.domainId;
+      if (bridge && from && !bridge.domains.includes(from)) {
+        warn(`copy of "${m.originLabel}": its registry is in neither domain of bridge "${bridge.label}" — it cannot run`);
+      }
     }
 
     const capacity = cfg.nat.groupIdRange[1] - cfg.nat.groupIdRange[0] + 1;

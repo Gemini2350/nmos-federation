@@ -12,24 +12,41 @@ const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const busy = ref(false);
 
-const draft = ref({ label: 'NMOS Federation', sourceDomain: '', targetDomain: '', targetRegistries: [] as string[], nat: true });
+const draft = ref({ label: 'NMOS Federation', domains: ['', ''] as [string, string], registries: [] as string[], nat: true });
 const deviceDraft = ref<Record<string, string>>({});
-const rxDraft = ref<Record<string, { count: number; pattern: string; format: VirtualReceiver['format'] }>>({});
+const rxDraft = ref<Record<string, { count: number; pattern: string; format: VirtualReceiver['format']; side: string }>>({});
 
 const domains = computed(() => cfg.value?.domains ?? []);
 const registriesOf = (domainId: string) => (cfg.value?.registries ?? []).filter((r) => r.domainId === domainId);
+const bridgeOf = (d: Device) => bridges.value.find((b) => b.id === d.bridgeId);
+const other = (b: Bridge | undefined, domainId: string) => (b ? (b.domains[0] === domainId ? b.domains[1] : b.domains[0]) : '');
+/** Direction of a port: offered in its side, flowing to the other domain. */
+function direction(d: Device, vrx: VirtualReceiver): string {
+  const b = bridgeOf(d);
+  const side = vrx.side && b?.domains.includes(vrx.side) ? vrx.side : (b?.domains[0] ?? '');
+  return `${domainName(side)} → ${domainName(other(b, side))}`;
+}
+/** Where the node appears in one domain: the bridge's listed registries there, or all. */
+function sharedIn(b: Bridge, domainId: string): string {
+  const listed = b.registries.filter((id) => registriesOf(domainId).some((r) => r.id === id));
+  return listed.length ? registryNames(listed) : 'all registries';
+}
 const devicesOf = (bridgeId: string) => devices.value.filter((d) => d.bridgeId === bridgeId);
 
 async function refresh() {
   try {
     [cfg.value, bridges.value, devices.value] = await Promise.all([api.config(), api.bridges(), api.devices()]);
     primeFromConfig(cfg.value);
-    if (!draft.value.sourceDomain) {
-      draft.value.sourceDomain = domains.value.find((d) => d.kind === 'internal')?.id ?? '';
-      draft.value.targetDomain = domains.value.find((d) => d.kind === 'external')?.id ?? '';
+    if (!draft.value.domains[0]) {
+      draft.value.domains = [
+        domains.value.find((d) => d.kind === 'internal')?.id ?? '',
+        domains.value.find((d) => d.kind === 'external')?.id ?? '',
+      ];
     }
     for (const b of bridges.value) deviceDraft.value[b.id] ??= 'Device';
-    for (const d of devices.value) rxDraft.value[d.id] ??= { count: 1, pattern: `${d.label} {n}`, format: 'video' };
+    for (const d of devices.value) {
+      rxDraft.value[d.id] ??= { count: 1, pattern: `${d.label} {n}`, format: 'video', side: bridgeOf(d)?.domains[0] ?? '' };
+    }
     error.value = null;
   } catch (e) {
     error.value = (e as Error).message;
@@ -82,9 +99,9 @@ onMounted(refresh);
       Bridges
       <InfoHint wide>
         A bridge joins two domains and <strong>is</strong> an NMOS node: every registry in either domain
-        shows it under this name. Underneath it you add devices, and into a device virtual receivers or
-        copies. Direction, target registries and NAT belong to the bridge, so a device is simply a group of
-        ports on it.
+        shows it under this name. It carries streams both ways — each virtual receiver is offered in one
+        of the two domains and its stream flows to the other. Registries and NAT belong to the bridge; a
+        device is simply a group of ports on it, in either direction.
       </InfoHint>
     </h2>
   </div>
@@ -95,13 +112,14 @@ onMounted(refresh);
     <h3>New bridge</h3>
     <div class="row">
       <label><span>Name <InfoHint text="The NMOS node's label, as every registry will show it. &quot;NMOS Federation&quot; is only the suggestion — name it after what it connects. Rename it any time by clicking the name." /></span><input v-model="draft.label" placeholder="NMOS Federation" /></label>
-      <label><span>From</span>
-        <select v-model="draft.sourceDomain">
+      <label><span>Domain</span>
+        <select v-model="draft.domains[0]">
           <option v-for="d in domains" :key="d.id" :value="d.id">{{ d.label }}</option>
         </select>
       </label>
-      <label><span>To</span>
-        <select v-model="draft.targetDomain">
+      <span class="both" title="a bridge carries streams both ways — each port decides its own direction">⇄</span>
+      <label><span>Domain</span>
+        <select v-model="draft.domains[1]">
           <option v-for="d in domains" :key="d.id" :value="d.id">{{ d.label }}</option>
         </select>
       </label>
@@ -111,10 +129,10 @@ onMounted(refresh);
       </label>
       <button :disabled="busy" @click="run(() => api.createBridge(draft))">Create bridge</button>
     </div>
-    <fieldset v-if="registriesOf(draft.targetDomain).length">
-      <legend>Target registries (no selection = all enabled ones of that domain)</legend>
-      <label v-for="r in registriesOf(draft.targetDomain)" :key="r.id" class="check">
-        <input type="checkbox" :value="r.id" v-model="draft.targetRegistries" /> {{ r.label }}
+    <fieldset v-for="dom in draft.domains.filter((x, i) => x && draft.domains.indexOf(x) === i)" :key="dom" v-show="registriesOf(dom).length">
+      <legend>Registries in {{ domainName(dom) }} (none ticked = all enabled ones)</legend>
+      <label v-for="r in registriesOf(dom)" :key="r.id" class="check">
+        <input type="checkbox" :value="r.id" v-model="draft.registries" /> {{ r.label }}
       </label>
     </fieldset>
     <p v-if="domains.length < 2" class="warn">
@@ -128,12 +146,12 @@ onMounted(refresh);
         <strong><EditableName :value="b.label" fallback="NMOS Federation" :disabled="busy" @save="(label) => patchBridge(b, { label })" /></strong>
         <span v-if="b.detached" class="badge">detached</span>
         <small>
-          node · {{ domainName(b.sourceDomain) }} → {{ domainName(b.targetDomain) }} ·
-          {{ b.targetRegistries.length ? registryNames(b.targetRegistries) : 'all registries of the target domain' }}
+          node · {{ domainName(b.domains[0]) }} ⇄ {{ domainName(b.domains[1]) }} ·
+          in {{ domainName(b.domains[0]) }}: {{ sharedIn(b, b.domains[0]) }} · in {{ domainName(b.domains[1]) }}: {{ sharedIn(b, b.domains[1]) }}
         </small>
         <small v-if="b.detached" class="bad">
           Points at
-          {{ [b.missing?.sourceDomain, b.missing?.targetDomain].filter((x): x is string => !!x).map(domainName).join(' and ') }},
+          {{ (b.missing?.domains ?? []).map(domainName).join(' and ') }},
           which does not exist — this bridge registers nothing.
         </small>
       </div>
@@ -152,10 +170,11 @@ onMounted(refresh);
         <button :disabled="busy" @click="run(() => api.deleteDevice(d.id))">Remove device</button>
       </header>
       <table v-if="d.receivers?.length">
-        <thead><tr><th>Virtual receiver</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
+        <thead><tr><th>Virtual receiver</th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="vrx in d.receivers" :key="vrx.id">
             <td><EditableName :value="vrx.label" :disabled="busy" @save="(label) => run(() => api.renameReceiver(vrx.id, label))" /></td>
+            <td><small class="dir">{{ direction(d, vrx) }}</small></td>
             <td>{{ vrx.format }}</td>
             <td>{{ vrx.enabled ? 'yes' : 'no' }}</td>
             <td><button :disabled="busy" @click="run(() => api.deleteReceiver(vrx.id))">Remove</button></td>
@@ -167,6 +186,11 @@ onMounted(refresh);
       <div class="row" v-if="rxDraft[d.id]">
         <label><span>Count</span><input type="number" min="1" max="256" v-model.number="rxDraft[d.id]!.count" /></label>
         <label><span>Name pattern</span><input v-model="rxDraft[d.id]!.pattern" /></label>
+        <label><span>Offered in <InfoHint text="The domain the receiver appears in. A stream connected to it flows to the bridge's other domain, where its sender is published." /></span>
+          <select v-model="rxDraft[d.id]!.side">
+            <option v-for="dom in bridgeOf(d)?.domains ?? []" :key="dom" :value="dom">{{ domainName(dom) }} → {{ domainName(other(bridgeOf(d), dom)) }}</option>
+          </select>
+        </label>
         <label><span>Format</span>
           <select v-model="rxDraft[d.id]!.format">
             <option value="video">video</option><option value="audio">audio</option><option value="data">data</option>
@@ -208,4 +232,6 @@ small { display: block; opacity: 0.65; }
 .bad { color: #d24b3e; }
 .warn { color: #c08a2e; font-size: 0.85rem; }
 .notice { color: #2e9e4f; }
+.both { align-self: center; font-size: 1.2rem; opacity: 0.6; padding-bottom: 0.2rem; }
+.dir { opacity: 0.75; white-space: nowrap; }
 </style>

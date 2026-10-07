@@ -126,9 +126,8 @@ async function buildEngine(reg: { internal: StubRegistry; partnerA: StubRegistry
       {
         id: 'b1',
         label: 'NMOS Federation',
-        sourceDomain: 'internal',
-        targetDomain: 'partnerA',
-        targetRegistries: ['regA'],
+        domains: ['internal', 'partnerA'],
+        registries: ['regA'],
         nat: true,
         enabled: true,
       },
@@ -576,4 +575,65 @@ test('an activation reaches the receiver subscription in the source registry at 
   state.connection('vrx1').active = { ...conn, sender_id: null, master_enable: false };
   await engine.deactivate('vrx1');
   assert.deepEqual(subscriptions().at(-1), { sender_id: null, active: false });
+});
+
+test('one bridge, both directions: a receiver offered on the far side streams back', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, cfg, drivers } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  // vrx1 is offered internally (internal → partnerA); vrx2 on the partner side, so its
+  // stream flows the other way. Same device, same bridge, same node.
+  cfg.receivers.push({ id: 'vrx2', label: 'Back RX 1', deviceId: 'dev1', format: 'video', enabled: true, side: 'partnerA' });
+  cfg.devices[0]!.receiverIds.push('vrx2');
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+
+  const labels = (stub: StubRegistry, type: string) => stub.posts.filter((p) => p.type === type).map((p) => p.data.label);
+  assert.deepEqual(labels(intReg, 'receiver'), ['Fed RX 1'], 'only the internally offered receiver is internal');
+  assert.deepEqual(labels(extReg, 'receiver'), ['Back RX 1'], 'the back channel receiver is offered on the partner side');
+  const nodeOf = (stub: StubRegistry) => stub.posts.find((p) => p.type === 'node')!.id;
+  assert.equal(nodeOf(intReg), nodeOf(extReg), 'one node in both domains');
+
+  const back = await engine.activate('vrx2', {
+    sender_id: 'partner-sender',
+    master_enable: true,
+    transport_file: { data: DUP_SDP, type: 'application/sdp' },
+    transport_params: [{}, {}],
+  });
+  assert.equal(back.sourceDomain, 'partnerA');
+  assert.equal(back.targetDomain, 'internal');
+  // From the INTERNAL pool now, and NAT from the partner's interfaces into ours.
+  assert.equal(back.allocation!.domainId, 'internal');
+  assert.equal(back.allocation!.groups.red, '239.201.0.1');
+  const red = drivers.red.applied.get(`${back.id}:red`)!;
+  assert.ok(red.includes('ip nat destination static 239.10.1.5 239.201.0.1 group 100'), red.join('\n'));
+  assert.ok(red.indexOf('interface Vlan901') < red.indexOf('interface Vlan101'), 'ingress on the partner side, egress internal');
+
+  // The sender appears internally, not at the partner.
+  assert.ok(intReg.posts.some((p) => p.type === 'sender'), 'published internally');
+  assert.equal(extReg.posts.filter((p) => p.type === 'sender').length, 0);
+
+  // And the forward direction still works next to it, from the partner's pool.
+  const fwd = await engine.activate('vrx1', {
+    sender_id: 'real-sender-uuid',
+    master_enable: true,
+    transport_file: { data: DUP_SDP, type: 'application/sdp' },
+    transport_params: [{}, {}],
+  });
+  assert.equal(fwd.targetDomain, 'partnerA');
+  assert.equal(fwd.allocation!.domainId, 'partnerA');
+  assert.ok(extReg.posts.some((p) => p.type === 'sender'), 'published at the partner');
+
+  // The device carries, per domain, the receivers offered there and the senders there.
+  const lastDevice = (stub: StubRegistry) => stub.posts.filter((p) => p.type === 'device').at(-1)!.data as { senders: string[]; receivers: string[] };
+  assert.equal(lastDevice(intReg).receivers.length, 1);
+  assert.equal(lastDevice(intReg).senders.length, 1);
+  assert.equal(lastDevice(extReg).receivers.length, 1);
+  assert.equal(lastDevice(extReg).senders.length, 1);
 });

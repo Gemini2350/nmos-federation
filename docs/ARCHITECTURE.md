@@ -61,12 +61,16 @@ partnerA → internal     bring a signal from partner A into the building
 partnerA → partnerB     transit, technically the same case
 ```
 
-A **federation device** has exactly one source and one target domain, and within that
-target domain any selection of registries. Fanning out into two **separate networks**
-is deliberately not a device feature: it needs two NAT translations, two pool
-reservations and two senders — so two devices. Fanning out to several registries **in
-the same network** is only a multiple registration of the same vTX and is supported
-directly.
+The direction belongs to the **port**, not to the bridge. A bridge joins two domains
+and carries streams both ways: each virtual receiver is offered in one of the two (its
+`side`) and its stream flows to the other; a copy runs away from the domain it was
+copied from. So `internal → partnerA` and `partnerA → internal` can sit side by side on
+one bridge, in one device, under one node.
+
+Fanning out into two **separate networks** is deliberately not a port feature: it needs
+two NAT translations, two pool reservations and two senders — so two bridges. Fanning
+out to several registries **in the same network** is only a multiple registration of
+the same vTX and is supported directly.
 
 ## 4. NMOS resource model
 
@@ -74,22 +78,26 @@ A **bridge** joins two domains and *is* an NMOS node. Every registry of either d
 shows that node under the bridge's name, and everything else hangs off it:
 
 ```
-Bridge "Eigenes Haus → Partner A"        ← the NMOS node, named by the operator
-  ├─ Device "Kameras zu Partner A"        ← one NMOS device
-  │    ├─ virtual receivers (source side)
-  │    └─ virtual senders    (target side)
-  └─ Device "Ton zu Partner A"
+Bridge "Eigenes Haus ⇄ Partner A"        ← the NMOS node, named by the operator
+  ├─ Device "Kameras"                     ← one NMOS device
+  │    ├─ virtual receiver, offered internally  → its sender appears at Partner A
+  │    └─ virtual receiver, offered at Partner A → its sender appears internally
+  └─ Device "Ton"
 ```
 
-The bridge carries the direction, the target registries and the NAT setting, so a device
-has nothing to decide — it is a group of ports on that bridge. Fanning out into two
-separate networks is two bridges, because it is two NAT translations.
+The bridge carries what both directions share: the node name, the registries it
+appears in, and the NAT setting. Its `registries` list works per domain — the listed
+registries of a domain, or all enabled ones of that domain when none of them is
+listed. A device has nothing to decide: it is a group of ports on the bridge, in either
+direction. Fanning out into a third network is a second bridge, because it is another
+NAT translation.
 
 The same node id is registered in each of the bridge's two domains, each time carrying
 *that* domain's address in `href` and `api.endpoints`. A registry only ever receives
 resources of its own domain, so the address is always locally correct while the identity
-stays one. The same goes for a device: one id, appearing on the source side with its
-receivers and on the target side with its senders — there is no separate mirror.
+stays one. The same goes for a device: one id, appearing in each domain with the
+receivers offered there and the senders that streams from the other side became —
+there is no separate mirror.
 
 A registry therefore shows **one node per bridge touching its domain**, each with one
 device per device. A registry serving a domain with two bridges holds two nodes, which is
@@ -100,11 +108,9 @@ and all of them are listed under `/nodes`.
 
 ### Devices
 
-The operator creates devices (name, source domain, target domain, target registries,
-NAT on/off) and assigns individual vRX to them. For every device the software
-automatically creates a **mirror device in the target domain** carrying the matching
-vTX; its name is derived and can be overridden. That keeps it visible in the foreign
-system which signals belong together.
+The operator creates devices under a bridge and adds virtual receivers to them, each
+with the domain it is offered in. The device appears in both domains under the same id,
+so a foreign system sees which signals belong together.
 
 ### Resources per channel
 
@@ -232,16 +238,17 @@ exists in one registry straight into another, without a virtual receiver to conn
 A copy is created on request rather than by waiting for an IS-05 activation.
 
 Both kinds hang off a device, and through it off its **bridge**, which supplies the
-direction, the target registries and the NAT setting — so internally a copy is the same thing as a
-federation channel, only with a different trigger.
+registries and the NAT setting. The direction comes from the registry the original is
+copied from: a copy always runs into the bridge's other domain. Internally a copy is
+the same thing as a federation channel, only with a different trigger.
 
 ### Sender copy
 
 ```
-sender S in the device's SOURCE domain
+sender S in one of the bridge's domains (the origin)
   → read S's SDP from its manifest_href
-  → allocate a pair from the TARGET domain's pool, program NAT on both fabrics
-  → publish source/flow/sender with the rewritten SDP in the target registries
+  → allocate a pair from the OTHER domain's pool, program NAT on both fabrics
+  → publish source/flow/sender with the rewritten SDP in the other domain's registries
 ```
 
 The origin SDP comes from the sender's own manifest instead of a controller's PATCH;
@@ -253,12 +260,11 @@ since nothing notifies us.
 
 Every copy can be renamed and shared individually, without touching its stream:
 
-- a **sender copy** is published in the registries of the bridge's target domain —
-  by default the bridge's target registries, but any subset of that domain's
-  registries can be chosen per copy, including ones the bridge does not publish into
-  (such a registry then gets the node and only the devices that have a sender there);
-- a **receiver proxy** is offered in the registries of the bridge's source domain —
-  by default all of them, or a chosen subset.
+- a **sender copy** is published, and a **receiver proxy** offered, in the registries
+  of the domain opposite its origin — by default the bridge's registries there, but any
+  subset of that domain's registries can be chosen per copy, including ones the bridge
+  does not list (such a registry then gets the node and only the devices that have
+  something there).
 
 Changing either only moves registrations: the NAT and the multicast groups stay as
 they are, and a deselected registry has the copy removed. At least one registry is
@@ -270,10 +276,10 @@ the default applies again.
 A copied receiver is a real ordering point, not a decorative IS-04 entry:
 
 ```
-receiver R in the device's TARGET domain
-  → create a proxy receiver P in the device's SOURCE domain (an ordinary vRX)
+receiver R in one of the bridge's domains (the origin)
+  → create a proxy receiver P in the OTHER domain (an ordinary vRX offered there)
   → someone connects a local stream to P
-  → the normal channel path runs: NAT into the target domain, publish the sender
+  → the normal channel path runs: NAT into R's domain, publish the sender
   → PATCH R over IS-05 to subscribe to the sender we just published
 ```
 
@@ -657,13 +663,22 @@ release the pool.
     "groupIdRange": [100, 999]
   },
 
-  "devices": [
-    { "id": "…", "label": "Federation OUT ▸ Partner A",
-      "sourceDomain": "internal", "targetDomain": "partnerA",
-      "targetRegistries": ["regA1", "regA2"],   // empty = all enabled ones of the domain
-      "nat": true,                              // per-device switch, on top of the global one
-      "receiverIds": ["…"] }
+  "bridges": [
+    { "id": "1", "label": "Eigenes Haus ⇄ Partner A",   // the NMOS node's name
+      "domains": ["internal", "partnerA"],              // no direction — each port has one
+      "registries": ["regA1"],     // per domain: listed ones, or all when none of it is listed
+      "nat": true,                 // per-bridge switch, on top of the global one
+      "enabled": true }
+  ],
+  "devices": [{ "id": "…", "label": "Kameras", "bridgeId": "1", "receiverIds": ["…"] }],
+  "receivers": [
+    { "id": "…", "label": "Kameras 1", "deviceId": "…", "format": "video", "enabled": true,
+      "side": "internal" }         // offered here; the stream flows to the other domain
   ]
+
+  // Older files with a directed bridge (sourceDomain/targetDomain/targetRegistries) are
+  // migrated on load: domains in the old order, registries kept, every receiver offered
+  // on the old source side.
 }
 ```
 

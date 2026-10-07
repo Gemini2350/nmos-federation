@@ -43,7 +43,7 @@ async function setup() {
     ...structuredClone(DEFAULT_CONFIG),
     domains: [domain('internal', 'internal', '239.201.0.0'), domain('partner', 'external', '239.200.0.0')],
     registries: [],
-    bridges: [{ id: 'b1', label: 'Bridge', sourceDomain: 'internal', targetDomain: 'partner', targetRegistries: [], nat: false, enabled: true }],
+    bridges: [{ id: 'b1', label: 'Bridge', domains: ['internal', 'partner'], registries: [], nat: false, enabled: true }],
     devices: [{ id: 'd1', label: 'Cams', bridgeId: 'b1', receiverIds: ['rx1'] }],
     receivers: [{ id: 'rx1', label: 'CAM 1', deviceId: 'd1', format: 'video', enabled: true }],
     mirrors: [],

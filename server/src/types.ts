@@ -89,20 +89,23 @@ export interface Channel {
 /**
  * A bridge between two domains — and the NMOS node everything under it belongs to.
  *
- * It carries the direction, the target registries and the NAT setting, so a device
- * underneath has nothing to decide: it is a group of ports on this bridge. Fanning out
- * into two separate networks is two bridges, because it is two NAT translations.
+ * It has no direction. Each port on it does: a virtual receiver is offered in one of the
+ * two domains and its stream flows to the other, a copy flows away from the domain it
+ * was copied from. The bridge carries what both directions share — the node name, the
+ * registries it appears in and the NAT setting. Fanning out into a third network is a
+ * second bridge, because it is another NAT translation.
  */
 export interface Bridge {
   id: string;
   /** The NMOS node's label, as every registry will show it. */
   label: string;
-  /** Domain the virtual receivers live in. */
-  sourceDomain: DomainId;
-  /** Domain the virtual senders appear in. */
-  targetDomain: DomainId;
-  /** Registry IDs within the target domain; empty = all enabled ones of that domain. */
-  targetRegistries: string[];
+  /** The two domains it joins. The order only decides which side the GUI shows first. */
+  domains: [DomainId, DomainId];
+  /**
+   * Registries the node appears in, from either domain. Per domain: the ones listed
+   * here, or all enabled ones of that domain when none of its registries is listed.
+   */
+  registries: string[];
   /** NAT for everything on this bridge; false = SDPs are copied verbatim. */
   nat: boolean;
   enabled: boolean;
@@ -123,7 +126,12 @@ export interface VirtualReceiver {
   format: 'video' | 'audio' | 'data';
   enabled: boolean;
   /**
-   * Set when this receiver is a proxy for a real receiver in the target domain: once
+   * Domain this receiver is offered in — one of its bridge's two. A stream connected
+   * here flows to the other one. Missing = the bridge's first domain.
+   */
+  side?: DomainId;
+  /**
+   * Set when this receiver is a proxy for a real receiver in the other domain: once
    * a stream is connected here, the original is driven over IS-05 so the essence
    * actually arrives there. Created through a receiver copy, see MirrorEntry.
    */

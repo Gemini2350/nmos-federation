@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { MirrorEntry } from '../config/schema.js';
 import type { Bridge } from '../types.js';
 import { listInterfaces } from '../nmos/resources.js';
-import { nextId, proxyLabel } from '../config/schema.js';
+import { nextId, otherDomain, proxyLabel } from '../config/schema.js';
 import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
 
@@ -72,11 +72,10 @@ export function registerRestApi(
       devices: store.current.devices.filter((d) => d.bridgeId === b.id).length,
       // A renamed or removed domain leaves the bridge pointing at nothing. Say so rather
       // than letting it look configured while registering nothing.
-      detached: !domainIds.has(b.sourceDomain) || !domainIds.has(b.targetDomain),
+      detached: b.domains.some((d) => !domainIds.has(d)),
       missing: {
-        sourceDomain: domainIds.has(b.sourceDomain) ? null : b.sourceDomain,
-        targetDomain: domainIds.has(b.targetDomain) ? null : b.targetDomain,
-        registries: b.targetRegistries.filter((r) => !registryIds.has(r)),
+        domains: b.domains.filter((d) => !domainIds.has(d)),
+        registries: b.registries.filter((r) => !registryIds.has(r)),
       },
     }));
   });
@@ -86,9 +85,8 @@ export function registerRestApi(
     const bridge: Bridge = {
       id: nextId(cfg.bridges.map((b) => b.id)),
       label: req.body.label ?? 'NMOS Federation',
-      sourceDomain: req.body.sourceDomain ?? '',
-      targetDomain: req.body.targetDomain ?? '',
-      targetRegistries: req.body.targetRegistries ?? [],
+      domains: [req.body.domains?.[0] ?? '', req.body.domains?.[1] ?? ''],
+      registries: req.body.registries ?? [],
       nat: req.body.nat ?? true,
       enabled: req.body.enabled ?? true,
     };
@@ -110,14 +108,13 @@ export function registerRestApi(
     const after: Bridge = { ...before, ...req.body, id: req.params.id };
     cfg.bridges[i] = after;
 
-    // Direction, target registries and NAT shape every channel on this bridge, so a
-    // change to them invalidates all of them. Rebuild rather than leave channels behind
-    // that no longer match their configuration.
+    // Domains, registries and NAT shape every channel on this bridge, so a change to
+    // them invalidates all of them. Rebuild rather than leave channels behind that no
+    // longer match their configuration.
     const rebuild =
       before.nat !== after.nat ||
-      before.sourceDomain !== after.sourceDomain ||
-      before.targetDomain !== after.targetDomain ||
-      JSON.stringify(before.targetRegistries) !== JSON.stringify(after.targetRegistries);
+      JSON.stringify(before.domains) !== JSON.stringify(after.domains) ||
+      JSON.stringify(before.registries) !== JSON.stringify(after.registries);
 
     const deviceIds = new Set(cfg.devices.filter((d) => d.bridgeId === after.id).map((d) => d.id));
     const affected = rebuild ? engine.channels().filter((c) => deviceIds.has(c.deviceId)).map((c) => c.receiverId) : [];
@@ -237,7 +234,7 @@ export function registerRestApi(
   });
 
   // ---- Virtual receivers -------------------------------------------------
-  app.post<{ Params: { id: string }; Body: { count?: number; pattern?: string; format?: VirtualReceiver['format'] } }>(
+  app.post<{ Params: { id: string }; Body: { count?: number; pattern?: string; format?: VirtualReceiver['format']; side?: string } }>(
     '/api/devices/:id/receivers',
     async (req, reply) => {
       const cfg = structuredClone(store.current);
@@ -246,6 +243,13 @@ export function registerRestApi(
       const count = Math.max(1, Math.min(256, req.body?.count ?? 1));
       const pattern = req.body?.pattern ?? `${device.label} {n}`;
       const format = req.body?.format ?? 'video';
+      // The side decides the direction: offered there, its stream flows to the other one.
+      const bridge = cfg.bridges.find((b) => b.id === device.bridgeId);
+      if (!bridge) return reply.code(400).send({ error: 'the device hangs on no bridge' });
+      const side = req.body?.side ?? bridge.domains[0];
+      if (!bridge.domains.includes(side)) {
+        return reply.code(400).send({ error: `domain ${side} is not one of bridge "${bridge.label}"'s two` });
+      }
       const existing = cfg.receivers.filter((r) => r.deviceId === device.id).length;
       const created: VirtualReceiver[] = [];
       for (let n = 1; n <= count; n++) {
@@ -255,6 +259,7 @@ export function registerRestApi(
           deviceId: device.id,
           format,
           enabled: true,
+          side,
         };
         cfg.receivers.push(vrx);
         device.receiverIds.push(vrx.id);
@@ -414,6 +419,7 @@ export function registerRestApi(
       const channel = channels.find((c) => c.receiverId === key) ?? null;
       const device = store.current.devices.find((d) => d.id === m.deviceId) ?? null;
       const shared = engine.mirrorRegistries(m);
+      const dir = engine.mirrorDirection(m);
       return {
         ...m,
         // The name the copy carries in the registries. A proxy's lives on its receiver,
@@ -432,8 +438,10 @@ export function registerRestApi(
                 id: device.id,
                 label: device.label,
                 bridge: bridge?.label ?? null,
-                sourceDomain: bridge?.sourceDomain ?? null,
-                targetDomain: bridge?.targetDomain ?? null,
+                // Which way this copy runs: a sender copy from its origin to the other
+                // side; a proxy's stream from the other side to the original receiver.
+                from: dir ? (m.kind === 'sender' ? dir.origin : dir.other) : null,
+                to: dir ? (m.kind === 'sender' ? dir.other : dir.origin) : null,
                 nat: bridge?.nat ?? false,
               };
             })()
@@ -454,6 +462,14 @@ export function registerRestApi(
     if (!device) return reply.code(404).send({ error: 'unknown device' });
     if (cfg.mirrors.some((m) => m.registryId === b.registryId && m.originId === b.originId)) {
       return reply.code(409).send({ error: 'this resource is already copied' });
+    }
+    // A copy runs away from the domain it is copied from, so that domain has to be one
+    // end of the device's bridge; the other end is where the copy appears.
+    const bridge = cfg.bridges.find((x) => x.id === device.bridgeId);
+    const origin = cfg.registries.find((r) => r.id === b.registryId)?.domainId;
+    const other = bridge && origin ? otherDomain(bridge, origin) : undefined;
+    if (!bridge || !other) {
+      return reply.code(400).send({ error: `that registry is in neither domain of the device's bridge` });
     }
 
     const mirror: MirrorEntry = {
@@ -479,6 +495,7 @@ export function registerRestApi(
         deviceId: device.id,
         format: b.format ?? 'video',
         enabled: true,
+        side: other,
         proxyFor: {
           registryId: mirror.registryId,
           receiverId: mirror.originId,

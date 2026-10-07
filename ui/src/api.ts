@@ -74,15 +74,16 @@ export interface Switch {
 export interface Bridge {
   id: string;
   label: string;
-  sourceDomain: string;
-  targetDomain: string;
-  targetRegistries: string[];
+  /** The two domains it joins; the direction belongs to each port. */
+  domains: [string, string];
+  /** Per domain: the listed ones, or all of that domain when none is listed. */
+  registries: string[];
   nat: boolean;
   enabled: boolean;
   nodeId?: string;
   devices?: number;
   detached?: boolean;
-  missing?: { sourceDomain: string | null; targetDomain: string | null; registries: string[] };
+  missing?: { domains: string[]; registries: string[] };
 }
 
 /** A group of ports on a bridge — one NMOS device under the bridge's node. */
@@ -102,6 +103,8 @@ export interface VirtualReceiver {
   deviceId: string;
   format: 'video' | 'audio' | 'data';
   enabled: boolean;
+  /** Domain it is offered in; its stream flows to the bridge's other domain. */
+  side?: string;
 }
 
 export interface Config {
@@ -189,7 +192,8 @@ export interface Mirror {
   registries: string[];
   registryChoices: string[];
   proxyReceiverId: string | null;
-  device: { id: string; label: string; sourceDomain: string; targetDomain: string; nat: boolean } | null;
+  /** `from`/`to`: which way this copy's stream runs. */
+  device: { id: string; label: string; from: string | null; to: string | null; nat: boolean } | null;
   channel: Channel | null;
 }
 
@@ -241,8 +245,8 @@ export interface Status {
     id: string;
     label: string;
     nodeId: string;
-    sourceDomain: string;
-    targetDomain: string;
+    domains: [string, string];
+    registries: string[];
     nat: boolean;
     enabled: boolean;
     usable: boolean;
@@ -297,7 +301,7 @@ export const api = {
       body: JSON.stringify(d),
     }),
   deleteDevice: (id: string) => req<{ ok: boolean }>(`/devices/${id}`, { method: 'DELETE' }),
-  addReceivers: (deviceId: string, body: { count: number; pattern: string; format: VirtualReceiver['format'] }) =>
+  addReceivers: (deviceId: string, body: { count: number; pattern: string; format: VirtualReceiver['format']; side?: string }) =>
     req<VirtualReceiver[]>(`/devices/${deviceId}/receivers`, { method: 'POST', body: JSON.stringify(body) }),
   renameReceiver: (id: string, label: string) =>
     req<VirtualReceiver>(`/receivers/${id}`, { method: 'PUT', body: JSON.stringify({ label }) }),

@@ -74,14 +74,16 @@ The **Channels** page shows a status line per registry — resolved address, sta
 how many of our resources it holds, the age of the last heartbeat and the last error —
 plus a Test button that probes one registry without changing anything.
 
-Then create a **bridge** (from your domain to a partner's) — that is the NMOS node every
-registry will show. Add **devices** under it, and virtual receivers into those. The
-receivers appear in the registry immediately; connecting a source to one of them with
-your usual controller creates the virtual sender on the other side.
+Then create a **bridge** between your domain and a partner's — that is the NMOS node
+every registry will show. It carries streams **both ways**. Add **devices** under it, and
+virtual receivers into those; each receiver is offered in one of the two domains and its
+stream flows to the other. The receivers appear in the registry immediately; connecting
+a source to one of them with your usual controller creates the virtual sender on the
+other side.
 
 ```
-Bridge "Eigenes Haus → Partner A"   ← the node, named by you
-  ├─ Device "Kameras"               ← one NMOS device
+Bridge "Eigenes Haus ⇄ Partner A"   ← the node, named by you
+  ├─ Device "Kameras"               ← one NMOS device, ports in either direction
   └─ Device "Ton"
 ```
 
@@ -91,15 +93,16 @@ The **Copy** page is the second operating mode: browse a registry and copy what 
 already there, without going through a virtual receiver.
 
 - **Sender copy** — reads the original's SDP from its manifest, NATs the stream into
-  the target domain and publishes the copy there. *Refresh* re-reads the manifest if
+  the bridge's other domain and publishes the copy there. *Refresh* re-reads the manifest if
   the origin changed.
-- **Receiver proxy** — creates a proxy receiver in the source domain. Connect a stream
+- **Receiver proxy** — creates a proxy receiver in the bridge's other domain. Connect a stream
   to it and the original receiver in the other registry is driven over IS-05, so the
   essence actually arrives. The original has to advertise an `sr-ctrl` control;
   receivers that do not are shown as not controllable.
 
-Both hang off a device, and through it off its bridge, which supplies the direction, the
-target registries and the NAT setting.
+Both hang off a device, and through it off its bridge, which supplies the registries and
+the NAT setting. The direction comes from the registry you copy from: a copy always runs
+into the bridge's other domain. Each copy can be renamed and given its own registries.
 
 `network_mode: host` is required — the software needs one interface with a real IP
 per domain (node href, manifest fetch, mDNS). Configuration and state live in
