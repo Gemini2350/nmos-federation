@@ -406,7 +406,8 @@ export class Engine {
         // in the other one. The same device appears in both, carrying whatever exists
         // there — receivers of one direction next to senders of the other.
         const vrxList = this.receiversOf(device).filter((v) => this.sideOf(v, bridge) === domainId);
-        const hints = this.groupHintsOf(device);
+        // Off: no hints at all, the stored groups simply wait.
+        const hints = bridge.grouping === false ? new Map<string, GroupHint>() : this.groupHintsOf(device);
         {
           for (const vrx of vrxList) {
             const conn = this.deps.state.connection(vrx.id).active;

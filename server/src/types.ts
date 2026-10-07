@@ -110,6 +110,11 @@ export interface Bridge {
   registries: string[];
   /** NAT for everything on this bridge; false = SDPs are copied verbatim. */
   nat: boolean;
+  /**
+   * Natural grouping (BCP-002-01 group hints) on this bridge's ports. Missing = on.
+   * Off publishes no group hints at all; the groups and roles set stay stored.
+   */
+  grouping?: boolean;
   enabled: boolean;
 }
 

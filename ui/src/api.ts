@@ -79,6 +79,8 @@ export interface Bridge {
   /** Per domain: the listed ones, or all of that domain when none is listed. */
   registries: string[];
   nat: boolean;
+  /** Natural grouping on this bridge's ports; missing = on. */
+  grouping?: boolean;
   enabled: boolean;
   nodeId?: string;
   devices?: number;

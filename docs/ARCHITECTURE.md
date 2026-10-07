@@ -127,6 +127,10 @@ so a controller shows the video, audio and ancillary of one source together
 The role can be overridden the same way, on top of whichever group applies; empty
 means the original's or the derived one. A role alone makes no group.
 
+Grouping is a per-bridge switch (`bridge.grouping`, missing = on), like NAT. Off
+publishes no group hints at all; the groups and roles set stay stored and return when
+it is switched back on. Switching it changes registrations only, no channel is rebuilt.
+
 The sender a channel publishes on the other side carries the same hint as the port it
 came from, so the grouping holds across the bridge. Group names are only unique per
 device ("Receive0" exists on every SDI card), and one federation device can hold copies

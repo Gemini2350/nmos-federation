@@ -137,6 +137,7 @@ export function registerRestApi(
       domains: [req.body.domains?.[0] ?? '', req.body.domains?.[1] ?? ''],
       registries: req.body.registries ?? [],
       nat: req.body.nat ?? true,
+      grouping: req.body.grouping ?? true,
       enabled: req.body.enabled ?? true,
     };
     cfg.bridges.push(bridge);
@@ -220,7 +221,8 @@ export function registerRestApi(
     const bridges = new Map(store.current.bridges.map((b) => [b.id, b]));
     const channels = engine.channels();
     return store.current.devices.map((d) => {
-      const hints = engine.groupHintsOf(d);
+      const grouping = bridges.get(d.bridgeId)?.grouping !== false;
+      const hints = grouping ? engine.groupHintsOf(d) : new Map();
       return {
       ...d,
       // A proxy carries its original's name, so the GUI can show where it came from

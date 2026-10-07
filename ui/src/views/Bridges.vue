@@ -12,7 +12,8 @@ const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const busy = ref(false);
 
-const draft = ref({ label: 'NMOS Federation', domains: ['', ''] as [string, string], registries: [] as string[], nat: true });
+const draft = ref({ label: 'NMOS Federation', domains: ['', ''] as [string, string], registries: [] as string[], nat: true, grouping: true });
+const groupingOn = (d: Device) => bridgeOf(d)?.grouping !== false;
 const deviceDraft = ref<Record<string, string>>({});
 const rxDraft = ref<Record<string, { count: number; pattern: string; format: VirtualReceiver['format']; side: string }>>({});
 
@@ -142,6 +143,10 @@ onMounted(refresh);
         <input type="checkbox" v-model="draft.nat" />
         <span>NAT<InfoHint text="Off copies every SDP verbatim and touches no switch — right when the address plans do not collide." /></span>
       </label>
+      <label class="check">
+        <input type="checkbox" v-model="draft.grouping" />
+        <span>Grouping<InfoHint text="Natural grouping (BCP-002-01): ports carry group hints so controllers show video, audio and ancillary of one source together. Off publishes no hints; groups you set stay stored." /></span>
+      </label>
       <button :disabled="busy" @click="run(() => api.createBridge(draft))">Create bridge</button>
     </div>
     <fieldset v-for="dom in draft.domains.filter((x, i) => x && draft.domains.indexOf(x) === i)" :key="dom" v-show="registriesOf(dom).length">
@@ -175,6 +180,10 @@ onMounted(refresh);
           <input type="checkbox" :checked="b.nat" @change="patchBridge(b, { nat: ($event.target as HTMLInputElement).checked })" />
           NAT
         </label>
+        <label class="check" title="Natural grouping (BCP-002-01) — off publishes no group hints; the groups set stay stored">
+          <input type="checkbox" :checked="b.grouping !== false" @change="patchBridge(b, { grouping: ($event.target as HTMLInputElement).checked })" />
+          Grouping
+        </label>
         <button :disabled="busy" @click="run(() => api.deleteBridge(b.id))">Delete bridge</button>
       </div>
     </header>
@@ -185,14 +194,14 @@ onMounted(refresh);
         <button :disabled="busy" @click="run(() => api.deleteDevice(d.id))">Remove device</button>
       </header>
       <table v-if="d.receivers?.length">
-        <thead><tr><th>Virtual receiver</th><th>Group <InfoHint text="Natural grouping (BCP-002-01): controllers show ports of one group together — video, audio and ancillary of one source. A copy keeps its original's group (shown in grey); type a name to regroup it, clear it to go back. Below it the role, likewise: grey is the original's or the one derived from the format, typed text replaces it." /></th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
+        <thead><tr><th>Virtual receiver</th><th v-if="groupingOn(d)">Group <InfoHint text="Natural grouping (BCP-002-01): controllers show ports of one group together — video, audio and ancillary of one source. A copy keeps its original's group (shown in grey); type a name to regroup it, clear it to go back. Below it the role, likewise: grey is the original's or the one derived from the format, typed text replaces it." /></th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="vrx in d.receivers" :key="vrx.id">
             <td>
               <EditableName :value="vrx.label" @save="(label) => rename(() => api.renameReceiver(vrx.id, label))" />
               <small v-if="vrx.origin" class="orig">proxy of {{ vrx.origin.label }} · {{ registryName(vrx.origin.registryId) }}</small>
             </td>
-            <td>
+            <td v-if="groupingOn(d)">
               <EditableName
                 :value="vrx.group ?? ''"
                 allow-empty
@@ -218,14 +227,14 @@ onMounted(refresh);
         </tbody>
       </table>
       <table v-if="d.senderCopies?.length" class="copies">
-        <thead><tr><th>Copied sender</th><th>Group</th><th>Direction</th><th>State</th><th></th></tr></thead>
+        <thead><tr><th>Copied sender</th><th v-if="groupingOn(d)">Group</th><th>Direction</th><th>State</th><th></th></tr></thead>
         <tbody>
           <tr v-for="c in d.senderCopies" :key="c.id">
             <td>
               <EditableName :value="c.name" @save="(label) => rename(() => api.updateMirror(c.id, { label }))" />
               <small class="orig">copy of {{ c.originLabel }} · {{ registryName(c.registryId) }}</small>
             </td>
-            <td>
+            <td v-if="groupingOn(d)">
               <EditableName
                 :value="c.group ?? ''"
                 allow-empty

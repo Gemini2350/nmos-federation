@@ -661,3 +661,29 @@ test('a registry left out of a bridge is not heartbeated for its node', async (t
   assert.equal(leftOut.heartbeats, 0, 'no heartbeat for a node it does not hold');
   assert.equal(extReg.heartbeats, 1);
 });
+
+test('natural grouping can be switched off per bridge — the groups set stay stored', async (t) => {
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  cfg.receivers[0]!.group = 'Cam 1';
+  t.after(async () => {
+    await engine.stop();
+    intReg.server.close();
+    extReg.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  const tags = () => intReg.posts.filter((p) => p.type === 'receiver').at(-1)!.data.tags as Record<string, string[]>;
+  assert.deepEqual(tags()['urn:x-nmos:tag:grouphint/v1.0'], ['Cam 1:Video 1']);
+
+  cfg.bridges[0]!.grouping = false;
+  await engine.syncRegistries();
+  assert.deepEqual(tags(), {}, 'no hint published while off');
+  assert.equal(cfg.receivers[0]!.group, 'Cam 1', 'the group itself is kept');
+
+  cfg.bridges[0]!.grouping = true;
+  await engine.syncRegistries();
+  assert.deepEqual(tags()['urn:x-nmos:tag:grouphint/v1.0'], ['Cam 1:Video 1'], 'and back when switched on');
+});
