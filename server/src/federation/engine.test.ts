@@ -637,3 +637,27 @@ test('one bridge, both directions: a receiver offered on the far side streams ba
   assert.equal(lastDevice(extReg).receivers.length, 1);
   assert.equal(lastDevice(extReg).senders.length, 1);
 });
+
+test('a registry left out of a bridge is not heartbeated for its node', async (t) => {
+  // Heartbeating "every node of the domain" hit registries the bridge was deliberately
+  // not registered in; each 404 read as a registry restart and re-registered
+  // everything there every five seconds.
+  const intReg = await startStubRegistry();
+  const extReg = await startStubRegistry();
+  const leftOut = await startStubRegistry();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-fed-'));
+  const { engine, cfg } = await buildEngine({ internal: intReg, partnerA: extReg }, dir);
+  cfg.registries.push({ id: 'regB', label: 'Partner B', domainId: 'partnerA', mode: 'manual', ip: leftOut.ip, port: leftOut.port, version: 'v1.3', enabled: true });
+  t.after(async () => {
+    await engine.stop();
+    for (const s of [intReg, extReg, leftOut]) s.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start(); // the bridge lists only regA on the partner side
+  assert.equal(leftOut.posts.length, 0, 'nothing registered in the left-out registry');
+  const clients = (engine as unknown as { registries: Map<string, { heartbeat(): Promise<void> }> }).registries;
+  await clients.get('regB')!.heartbeat();
+  await clients.get('regA')!.heartbeat();
+  assert.equal(leftOut.heartbeats, 0, 'no heartbeat for a node it does not hold');
+  assert.equal(extReg.heartbeats, 1);
+});

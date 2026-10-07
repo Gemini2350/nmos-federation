@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -120,4 +121,69 @@ test('renames sent in quick succession all survive — writes do not overwrite e
   );
   assert.deepEqual(results.map((r) => r.statusCode), [200, 200, 200, 200, 200]);
   assert.deepEqual(store.current.receivers.map((r) => r.label), ids.map((id) => `new ${id}`));
+});
+
+test('a receiver deleted in the GUI leaves the registry too, not only the configuration', async (t) => {
+  // Every settings save rebuilt the registry clients, which threw away their record of
+  // what they had registered — so a removal never reached the registry and the
+  // receiver stayed there, heartbeated by its node, until the next restart.
+  const deletes: string[] = [];
+  const reg = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      if (req.method === 'DELETE') {
+        deletes.push(req.url ?? '');
+        res.writeHead(204);
+        return res.end();
+      }
+      if (req.url?.includes('/query/')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end('[]');
+      }
+      res.writeHead(req.method === 'POST' && req.url?.endsWith('/resource') ? 201 : 200, { 'content-type': 'application/json' });
+      res.end(body || '{}');
+    });
+  });
+  await new Promise<void>((r) => reg.listen(0, '127.0.0.1', r));
+  const port = (reg.address() as { port: number }).port;
+
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-http-'));
+  const store = new ConfigStore(dir);
+  await store.load();
+  const cfg = structuredClone(store.current);
+  cfg.domains.push({ ...structuredClone(cfg.domains[0]!), id: '2', label: 'Partner', kind: 'external' });
+  cfg.domains[1]!.pool.base = '239.202.0.0';
+  cfg.registries = [{ id: '1', label: 'R', domainId: '1', mode: 'manual', ip: '127.0.0.1', port, version: 'v1.3', enabled: true }];
+  cfg.bridges = [{ id: '1', label: 'Bridge', domains: ['1', '2'], registries: [], nat: false, enabled: true }];
+  cfg.devices = [{ id: 'd1', label: 'D', bridgeId: '1', receiverIds: ['r1', 'r2'] }];
+  cfg.receivers = ['r1', 'r2'].map((id) => ({ id, label: id, deviceId: 'd1', format: 'video' as const, enabled: true }));
+  await store.save(cfg);
+  const state = new StateStore(dir);
+  await state.load();
+  const sw = { host: '', user: '', password: '', tls: true, join: 'igmpStatic' as const };
+  const engine = new Engine({
+    config: () => store.current,
+    state,
+    pools: new PoolManager(store.current.domains, store.current.nat.groupIdRange),
+    drivers: { red: new MockSwitchDriver('red', sw), blue: new MockSwitchDriver('blue', sw) },
+  });
+  await engine.start();
+  const app = Fastify();
+  acceptEmptyJson(app);
+  await app.register(fastifyWebsocket);
+  // Exactly what index.ts hands in after a settings change.
+  registerRestApi(app, store, engine, state, () => engine.restartRegistries());
+  t.after(async () => {
+    await app.close();
+    await engine.stop();
+    reg.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const res = await app.inject({ method: 'DELETE', url: '/api/receivers/r1' });
+  assert.equal(res.statusCode, 200);
+  const r1 = engine.receiverNmosId('r1');
+  assert.ok(deletes.some((u) => u.endsWith(`/receivers/${r1}`)), `not unregistered: ${deletes.join(', ') || 'no DELETE at all'}`);
+  assert.ok(!deletes.some((u) => u.endsWith(`/receivers/${engine.receiverNmosId('r2')}`)), 'the other one stays');
 });

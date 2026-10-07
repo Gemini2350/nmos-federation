@@ -65,7 +65,13 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
   test.
 - **`registered` is in-memory only.** After a restart the software cannot unregister
   what it left in a registry, so `Engine.cleanupOrphans()` finds it through the query
-  API instead. Anything that removes resources has to run it, or they stay there forever.
+  API instead. Within a run, removals work only because a registry client — and with it
+  `registered` — **survives a settings save** when its registry did not change
+  (`buildRegistryClients`). Rebuilding all clients on every save silently broke every
+  removal in the GUI.
+- **A client heartbeats exactly the nodes it registered.** Never hand it "all nodes of
+  the domain": a registry left out of a bridge answers 404, which reads as a registry
+  restart and re-registers everything every 5 s.
 - **A bridge is the node, and it has no direction.** One id, registered in both its
   domains with that domain's address; a device is likewise one id appearing on both
   sides with its local children. There is no mirror resource. The direction belongs to

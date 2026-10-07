@@ -172,6 +172,9 @@ export class RegistryClient {
       throw new RegistryError(this.lastError, res.status);
     }
     this.registered.delete(`${type}:${id}`);
+    // A node that is gone must not be heartbeated: the registry would answer 404 and
+    // the client would take that for a registry restart and re-register everything.
+    if (type === 'node') this.nodeIds = this.nodeIds.filter((n) => n !== id);
     log.debug({ registry: this.cfg.id, type, id, status: res.status }, 'unregistered');
   }
 
@@ -218,8 +221,14 @@ export class RegistryClient {
     this.heartbeatFailures++;
   }
 
-  startHeartbeat(nodeIds: string[], intervalMs = 5000): void {
-    this.nodeIds = [...new Set([...this.nodeIds, ...nodeIds])];
+  /**
+   * Heartbeats exactly the nodes this client registered — `register` adds them,
+   * `unregister` removes them. Handing in "every node of the domain" heartbeated nodes
+   * a registry was deliberately left out of (a bridge's registries are chosen per
+   * domain); each answered 404, which reads as a registry restart and re-registered
+   * everything every five seconds.
+   */
+  startHeartbeat(intervalMs = 5000): void {
     this.stopHeartbeat();
     this.heartbeatIntervalMs = intervalMs;
     this.timer = setInterval(() => {

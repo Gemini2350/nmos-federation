@@ -256,13 +256,6 @@ export class Engine {
     return this.cfg.devices.filter((d) => d.bridgeId === bridge.id);
   }
 
-  /** Every node a registry in this domain holds — one per bridge touching it. */
-  nodeIdsFor(domainId: string): string[] {
-    return this.usableBridges()
-      .filter((b) => b.domains.includes(domainId))
-      .map((b) => this.nodeId(b.id));
-  }
-
   receiversOf(device: FederationDevice): VirtualReceiver[] {
     return this.cfg.receivers.filter((r) => r.deviceId === device.id);
   }
@@ -666,13 +659,30 @@ export class Engine {
   }
 
   // -- Lifecycle -----------------------------------------------------------
+  /**
+   * Brings the clients in line with the configured registries, keeping every client
+   * whose registry settings did not change.
+   *
+   * Keeping them is what makes removals work. A client's `registered` map is the only
+   * record of what this run put into its registry; rebuilding every client on every
+   * settings save threw it away, so a receiver deleted in the GUI was never unregistered
+   * and stayed in the registry — heartbeated by its node — until the next restart's
+   * orphan cleanup. A client whose registry did change starts fresh; what its old
+   * registry held is left to the cleanup and the registry's own expiry, as before.
+   */
   private buildRegistryClients(): void {
-    for (const client of this.registries.values()) client.stopHeartbeat();
-    this.registries.clear();
-    this.queries.clear();
-    this.is05.clear();
-    for (const reg of this.cfg.registries.filter((r) => r.enabled)) {
-      const client = new RegistryClient(reg, (c) => {
+    const wanted = new Map(this.cfg.registries.filter((r) => r.enabled).map((r) => [r.id, r]));
+    for (const [id, client] of this.registries) {
+      const reg = wanted.get(id);
+      if (reg && JSON.stringify(reg) === JSON.stringify(client.cfg)) continue;
+      client.stopHeartbeat();
+      this.registries.delete(id);
+      this.queries.delete(id);
+      this.is05.delete(id);
+    }
+    for (const reg of wanted.values()) {
+      if (this.registries.has(reg.id)) continue;
+      const client = new RegistryClient(structuredClone(reg), (c) => {
         this.syncRegistry(c).catch(() => {});
       });
       this.registries.set(reg.id, client);
@@ -712,7 +722,7 @@ export class Engine {
     await this.probeIdleRegistries();
     if (cleanup) await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
-      client.startHeartbeat(this.nodeIdsFor(client.cfg.domainId));
+      client.startHeartbeat();
     }
   }
 
@@ -737,7 +747,7 @@ export class Engine {
     // Anything a previous run left behind is only findable through the query API.
     await this.cleanupOrphans().catch((e) => log.warn({ err: String(e) }, 'orphan cleanup failed'));
     for (const client of this.registries.values()) {
-      client.startHeartbeat(this.nodeIdsFor(client.cfg.domainId));
+      client.startHeartbeat();
     }
     this.reconcileTimer = setInterval(() => void this.reconcile(), 30_000);
     this.reconcileTimer.unref?.();
