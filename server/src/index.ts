@@ -150,6 +150,15 @@ async function main() {
   await gui.listen({ host: '0.0.0.0', port: cfg.port });
 
   await engine.start();
+  // Copies made before grouping existed get their original's group hint once — through
+  // the REST route, so it queues behind any write that is already running.
+  void gui
+    .inject({ method: 'POST', url: '/api/mirrors/origins' })
+    .then((res) => {
+      const body = res.json() as { updated: number; failed: string[] };
+      if (body.updated || body.failed.length) log.info(body, 'origin group hints read');
+    })
+    .catch((e) => log.warn({ err: String(e) }, 'origin group hints not read'));
 
   log.info(
     {

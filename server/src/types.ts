@@ -131,6 +131,11 @@ export interface VirtualReceiver {
    */
   side?: DomainId;
   /**
+   * Natural group (BCP-002-01) the operator gave this receiver; the role is derived.
+   * Empty = a proxy keeps its original's group, a free receiver has none.
+   */
+  group?: string;
+  /**
    * Set when this receiver is a proxy for a real receiver in the other domain: once
    * a stream is connected here, the original is driven over IS-05 so the essence
    * actually arrives there. Created through a receiver copy, see MirrorEntry.

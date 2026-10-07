@@ -243,3 +243,15 @@ test('a JPEG XS flow, source and sender validate', () => {
   assert.equal(sender.bit_rate, 199750);
   assert.equal(sender.st2110_21_sender_type, 'urn:x-nmos:st2110_21_sender_type:2110TPW');
 });
+
+test('receivers and senders carrying a group hint validate', () => {
+  const tags = { 'urn:x-nmos:tag:grouphint/v1.0': ['Cam 1:Video 1'] };
+  check(
+    'receiver_video.json',
+    buildReceiver('e2e2e2e2-1111-5111-8111-111111111111', 'd1d1d1d1-1111-5111-8111-111111111111', 'RX', 'urn:x-nmos:format:video', ['video/raw'], ['eth0'], { sender_id: null, active: false }, tags),
+  );
+  check(
+    'sender.json',
+    buildSender('c4c4c4c4-1111-5111-8111-111111111111', 'b1b1b1b1-1111-5111-8111-111111111111', 'd1d1d1d1-1111-5111-8111-111111111111', 'TX', 'http://10.1.0.10:8081/x', ['eth0'], undefined, tags),
+  );
+});

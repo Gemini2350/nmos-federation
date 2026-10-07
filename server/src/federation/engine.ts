@@ -1,5 +1,6 @@
 import type { AppConfig, DomainConfig } from '../config/schema.js';
 import { bridgeOf, domainById, legOrder, otherDomain, registriesOf } from '../config/schema.js';
+import { groupHints, grouphintTags, type GroupHint, type Port } from './grouping.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
 import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
@@ -304,6 +305,37 @@ export class Engine {
     }
   }
 
+  /**
+   * Natural group per port of a device (BCP-002-01): its virtual receivers, proxies
+   * included, and its sender copies. Keyed like channels — a receiver's id, or
+   * `mirror-<id>` for a sender copy — so the sender a channel publishes carries the same
+   * group as the port it came from.
+   */
+  groupHintsOf(device: FederationDevice): Map<string, GroupHint> {
+    const ports: Port[] = this.receiversOf(device).map((vrx) => {
+      const mirror = vrx.proxyFor && this.cfg.mirrors.find((m) => m.id === vrx.proxyFor!.mirrorId);
+      return {
+        key: vrx.id,
+        format: vrx.format,
+        group: vrx.group,
+        ...(mirror ? { origin: { hint: mirror.originGroupHint, deviceId: mirror.originDeviceId, deviceLabel: mirror.originDeviceLabel } } : {}),
+      };
+    });
+    for (const m of this.cfg.mirrors.filter((x) => x.kind === 'sender' && x.deviceId === device.id)) {
+      const key = Engine.mirrorKey(m.id);
+      const channel = this.deps.state.channelFor(key);
+      const essence = channel ? this.essenceOf(channel) : null;
+      const format = essence?.format.endsWith(':audio') ? 'audio' : essence?.format.endsWith(':data') ? 'data' : 'video';
+      ports.push({
+        key,
+        format,
+        group: m.group,
+        origin: { hint: m.originGroupHint, deviceId: m.originDeviceId, deviceLabel: m.originDeviceLabel },
+      });
+    }
+    return groupHints(ports);
+  }
+
   /** Every resource of a domain — exactly what the node API serves there. */
   domainResources(domainId: string) {
     const domain = domainById(this.cfg, domainId);
@@ -326,6 +358,7 @@ export class Engine {
         // in the other one. The same device appears in both, carrying whatever exists
         // there — receivers of one direction next to senders of the other.
         const vrxList = this.receiversOf(device).filter((v) => this.sideOf(v, bridge) === domainId);
+        const hints = this.groupHintsOf(device);
         {
           for (const vrx of vrxList) {
             const conn = this.deps.state.connection(vrx.id).active;
@@ -340,6 +373,7 @@ export class Engine {
                   caps.mediaTypes,
                   [domain.iface.name],
                   { sender_id: conn.sender_id, active: conn.master_enable },
+                  grouphintTags(hints.get(vrx.id)),
                 ),
               ),
             );
@@ -372,6 +406,7 @@ export class Engine {
                 `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
                 [domain.iface.name],
                 essence,
+                grouphintTags(hints.get(vrxId)),
               ),
             ),
           );

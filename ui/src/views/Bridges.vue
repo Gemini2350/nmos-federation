@@ -185,12 +185,22 @@ onMounted(refresh);
         <button :disabled="busy" @click="run(() => api.deleteDevice(d.id))">Remove device</button>
       </header>
       <table v-if="d.receivers?.length">
-        <thead><tr><th>Virtual receiver</th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
+        <thead><tr><th>Virtual receiver</th><th>Group <InfoHint text="Natural grouping (BCP-002-01): controllers show ports of one group together — video, audio and ancillary of one source. A copy keeps its original's group (shown in grey); type a name to regroup it, clear it to go back. The role is kept from the original or derived from the format." /></th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="vrx in d.receivers" :key="vrx.id">
             <td>
               <EditableName :value="vrx.label" @save="(label) => rename(() => api.renameReceiver(vrx.id, label))" />
               <small v-if="vrx.origin" class="orig">proxy of {{ vrx.origin.label }} · {{ registryName(vrx.origin.registryId) }}</small>
+            </td>
+            <td>
+              <EditableName
+                :value="vrx.group ?? ''"
+                allow-empty
+                chain="group"
+                :placeholder="vrx.groupHint?.group ?? '—'"
+                @save="(group) => rename(() => api.setReceiverGroup(vrx.id, group))"
+              />
+              <small v-if="vrx.groupHint" class="orig">{{ vrx.groupHint.role }}</small>
             </td>
             <td><small class="dir">{{ direction(d, vrx) }}</small></td>
             <td>{{ vrx.format }}</td>
@@ -200,12 +210,22 @@ onMounted(refresh);
         </tbody>
       </table>
       <table v-if="d.senderCopies?.length" class="copies">
-        <thead><tr><th>Copied sender</th><th>Direction</th><th>State</th><th></th></tr></thead>
+        <thead><tr><th>Copied sender</th><th>Group</th><th>Direction</th><th>State</th><th></th></tr></thead>
         <tbody>
           <tr v-for="c in d.senderCopies" :key="c.id">
             <td>
               <EditableName :value="c.name" @save="(label) => rename(() => api.updateMirror(c.id, { label }))" />
               <small class="orig">copy of {{ c.originLabel }} · {{ registryName(c.registryId) }}</small>
+            </td>
+            <td>
+              <EditableName
+                :value="c.group ?? ''"
+                allow-empty
+                chain="group"
+                :placeholder="c.groupHint?.group ?? '—'"
+                @save="(group) => rename(() => api.updateMirror(c.id, { group }))"
+              />
+              <small v-if="c.groupHint" class="orig">{{ c.groupHint.role }}</small>
             </td>
             <td><small class="dir">{{ c.from ? `${domainName(c.from)} → ${domainName(c.to ?? '')}` : '—' }}</small></td>
             <td :class="c.state === 'active' ? 'ok' : c.state === 'failed' ? 'bad' : 'warn'" :title="c.error ?? ''">{{ c.state ?? 'not built yet' }}</td>

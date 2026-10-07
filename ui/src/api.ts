@@ -87,12 +87,19 @@ export interface Bridge {
 }
 
 /** A group of ports on a bridge — one NMOS device under the bridge's node. */
+/** Natural grouping (BCP-002-01): "<group>:<role>[:<scope>]". */
+export interface GroupHint {
+  group: string;
+  role: string;
+  scope?: string;
+}
+
 export interface Device {
   id: string;
   label: string;
   bridgeId: string;
   receiverIds: string[];
-  receivers?: (VirtualReceiver & { origin?: { label: string; registryId: string } | null })[];
+  receivers?: (VirtualReceiver & { origin?: { label: string; registryId: string } | null; groupHint?: GroupHint | null })[];
   /** Sender copies on this device: no virtual receiver, but ports on it all the same. */
   senderCopies?: {
     id: string;
@@ -103,6 +110,8 @@ export interface Device {
     to: string | null;
     state: string | null;
     error: string | null;
+    group: string | null;
+    groupHint: GroupHint | null;
   }[];
   bridge?: Bridge | null;
   detached?: boolean;
@@ -116,6 +125,8 @@ export interface VirtualReceiver {
   enabled: boolean;
   /** Domain it is offered in; its stream flows to the bridge's other domain. */
   side?: string;
+  /** Natural group set by the operator (BCP-002-01); the role is derived. */
+  group?: string;
 }
 
 export interface Config {
@@ -316,6 +327,8 @@ export const api = {
   deleteDevice: (id: string) => req<{ ok: boolean }>(`/devices/${id}`, { method: 'DELETE' }),
   addReceivers: (deviceId: string, body: { count: number; pattern: string; format: VirtualReceiver['format']; side?: string }) =>
     req<VirtualReceiver[]>(`/devices/${deviceId}/receivers`, { method: 'POST', body: JSON.stringify(body) }),
+  setReceiverGroup: (id: string, group: string) =>
+    req<VirtualReceiver>(`/receivers/${id}`, { method: 'PUT', body: JSON.stringify({ group }) }),
   renameReceiver: (id: string, label: string) =>
     req<VirtualReceiver>(`/receivers/${id}`, { method: 'PUT', body: JSON.stringify({ label }) }),
   deleteReceiver: (id: string) => req<{ ok: boolean }>(`/receivers/${id}`, { method: 'DELETE' }),
@@ -352,7 +365,7 @@ export const api = {
     format?: 'video' | 'audio' | 'data';
   }) => req<Mirror>('/mirrors', { method: 'POST', body: JSON.stringify(body) }),
   refreshMirror: (id: string) => req<Channel>(`/mirrors/${id}/refresh`, { method: 'POST' }),
-  updateMirror: (id: string, change: { label?: string; registries?: string[] }) =>
+  updateMirror: (id: string, change: { label?: string; registries?: string[]; group?: string }) =>
     req<Mirror>(`/mirrors/${id}`, { method: 'PUT', body: JSON.stringify(change) }),
   deleteMirror: (id: string) => req<{ ok: boolean }>(`/mirrors/${id}`, { method: 'DELETE' }),
   events: () => new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/events`),

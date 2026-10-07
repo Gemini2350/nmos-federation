@@ -101,7 +101,8 @@ already there, without going through a virtual receiver.
   receivers that do not are shown as not controllable.
 
 Both hang off a device, and through it off its bridge, which supplies the registries and
-the NAT setting. The direction comes from the registry you copy from: a copy always runs
+the NAT setting. Copies keep their original's **natural grouping** (BCP-002-01 group
+hints), and every port can be put into a group of its own on the Bridges page. The direction comes from the registry you copy from: a copy always runs
 into the bridge's other domain. Each copy can be renamed and given its own registries.
 
 `network_mode: host` is required — the software needs one interface with a real IP

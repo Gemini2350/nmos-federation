@@ -8,9 +8,16 @@ import { ref, watch } from 'vue';
  *
  * Tab and Shift+Tab move to the next or previous name on the page, skipping the
  * buttons in between, with the text selected — renaming a column of receivers is
- * type, Tab, type, Tab. Leaving the field saves it as usual.
+ * type, Tab, type, Tab. Leaving the field saves it as usual. Fields form chains by
+ * `chain` (names, groups …), so Tab walks down one column instead of zig-zagging.
+ *
+ * `allowEmpty` makes clearing a value a valid edit (a group can be removed); the
+ * placeholder then shows what applies instead, e.g. the inherited group.
  */
-const props = defineProps<{ value: string; fallback?: string; disabled?: boolean }>();
+const props = withDefaults(
+  defineProps<{ value: string; fallback?: string; disabled?: boolean; allowEmpty?: boolean; placeholder?: string; chain?: string }>(),
+  { chain: 'name' },
+);
 const emit = defineEmits<{ save: [label: string] }>();
 
 const text = ref(props.value);
@@ -20,7 +27,7 @@ watch(() => props.value, (v) => (text.value = v));
 // as well would send the rename twice, since the blur that follows sees the old prop.
 function commit() {
   const next = text.value.trim() || props.fallback || '';
-  if (!next) {
+  if (!next && !props.allowEmpty) {
     text.value = props.value;
     return;
   }
@@ -29,7 +36,7 @@ function commit() {
 }
 
 function step(e: KeyboardEvent) {
-  const fields = Array.from(document.querySelectorAll<HTMLInputElement>('input.name:not(:disabled)'));
+  const fields = Array.from(document.querySelectorAll<HTMLInputElement>(`input.name[data-chain="${props.chain}"]:not(:disabled)`));
   const here = fields.indexOf(e.target as HTMLInputElement);
   const next = fields[here + (e.shiftKey ? -1 : 1)];
   if (here < 0 || !next) return; // the last one: let the browser move on as usual
@@ -49,8 +56,10 @@ function cancel(e: Event) {
     class="name"
     v-model="text"
     :disabled="disabled"
-    :size="Math.max(text.length, 6)"
-    title="Click to rename · Tab: next name"
+    :data-chain="chain"
+    :placeholder="placeholder"
+    :size="Math.max(text.length || placeholder?.length || 0, 6)"
+    :title="chain === 'name' ? 'Click to rename · Tab: next name' : 'Click to edit · Tab: next one'"
     @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
     @keydown.esc.prevent="cancel"
     @keydown.tab="step"
@@ -71,4 +80,5 @@ function cancel(e: Event) {
 }
 .name:hover:not(:disabled) { border-color: #8886; }
 .name:focus { border-color: #4a8ad4; outline: none; background: #8881; }
+.name::placeholder { color: inherit; opacity: 0.45; font-style: italic; }
 </style>

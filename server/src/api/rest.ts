@@ -8,6 +8,7 @@ import type { MirrorEntry } from '../config/schema.js';
 import type { Bridge } from '../types.js';
 import { listInterfaces } from '../nmos/resources.js';
 import { nextId, otherDomain, proxyLabel } from '../config/schema.js';
+import { GROUPHINT } from '../federation/grouping.js';
 import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
 
@@ -49,6 +50,22 @@ import { log } from '../util/log.js';
  * handler awaits switch teardowns and registry syncs before it saves, and anything
  * that lands in between works on a stale copy. Reads are not queued.
  */
+/**
+ * What a copy keeps of its original besides the stream: its group hint and the label of
+ * its device, which disambiguates group names that repeat across devices. Read once
+ * when the copy is made; `null` records "the original has none" so it is not asked
+ * again.
+ */
+async function readOrigin(engine: Engine, mirror: MirrorEntry): Promise<Pick<MirrorEntry, 'originGroupHint' | 'originDeviceLabel'>> {
+  const query = engine.queryClient(mirror.registryId);
+  if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
+  const [resource, device] = await Promise.all([
+    mirror.kind === 'sender' ? query.sender(mirror.originId) : query.receiver(mirror.originId),
+    query.device(mirror.originDeviceId).catch(() => null),
+  ]);
+  return { originGroupHint: resource.tags?.[GROUPHINT]?.[0] ?? null, originDeviceLabel: device?.label ?? null };
+}
+
 function serializeWrites(app: FastifyInstance): void {
   let tail: Promise<void> = Promise.resolve();
   const releases = new WeakMap<object, () => void>();
@@ -202,13 +219,19 @@ export function registerRestApi(
   app.get('/api/devices', async () => {
     const bridges = new Map(store.current.bridges.map((b) => [b.id, b]));
     const channels = engine.channels();
-    return store.current.devices.map((d) => ({
+    return store.current.devices.map((d) => {
+      const hints = engine.groupHintsOf(d);
+      return {
       ...d,
       // A proxy carries its original's name, so the GUI can show where it came from
       // after it has been renamed.
       receivers: engine.receiversOf(d).map((vrx) => {
         const mirror = vrx.proxyFor && store.current.mirrors.find((m) => m.id === vrx.proxyFor!.mirrorId);
-        return { ...vrx, origin: mirror ? { label: mirror.originLabel, registryId: mirror.registryId } : null };
+        return {
+          ...vrx,
+          origin: mirror ? { label: mirror.originLabel, registryId: mirror.registryId } : null,
+          groupHint: hints.get(vrx.id) ?? null,
+        };
       }),
       // Sender copies have no virtual receiver, so they would not show up under the
       // device at all — yet they are ports on it like any other.
@@ -226,11 +249,14 @@ export function registerRestApi(
             to: dir?.other ?? null,
             state: channel?.state ?? null,
             error: channel?.error ?? null,
+            group: m.group ?? null,
+            groupHint: hints.get(`mirror-${m.id}`) ?? null,
           };
         }),
       bridge: bridges.get(d.bridgeId) ?? null,
       detached: !engine.isAttached(d),
-    }));
+      };
+    });
   });
 
   app.post<{ Body: Partial<FederationDevice> }>('/api/devices', async (req, reply) => {
@@ -333,13 +359,22 @@ export function registerRestApi(
 
   // Renaming only. Format and device shape what a receiver is; changing those is a
   // remove and add.
-  app.put<{ Params: { id: string }; Body: { label?: string } }>('/api/receivers/:id', async (req, reply) => {
+  app.put<{ Params: { id: string }; Body: { label?: string; group?: string } }>('/api/receivers/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
     const vrx = cfg.receivers.find((r) => r.id === req.params.id);
     if (!vrx) return reply.code(404).send({ error: 'unknown receiver' });
-    const label = req.body.label?.trim();
-    if (!label) return reply.code(400).send({ error: 'a receiver needs a name' });
-    vrx.label = label;
+    if (req.body.label !== undefined) {
+      const label = req.body.label.trim();
+      if (!label) return reply.code(400).send({ error: 'a receiver needs a name' });
+      vrx.label = label;
+    }
+    // Natural group; empty clears it — a proxy then falls back to its original's.
+    if (req.body.group !== undefined) {
+      const group = req.body.group.trim();
+      if (group.includes(':')) return reply.code(400).send({ error: 'a group name cannot contain ":" — it separates group and role' });
+      if (group) vrx.group = group;
+      else delete vrx.group;
+    }
     try {
       await store.save(cfg);
       await onConfigChange();
@@ -555,6 +590,9 @@ export function registerRestApi(
       ...(b.label ? { label: b.label } : {}),
       enabled: b.enabled ?? true,
     };
+    // Its grouping comes along. A registry that cannot answer right now does not stop the
+    // copy; the startup pass fills it in later.
+    Object.assign(mirror, await readOrigin(engine, mirror).catch(() => ({})));
     cfg.mirrors.push(mirror);
 
     // A receiver copy needs a proxy receiver to exist as an ordering point. A sender
@@ -598,7 +636,7 @@ export function registerRestApi(
 
   // Name and where it is shared. Neither touches the stream: a renamed or re-shared
   // sender copy keeps its NAT and multicast groups, only its registrations move.
-  app.put<{ Params: { id: string }; Body: { label?: string; registries?: string[] } }>('/api/mirrors/:id', async (req, reply) => {
+  app.put<{ Params: { id: string }; Body: { label?: string; registries?: string[]; group?: string } }>('/api/mirrors/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
     const mirror = cfg.mirrors.find((m) => m.id === req.params.id);
     if (!mirror) return reply.code(404).send({ error: 'unknown copy' });
@@ -612,6 +650,15 @@ export function registerRestApi(
         const proxy = cfg.receivers.find((r) => r.proxyFor?.mirrorId === mirror.id);
         if (proxy) proxy.label = label;
       }
+    }
+    if (b.group !== undefined) {
+      const group = b.group.trim();
+      if (group.includes(':')) return reply.code(400).send({ error: 'a group name cannot contain ":" — it separates group and role' });
+      // A proxy's group lives on its receiver, like its name.
+      const target: { group?: string } =
+        mirror.kind === 'receiver' ? (cfg.receivers.find((r) => r.proxyFor?.mirrorId === mirror.id) ?? mirror) : mirror;
+      if (group) target.group = group;
+      else delete target.group;
     }
     if (b.registries !== undefined) {
       const { choices } = engine.mirrorRegistries(mirror);
@@ -630,6 +677,30 @@ export function registerRestApi(
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+  });
+
+  /**
+   * Reads the original's group hint for every copy that has none recorded yet — copies
+   * made before grouping existed, or while their registry was unreachable. Runs once
+   * after startup through the write queue.
+   */
+  app.post('/api/mirrors/origins', async () => {
+    const cfg = structuredClone(store.current);
+    let updated = 0;
+    const failed: string[] = [];
+    for (const mirror of cfg.mirrors.filter((m) => m.originGroupHint === undefined)) {
+      try {
+        Object.assign(mirror, await readOrigin(engine, mirror));
+        updated++;
+      } catch (e) {
+        failed.push(`${mirror.originLabel}: ${(e as Error).message}`);
+      }
+    }
+    if (updated) {
+      await store.save(cfg);
+      await engine.syncRegistries();
+    }
+    return { updated, failed };
   });
 
   app.post<{ Params: { id: string } }>('/api/mirrors/:id/refresh', async (req, reply) => {

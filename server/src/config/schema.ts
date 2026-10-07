@@ -281,6 +281,14 @@ export interface MirrorEntry {
    */
   registries?: string[];
   enabled: boolean;
+  /** Natural group set by the operator for a sender copy (a proxy keeps it on its receiver). */
+  group?: string;
+  /**
+   * The original's group hint (BCP-002-01) and its device's label, read when the copy
+   * was made. `undefined` = not read yet, `null` = the original has none.
+   */
+  originGroupHint?: string | null;
+  originDeviceLabel?: string | null;
 }
 
 export interface AppConfig {

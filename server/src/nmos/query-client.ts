@@ -19,6 +19,7 @@ export interface QuerySender {
   manifest_href: string | null;
   transport: string;
   subscription?: { receiver_id: string | null; active: boolean };
+  tags?: Record<string, string[]>;
 }
 
 export interface QueryReceiver {
@@ -30,6 +31,7 @@ export interface QueryReceiver {
   transport: string;
   caps?: { media_types?: string[] };
   subscription?: { sender_id: string | null; active: boolean };
+  tags?: Record<string, string[]>;
 }
 
 export interface QueryDevice {

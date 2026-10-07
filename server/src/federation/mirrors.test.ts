@@ -570,3 +570,52 @@ test('copies run away from the registry they come from — the bridge has no dir
   assert.equal(proxied.remoteReceiver?.connected, true, proxied.remoteReceiver?.error ?? '');
   assert.equal(internal.patches.at(-1)!.receiverId, ORIGIN_RECEIVER);
 });
+
+test('grouping travels: a proxy keeps its original group, and so does the sender behind it', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      {
+        id: mirrorId, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER,
+        originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true,
+        originGroupHint: 'Monitor wall:Video 1:device', originDeviceLabel: 'Foreign device',
+      },
+    ],
+    receivers: [
+      { id: 'proxy', label: 'Proxy MON03', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId } },
+      // A free receiver the operator put into a group of its own.
+      { id: 'free-a', label: 'Cam 1 audio', deviceId: 'dev1', format: 'audio', enabled: true, side: 'internal', group: 'Cam 1' },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy', 'free-a'];
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+
+  const tagOf = (posts: Stub['posts'], label: string) =>
+    (posts.filter((p) => p.data.label === label).at(-1)?.data.tags as Record<string, string[]> | undefined)?.['urn:x-nmos:tag:grouphint/v1.0'];
+  assert.deepEqual(tagOf(internal.posts, 'Proxy MON03'), ['Monitor wall:Video 1:device']);
+  assert.deepEqual(tagOf(internal.posts, 'Cam 1 audio'), ['Cam 1:Audio 1'], 'role derived from the format');
+
+  await engine.activate('proxy', {
+    sender_id: 'local',
+    master_enable: true,
+    transport_file: { data: SDP, type: 'application/sdp' },
+    transport_params: [{}, {}],
+  });
+  const sender = partner.posts.filter((p) => p.type === 'sender').at(-1)!;
+  assert.deepEqual((sender.data.tags as Record<string, string[]>)['urn:x-nmos:tag:grouphint/v1.0'], ['Monitor wall:Video 1:device'], 'the published sender groups the same way');
+
+  // The operator regroups the proxy: the new name, the original's role.
+  cfg.receivers[0]!.group = 'Gallery';
+  await engine.syncRegistries();
+  assert.deepEqual(tagOf(internal.posts, 'Proxy MON03'), ['Gallery:Video 1']);
+});

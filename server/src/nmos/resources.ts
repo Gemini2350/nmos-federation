@@ -361,6 +361,7 @@ export function buildSender(
   manifestHref: string,
   interfaceBindings: string[],
   essence?: Pick<EssenceParams, 'sender'>,
+  tags: Record<string, string[]> = {},
   version = nmosVersion(),
 ) {
   const extra = essence?.sender;
@@ -369,7 +370,7 @@ export function buildSender(
     version,
     label,
     description: label,
-    tags: {},
+    tags,
     flow_id: flowId,
     transport: 'urn:x-nmos:transport:rtp.mcast',
     device_id: deviceId,
@@ -390,6 +391,7 @@ export function buildReceiver(
   mediaTypes: string[],
   interfaceBindings: string[],
   subscription: { sender_id: string | null; active: boolean },
+  tags: Record<string, string[]> = {},
   version = nmosVersion(),
 ) {
   return {
@@ -397,7 +399,7 @@ export function buildReceiver(
     version,
     label,
     description: label,
-    tags: {},
+    tags,
     format,
     caps: { media_types: mediaTypes },
     device_id: deviceId,

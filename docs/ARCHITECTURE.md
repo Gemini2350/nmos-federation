@@ -112,6 +112,24 @@ The operator creates devices under a bridge and adds virtual receivers to them, 
 with the domain it is offered in. The device appears in both domains under the same id,
 so a foreign system sees which signals belong together.
 
+### Natural grouping
+
+Ports carry the BCP-002-01 tag `urn:x-nmos:tag:grouphint/v1.0` (`<group>:<role>[:<scope>]`),
+so a controller shows the video, audio and ancillary of one source together
+(`federation/grouping.ts`). Where a port's hint comes from, in order:
+
+1. a group the operator typed for it — the role is then the original's, or derived
+   from the format for a free virtual receiver ("Video 1", "Audio 1", "Audio 2");
+2. for a copy, the original's own hint, read when the copy is made (copies older than
+   this feature get it once after startup, `POST /api/mirrors/origins`);
+3. nothing.
+
+The sender a channel publishes on the other side carries the same hint as the port it
+came from, so the grouping holds across the bridge. Group names are only unique per
+device ("Receive0" exists on every SDI card), and one federation device can hold copies
+of several original devices — an inherited name that comes from more than one original
+device therefore gets that device's label in front ("SDI A / Receive0").
+
 ### Resources per channel
 
 An active channel creates `source` → `flow` → `sender` in the target domain. The
