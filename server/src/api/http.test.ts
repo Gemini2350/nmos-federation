@@ -187,3 +187,45 @@ test('a receiver deleted in the GUI leaves the registry too, not only the config
   assert.ok(deletes.some((u) => u.endsWith(`/receivers/${r1}`)), `not unregistered: ${deletes.join(', ') || 'no DELETE at all'}`);
   assert.ok(!deletes.some((u) => u.endsWith(`/receivers/${engine.receiverNmosId('r2')}`)), 'the other one stays');
 });
+
+test('removing a proxy receiver removes its copy entry with it', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-http-'));
+  const store = new ConfigStore(dir);
+  await store.load();
+  const cfg = structuredClone(store.current);
+  cfg.domains.push({ ...structuredClone(cfg.domains[0]!), id: '2', label: 'Partner', kind: 'external' });
+  cfg.domains[1]!.pool.base = '239.202.0.0';
+  cfg.registries = [{ id: '1', label: 'R', domainId: '2', mode: 'manual', ip: '127.0.0.1', port: 9, version: 'v1.3', enabled: false }];
+  cfg.bridges = [{ id: '1', label: 'Bridge', domains: ['1', '2'], registries: [], nat: false, enabled: true }];
+  cfg.devices = [{ id: 'd1', label: 'D', bridgeId: '1', receiverIds: ['p1'] }];
+  cfg.mirrors = [{ id: 'm1', kind: 'receiver', deviceId: 'd1', registryId: '1', originId: 'o1', originDeviceId: 'od', originLabel: 'MON 1', enabled: true }];
+  cfg.receivers = [{ id: 'p1', label: 'Proxy MON 1', deviceId: 'd1', format: 'video', enabled: true, side: '1', proxyFor: { registryId: '1', receiverId: 'o1', deviceId: 'od', mirrorId: 'm1' } }];
+  await store.save(cfg);
+  const state = new StateStore(dir);
+  await state.load();
+  const sw = { host: '', user: '', password: '', tls: true, join: 'igmpStatic' as const };
+  const engine = new Engine({
+    config: () => store.current,
+    state,
+    pools: new PoolManager(store.current.domains, store.current.nat.groupIdRange),
+    drivers: { red: new MockSwitchDriver('red', sw), blue: new MockSwitchDriver('blue', sw) },
+  });
+  const app = Fastify();
+  acceptEmptyJson(app);
+  await app.register(fastifyWebsocket);
+  registerRestApi(app, store, engine, state, async () => undefined);
+  t.after(async () => {
+    await app.close();
+    await engine.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // The devices list shows the proxy's original name.
+  const devices = (await app.inject({ method: 'GET', url: '/api/devices' })).json() as { receivers: { origin: { label: string } | null }[] }[];
+  assert.equal(devices[0]!.receivers[0]!.origin?.label, 'MON 1');
+
+  const res = await app.inject({ method: 'DELETE', url: '/api/receivers/p1' });
+  assert.equal(res.statusCode, 200);
+  assert.equal(store.current.receivers.length, 0);
+  assert.equal(store.current.mirrors.length, 0, 'the copy entry went with it');
+});

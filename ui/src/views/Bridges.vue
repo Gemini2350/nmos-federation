@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { api, type Bridge, type Config, type Device, type VirtualReceiver } from '../api';
-import { domainName, primeFromConfig, registryNames } from '../names';
+import { domainName, primeFromConfig, registryName, registryNames } from '../names';
 import InfoHint from '../components/InfoHint.vue';
 import EditableName from '../components/EditableName.vue';
 
@@ -188,7 +188,10 @@ onMounted(refresh);
         <thead><tr><th>Virtual receiver</th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="vrx in d.receivers" :key="vrx.id">
-            <td><EditableName :value="vrx.label" @save="(label) => rename(() => api.renameReceiver(vrx.id, label))" /></td>
+            <td>
+              <EditableName :value="vrx.label" @save="(label) => rename(() => api.renameReceiver(vrx.id, label))" />
+              <small v-if="vrx.origin" class="orig">proxy of {{ vrx.origin.label }} · {{ registryName(vrx.origin.registryId) }}</small>
+            </td>
             <td><small class="dir">{{ direction(d, vrx) }}</small></td>
             <td>{{ vrx.format }}</td>
             <td>{{ vrx.enabled ? 'yes' : 'no' }}</td>
@@ -196,7 +199,21 @@ onMounted(refresh);
           </tr>
         </tbody>
       </table>
-      <p v-else><small>No ports yet — add virtual receivers here, or copy existing ones on the Copy page.</small></p>
+      <table v-if="d.senderCopies?.length" class="copies">
+        <thead><tr><th>Copied sender</th><th>Direction</th><th>State</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="c in d.senderCopies" :key="c.id">
+            <td>
+              <EditableName :value="c.name" @save="(label) => rename(() => api.updateMirror(c.id, { label }))" />
+              <small class="orig">copy of {{ c.originLabel }} · {{ registryName(c.registryId) }}</small>
+            </td>
+            <td><small class="dir">{{ c.from ? `${domainName(c.from)} → ${domainName(c.to ?? '')}` : '—' }}</small></td>
+            <td :class="c.state === 'active' ? 'ok' : c.state === 'failed' ? 'bad' : 'warn'" :title="c.error ?? ''">{{ c.state ?? 'not built yet' }}</td>
+            <td><button :disabled="busy" @click="run(() => api.deleteMirror(c.id))">Remove</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-if="!d.receivers?.length && !d.senderCopies?.length"><small>No ports yet — add virtual receivers here, or copy existing ones on the Copy page.</small></p>
 
       <div class="row" v-if="rxDraft[d.id]">
         <label><span>Count</span><input type="number" min="1" max="256" v-model.number="rxDraft[d.id]!.count" /></label>
@@ -249,4 +266,7 @@ small { display: block; opacity: 0.65; }
 .notice { color: #2e9e4f; }
 .both { align-self: center; font-size: 1.2rem; opacity: 0.6; padding-bottom: 0.2rem; }
 .dir { opacity: 0.75; white-space: nowrap; }
+.orig { display: block; font-size: 0.75rem; opacity: 0.55; margin-top: 0.1rem; }
+table.copies { margin-top: 0.6rem; }
+.ok { color: #2e9e4f; }
 </style>

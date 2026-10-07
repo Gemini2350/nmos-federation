@@ -201,9 +201,33 @@ export function registerRestApi(
   // ---- Devices -----------------------------------------------------------
   app.get('/api/devices', async () => {
     const bridges = new Map(store.current.bridges.map((b) => [b.id, b]));
+    const channels = engine.channels();
     return store.current.devices.map((d) => ({
       ...d,
-      receivers: engine.receiversOf(d),
+      // A proxy carries its original's name, so the GUI can show where it came from
+      // after it has been renamed.
+      receivers: engine.receiversOf(d).map((vrx) => {
+        const mirror = vrx.proxyFor && store.current.mirrors.find((m) => m.id === vrx.proxyFor!.mirrorId);
+        return { ...vrx, origin: mirror ? { label: mirror.originLabel, registryId: mirror.registryId } : null };
+      }),
+      // Sender copies have no virtual receiver, so they would not show up under the
+      // device at all — yet they are ports on it like any other.
+      senderCopies: store.current.mirrors
+        .filter((m) => m.kind === 'sender' && m.deviceId === d.id)
+        .map((m) => {
+          const dir = engine.mirrorDirection(m);
+          const channel = channels.find((c) => c.receiverId === `mirror-${m.id}`);
+          return {
+            id: m.id,
+            name: m.label || m.originLabel,
+            originLabel: m.originLabel,
+            registryId: m.registryId,
+            from: dir?.origin ?? null,
+            to: dir?.other ?? null,
+            state: channel?.state ?? null,
+            error: channel?.error ?? null,
+          };
+        }),
       bridge: bridges.get(d.bridgeId) ?? null,
       detached: !engine.isAttached(d),
     }));
@@ -328,6 +352,10 @@ export function registerRestApi(
   app.delete<{ Params: { id: string } }>('/api/receivers/:id', async (req, reply) => {
     await engine.deactivate(req.params.id);
     const cfg = structuredClone(store.current);
+    // A proxy is half of a copy. Leaving its copy entry behind kept the original marked
+    // "proxied" on the Copy page and listed a copy that no longer had a receiver.
+    const mirrorId = cfg.receivers.find((r) => r.id === req.params.id)?.proxyFor?.mirrorId;
+    if (mirrorId) cfg.mirrors = cfg.mirrors.filter((m) => m.id !== mirrorId);
     cfg.receivers = cfg.receivers.filter((r) => r.id !== req.params.id);
     for (const d of cfg.devices) d.receiverIds = d.receiverIds.filter((id) => id !== req.params.id);
     try {

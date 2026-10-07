@@ -92,7 +92,18 @@ export interface Device {
   label: string;
   bridgeId: string;
   receiverIds: string[];
-  receivers?: VirtualReceiver[];
+  receivers?: (VirtualReceiver & { origin?: { label: string; registryId: string } | null })[];
+  /** Sender copies on this device: no virtual receiver, but ports on it all the same. */
+  senderCopies?: {
+    id: string;
+    name: string;
+    originLabel: string;
+    registryId: string;
+    from: string | null;
+    to: string | null;
+    state: string | null;
+    error: string | null;
+  }[];
   bridge?: Bridge | null;
   detached?: boolean;
 }
