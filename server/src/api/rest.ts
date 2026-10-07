@@ -519,6 +519,9 @@ export function registerRestApi(
     }
   });
 
+  /** Is each origin registry's change feed live — sender copies follow their originals through it. */
+  app.get('/api/mirrors/watch', async () => engine.watchStatus());
+
   app.get('/api/mirrors', async () => {
     const channels = engine.channels();
     return store.current.mirrors.map((m) => {
@@ -710,7 +713,8 @@ export function registerRestApi(
       return reply.code(409).send({ error: 'a receiver proxy follows its own connection — nothing to refresh' });
     }
     try {
-      return await engine.copySender(mirror.id);
+      // In place where possible: the copy keeps its addresses.
+      return await engine.followOrigin(mirror.id);
     } catch (e) {
       return reply.code(502).send({ error: (e as Error).message });
     }

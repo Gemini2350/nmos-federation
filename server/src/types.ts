@@ -72,6 +72,8 @@ export interface Channel {
   /** What was connected to the virtual receiver. */
   originSdp: string | null;
   originSenderId: string | null;
+  /** For a sender copy: the original's IS-04 version this channel was built from. */
+  originVersion?: string;
   legs: Leg[];
   allocation: Allocation | null;
   /** The virtual sender's SDP (rewritten, or copied verbatim when NAT is off). */

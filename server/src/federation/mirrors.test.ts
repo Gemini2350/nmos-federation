@@ -5,6 +5,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import Fastify from 'fastify';
+import fastifyWebsocket from '@fastify/websocket';
 
 import { Engine } from './engine.js';
 import { PoolManager } from './pools.js';
@@ -51,12 +53,17 @@ interface Stub {
   deletes: string[];
   patches: { receiverId: string; body: Record<string, unknown> }[];
   manifestHits: number;
+  /** What the original's manifest serves, and its IS-04 version; tests change both. */
+  sdp: string;
+  senderVersion: string;
+  /** Where a query subscription points; set by tests that run a WebSocket. */
+  wsHref?: string;
   manifestDown?: boolean;
   queries: string[];
 }
 
 async function startStub(): Promise<Stub> {
-  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [] } as unknown as Stub;
+  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0' } as unknown as Stub;
   const server = createServer((req, res) => {
     const url = req.url ?? '';
     const json = (code: number, body: unknown) => {
@@ -72,13 +79,18 @@ async function startStub(): Promise<Stub> {
         return res.end();
       }
       res.writeHead(200, { 'content-type': 'application/sdp' });
-      return res.end(SDP);
+      return res.end(stub.sdp);
+    }
+    if (req.method === 'POST' && url.includes('/x-nmos/query/') && url.endsWith('/subscriptions')) {
+      req.resume();
+      return stub.wsHref ? json(200, { id: 'sub-1', ws_href: stub.wsHref }) : json(501, { code: 501 });
     }
     if (req.method === 'GET' && url.includes('/x-nmos/query/')) {
       stub.queries.push(url);
       const tail = (url.split('/x-nmos/query/v1.3/')[1] ?? '').split('?')[0]!;
       const sender = {
         id: ORIGIN_SENDER,
+        version: stub.senderVersion,
         label: 'CAM07 Video',
         device_id: ORIGIN_DEVICE,
         flow_id: null,
@@ -618,4 +630,113 @@ test('grouping travels: a proxy keeps its original group, and so does the sender
   cfg.receivers[0]!.group = 'Gallery';
   await engine.syncRegistries();
   assert.deepEqual(tagOf(internal.posts, 'Proxy MON03'), ['Gallery:Video 1']);
+});
+
+test('a changed SDP on the original updates its copy in place — addresses and NAT group stay', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, drivers } = await build(internal, partner, dir, {
+    mirrors: [{ id: mirrorId, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', enabled: true }],
+  });
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  const first = await engine.copySender(mirrorId);
+  assert.equal(first.originVersion, '100:0');
+  const groups = structuredClone(first.allocation!.groups);
+  const natGroup = first.allocation!.natGroupId;
+  const senderVersions = () => partner.posts.filter((p) => p.type === 'sender').map((p) => p.data.version);
+
+  // 1) Only the o= line moves: nothing to do, nothing re-registered.
+  internal.sdp = SDP.replace('o=- 99 99', 'o=- 99 100');
+  internal.senderVersion = '101:0';
+  const before = senderVersions().length;
+  const same = await engine.followOrigin(mirrorId);
+  assert.equal(same.originVersion, '101:0');
+  assert.equal(senderVersions().length, before, 'no new sender version for an unchanged stream');
+
+  // 2) The format changes (50 → 25 fps): updated in place, a new sender version, the
+  //    published addresses and the NAT rules untouched.
+  internal.sdp = SDP.replaceAll('exactframerate=50', 'exactframerate=25');
+  internal.senderVersion = '102:0';
+  const programmedBefore = structuredClone([...drivers.red.applied.values()]);
+  const updated = await engine.followOrigin(mirrorId);
+  assert.deepEqual(updated.allocation!.groups, groups);
+  assert.equal(updated.allocation!.natGroupId, natGroup);
+  assert.match(updated.senderSdp!, /exactframerate=25/);
+  assert.match(updated.senderSdp!, /c=IN IP4 239\.200\.0\.1\/64/, 'still the same published group');
+  assert.deepEqual([...drivers.red.applied.values()], programmedBefore, 'no switch change for a format change');
+  assert.equal(senderVersions().length, before + 1, 'the copy is re-registered with a new version');
+  const flow = partner.posts.filter((p) => p.type === 'flow').at(-1)!;
+  assert.deepEqual(flow.data.grain_rate, { numerator: 25, denominator: 1 }, 'the flow follows the essence');
+
+  // 3) The original moves to another multicast group: NAT is reprogrammed for the new
+  //    ingress, the copy's own address stays.
+  internal.sdp = SDP.replaceAll('239.10.1.7', '239.10.1.77');
+  internal.senderVersion = '103:0';
+  const moved = await engine.followOrigin(mirrorId);
+  assert.deepEqual(moved.allocation!.groups, groups);
+  const red = drivers.red.applied.get(`${moved.id}:red`)!;
+  assert.ok(red.includes('ip nat destination static 239.10.1.77 239.200.0.1 group 100'), red.join('\n'));
+  assert.ok(!red.some((c) => c.includes('239.10.1.7 ')), 'the old ingress rule is gone');
+});
+
+test('the registry reports a change to the original and the copy follows by itself', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  // The query API subscription: a WebSocket the "registry" pushes sender changes into.
+  const wsApp = Fastify();
+  await wsApp.register(fastifyWebsocket);
+  const sockets = new Set<{ send(data: string): void; on(ev: 'close', fn: () => void): void }>();
+  wsApp.get('/ws', { websocket: true }, (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await wsApp.listen({ port: 0, host: '127.0.0.1' });
+  internal.wsHref = `ws://127.0.0.1:${(wsApp.server.address() as { port: number }).port}/ws`;
+
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, state } = await build(internal, partner, dir, {
+    mirrors: [{ id: mirrorId, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', enabled: true }],
+  });
+  t.after(async () => {
+    await engine.stop();
+    await wsApp.close();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  await engine.copySender(mirrorId);
+  const until = async (cond: () => boolean, what: string) => {
+    for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(cond(), what);
+  };
+  await until(() => sockets.size === 1, 'the engine subscribed to the origin registry');
+  const push = (version: string) => {
+    const grain = { grain_type: 'event', grain: { topic: '/senders/', data: [{ path: ORIGIN_SENDER, pre: { id: ORIGIN_SENDER, version: '100:0' }, post: { id: ORIGIN_SENDER, version } }] } };
+    for (const s of sockets) s.send(JSON.stringify(grain));
+  };
+  const channel = () => state.channelFor(`mirror-${mirrorId}`)!;
+
+  // Same version as the copy was built from: no manifest read at all.
+  const hits = internal.manifestHits;
+  push('100:0');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(internal.manifestHits, hits, 'an unchanged original is not read');
+
+  // A new version with a new SDP: the copy follows.
+  internal.sdp = SDP.replaceAll('exactframerate=50', 'exactframerate=25');
+  internal.senderVersion = '101:0';
+  push('101:0');
+  await until(() => /exactframerate=25/.test(channel().senderSdp ?? ''), 'the copy took the new SDP');
+  assert.equal(channel().originVersion, '101:0');
+  assert.ok(partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.version, 'and was re-registered');
 });

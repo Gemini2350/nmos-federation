@@ -395,10 +395,20 @@ manifest again every 30 seconds for as long as it stayed unreachable. A failed r
 records a failed channel, which the reconciler leaves alone until Retry or Refresh. If a
 working copy already exists and a refresh fails, the running stream is left untouched.
 
-The flip side: a changed SDP on the origin is not noticed by itself. That is what Refresh
-is for. The event-driven alternative would be to subscribe to the registry's query API
-WebSocket and re-read a manifest only when that sender's resource changes — still without
-polling the device.
+A changed SDP on the origin is followed through the registry, still without polling
+the device (`federation/origin-watch.ts`): one IS-04 Query API WebSocket subscription on
+`/senders` per registry that holds an original (downgraded, so v1.2 devices count). When
+an original's version differs from the one its copy was built from — stored on the
+channel as `originVersion` — the manifest is read once and, if the SDP changed (the `o=`
+line aside), the copy is **updated in place**: same pool pair, same NAT group, so the
+copy's address does not move. NAT is reprogrammed only when the original's own groups
+moved. The copy's sender gets a new version (its SDP is part of its version hash), so
+controllers see the change. Comparing with the stored version rather than the previous
+message means changes made while the socket — or this software — was down are caught by
+the registry's initial message. nmos-cpp sends that initial state in several messages and
+its WebSocket on a port of its own; both are handled. A device that changes its SDP
+without bumping its sender's version is not noticed; Refresh re-reads on demand and uses
+the same in-place path. The Copy page shows whether each registry's feed is live.
 
 ### What is deliberately not done
 

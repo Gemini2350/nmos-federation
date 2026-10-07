@@ -367,6 +367,7 @@ export const api = {
   refreshMirror: (id: string) => req<Channel>(`/mirrors/${id}/refresh`, { method: 'POST' }),
   updateMirror: (id: string, change: { label?: string; registries?: string[]; group?: string }) =>
     req<Mirror>(`/mirrors/${id}`, { method: 'PUT', body: JSON.stringify(change) }),
+  mirrorWatch: () => req<{ registryId: string; state: 'connecting' | 'open' | 'retrying'; error: string | null }[]>('/mirrors/watch'),
   deleteMirror: (id: string) => req<{ ok: boolean }>(`/mirrors/${id}`, { method: 'DELETE' }),
   events: () => new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/events`),
 };

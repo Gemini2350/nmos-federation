@@ -1,6 +1,7 @@
 import type { AppConfig, DomainConfig } from '../config/schema.js';
 import { bridgeOf, domainById, legOrder, otherDomain, registriesOf } from '../config/schema.js';
 import { groupHints, grouphintTags, type GroupHint, type Port } from './grouping.js';
+import { OriginWatcher, type WatchTarget } from './origin-watch.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
 import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
@@ -73,7 +74,47 @@ export class Engine {
   /** Domains whose node API could not be served, with why. */
   private readonly nodeApiErrors = new Map<string, string>();
 
-  constructor(private deps: EngineDeps) {}
+  /** Watches the originals of sender copies through the registries' query APIs. */
+  private readonly watcher: OriginWatcher;
+  /** Sender copies being brought up to date — one at a time per copy. */
+  private readonly following = new Map<string, Promise<Channel>>();
+  /** Last origin version a follow was started for, so a failing one is not retried on every message. */
+  private readonly attempted = new Map<string, string>();
+
+  constructor(private deps: EngineDeps) {
+    this.watcher = new OriginWatcher({
+      targets: () => this.watchTargets(),
+      subscribe: async (registryId) => {
+        const query = this.queries.get(registryId);
+        if (!query) throw new Error(`registry ${registryId} is not enabled`);
+        return query.subscribe('/senders');
+      },
+      onChange: (target, version) => {
+        for (const m of this.cfg.mirrors) {
+          if (m.kind !== 'sender' || !m.enabled || m.registryId !== target.registryId || m.originId !== target.originId) continue;
+          if (this.attempted.get(m.id) === version) continue;
+          this.attempted.set(m.id, version);
+          log.info({ mirror: m.id, origin: m.originLabel, version }, 'original changed — updating its copy');
+          this.followOrigin(m.id).catch((e) => log.warn({ mirror: m.id, err: String(e) }, 'copy not updated'));
+        }
+      },
+    });
+  }
+
+  /** The originals worth watching: enabled sender copies on enabled registries. */
+  private watchTargets(): WatchTarget[] {
+    return this.cfg.mirrors
+      .filter((m) => m.kind === 'sender' && m.enabled && this.queries.has(m.registryId))
+      .map((m) => ({
+        registryId: m.registryId,
+        originId: m.originId,
+        version: this.deps.state.channelFor(Engine.mirrorKey(m.id))?.originVersion,
+      }));
+  }
+
+  watchStatus() {
+    return this.watcher.status();
+  }
 
   private get cfg(): AppConfig {
     return this.deps.config();
@@ -225,9 +266,14 @@ export class Engine {
    * a re-POST that carries the same version with different content, so the two have to
    * move together.
    */
-  private stamp<T extends { id: string; version: string }>(res: T, cacheKey = res.id): T {
+  /**
+   * `extra` is content the resource does not show but whose change must still give it a
+   * new version — a sender's SDP: an updated transport file behind an unchanged
+   * manifest_href would otherwise go unnoticed by every controller.
+   */
+  private stamp<T extends { id: string; version: string }>(res: T, cacheKey = res.id, extra = ''): T {
     const { version: _ignored, ...content } = res;
-    const hash = createHash('sha1').update(JSON.stringify(content)).digest('hex');
+    const hash = createHash('sha1').update(JSON.stringify(content) + extra).digest('hex');
     const prev = this.versions.get(cacheKey);
     if (prev?.hash === hash) return { ...res, version: prev.version };
     const version = nmosVersion();
@@ -408,6 +454,8 @@ export class Engine {
                 essence,
                 grouphintTags(hints.get(vrxId)),
               ),
+              senderId,
+              channel.senderSdp ?? '',
             ),
           );
         }
@@ -759,6 +807,7 @@ export class Engine {
     for (const client of this.registries.values()) {
       client.startHeartbeat();
     }
+    this.watcher.sync();
   }
 
   async start(): Promise<void> {
@@ -786,9 +835,11 @@ export class Engine {
     }
     this.reconcileTimer = setInterval(() => void this.reconcile(), 30_000);
     this.reconcileTimer.unref?.();
+    this.watcher.sync();
   }
 
   async stop(): Promise<void> {
+    this.watcher.stop();
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const client of this.registries.values()) client.stopHeartbeat();
   }
@@ -818,6 +869,92 @@ export class Engine {
       originSenderId: conn.sender_id,
       ...(vrx.proxyFor ? { proxy: vrx.proxyFor } : {}),
     });
+  }
+
+  /** The published SDP: rewritten to the channel's pool pair, or verbatim without NAT. */
+  private senderSdpFor(channel: Channel, sdp: string): string {
+    if (!channel.allocation) return sdp;
+    const byMediaIndex = new Map(
+      channel.legs.map((leg, i) => [
+        i,
+        { group: channel.allocation!.groups[leg.fabric], source: channel.allocation!.sources?.[leg.fabric] ?? null },
+      ]),
+    );
+    return rewriteSdp(sdp, { byMediaIndex });
+  }
+
+  /**
+   * Brings a sender copy up to date with its original: re-reads the manifest and, if the
+   * SDP changed, updates the running copy in place — same pool pair, same NAT group, so
+   * the copy's addresses do not move and nothing connected to it has to follow. Only if
+   * the original's multicast addresses changed is NAT reprogrammed. A copy that is not
+   * running, or an in-place update that fails, gets a full rebuild instead.
+   *
+   * Used by the origin watcher and by Refresh. One at a time per copy.
+   */
+  followOrigin(mirrorId: string): Promise<Channel> {
+    const running = this.following.get(mirrorId);
+    if (running) return running;
+    const job = this.doFollow(mirrorId).finally(() => this.following.delete(mirrorId));
+    this.following.set(mirrorId, job);
+    return job;
+  }
+
+  private async doFollow(mirrorId: string): Promise<Channel> {
+    const mirror = this.cfg.mirrors.find((m) => m.id === mirrorId && m.kind === 'sender');
+    if (!mirror) throw new Error(`unknown sender copy ${mirrorId}`);
+    const key = Engine.mirrorKey(mirrorId);
+    const channel = this.deps.state.channelFor(key);
+    if (!channel || channel.state !== 'active') return this.copySender(mirrorId);
+
+    const query = this.queries.get(mirror.registryId);
+    if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
+    const sender = await query.sender(mirror.originId);
+    const sdp = await query.transportFile(sender);
+
+    if (sameSdp(sdp, channel.originSdp)) {
+      // A new version without a new SDP (a label, a subscription): note it and stop.
+      if (sender.version) channel.originVersion = sender.version;
+      this.deps.state.upsertChannel(channel);
+      await this.deps.state.save();
+      return channel;
+    }
+    try {
+      return await this.updateChannelSdp(channel, sdp, sender.version);
+    } catch (e) {
+      log.warn({ mirror: mirrorId, err: String(e) }, 'in-place update failed — rebuilding the copy');
+      return this.copySender(mirrorId);
+    }
+  }
+
+  private async updateChannelSdp(channel: Channel, sdp: string, originVersion?: string): Promise<Channel> {
+    const parsed = parseSdp(sdp);
+    const essences = essenceCount(parsed);
+    if (essences > 1) throw new Error(`SDP describes ${essences} essences`);
+    const legs = assignFabrics(parsed, legOrder(domainById(this.cfg, channel.sourceDomain)));
+    if (!legs.length) throw new Error('SDP without a usable multicast group');
+    essenceFromSdp(parsed); // still describable, before anything is touched
+
+    const legsChanged = JSON.stringify(legs) !== JSON.stringify(channel.legs);
+    if (channel.allocation && legsChanged) {
+      // The original moved to other groups: the ingress rules point at the old ones.
+      await unprogramChannel(this.deps.drivers, buildChannelPlan(channel, this.cfg));
+      channel.legs = legs;
+      await programChannel(this.deps.drivers, buildChannelPlan(channel, this.cfg));
+    } else {
+      channel.legs = legs;
+    }
+    channel.originSdp = sdp;
+    channel.senderSdp = this.senderSdpFor(channel, sdp);
+    if (originVersion) channel.originVersion = originVersion;
+    channel.updatedAt = new Date().toISOString();
+    this.deps.state.upsertChannel(channel);
+    await this.deps.state.save();
+    // The sender's version follows its SDP (see stamp), so this re-registers it.
+    await this.syncRegistries(this.channelRegistryIds(channel));
+    log.info({ channel: channel.id, natReprogrammed: !!channel.allocation && legsChanged }, 'copy updated from its original');
+    this.emit({ type: 'channel', channel });
+    return channel;
   }
 
   /**
@@ -888,6 +1025,7 @@ export class Engine {
       to: dir.other,
       sdp,
       originSenderId: sender.id,
+      ...(sender.version ? { originVersion: sender.version } : {}),
       mirrorId,
     });
   }
@@ -905,6 +1043,7 @@ export class Engine {
     to: string;
     sdp: string;
     originSenderId: string | null;
+    originVersion?: string;
     mirrorId?: string;
     proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
   }): Promise<Channel> {
@@ -922,6 +1061,7 @@ export class Engine {
       state: 'allocating',
       originSdp: sdp,
       originSenderId: opts.originSenderId,
+      ...(opts.originVersion ? { originVersion: opts.originVersion } : {}),
       legs: [],
       allocation: null,
       senderSdp: null,
@@ -954,21 +1094,8 @@ export class Engine {
         const plan = buildChannelPlan(channel, this.cfg);
         await programChannel(this.deps.drivers, plan);
         programmed = true;
-
-        const byMediaIndex = new Map(
-          channel.legs.map((leg, i) => [
-            i,
-            {
-              group: channel.allocation!.groups[leg.fabric],
-              source: channel.allocation!.sources?.[leg.fabric] ?? null,
-            },
-          ]),
-        );
-        channel.senderSdp = rewriteSdp(sdp, { byMediaIndex });
-      } else {
-        // NAT off: the SDP is copied verbatim, the stream flows unchanged.
-        channel.senderSdp = sdp;
       }
+      channel.senderSdp = this.senderSdpFor(channel, sdp);
 
       channel.state = 'publishing';
       channel.updatedAt = new Date().toISOString();
@@ -1240,4 +1367,19 @@ export class Engine {
       version: nmosVersion(),
     };
   }
+}
+
+/**
+ * Same stream description, ignoring the o= line: its session version is bumped by some
+ * devices on every activation without anything else changing.
+ */
+function sameSdp(a: string, b: string | null): boolean {
+  if (b === null) return false;
+  const norm = (sdp: string) =>
+    sdp
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('o='))
+      .join('\n');
+  return norm(a) === norm(b);
 }

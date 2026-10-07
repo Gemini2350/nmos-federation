@@ -8,6 +8,7 @@ import BrowseList from '../components/BrowseList.vue';
 
 const cfg = ref<Config | null>(null);
 const mirrors = ref<Mirror[]>([]);
+const watch = ref<{ registryId: string; state: 'connecting' | 'open' | 'retrying'; error: string | null }[]>([]);
 const senders = ref<BrowseSender[]>([]);
 const receivers = ref<BrowseReceiver[]>([]);
 const sourceRegistry = ref('');
@@ -73,7 +74,7 @@ function expandAll(open: boolean) {
 
 async function load() {
   try {
-    [cfg.value, mirrors.value] = await Promise.all([api.config(), api.mirrors()]);
+    [cfg.value, mirrors.value, watch.value] = await Promise.all([api.config(), api.mirrors(), api.mirrorWatch().catch(() => [])]);
     primeFromConfig(cfg.value);
     if (!deviceId.value) deviceId.value = cfg.value.devices[0]?.id ?? '';
     if (!sourceRegistry.value) sourceRegistry.value = registries.value[0]?.id ?? '';
@@ -367,6 +368,17 @@ onMounted(load);
 
   <section>
     <h3>Existing copies</h3>
+    <p v-if="watch.length" class="watch">
+      <small>
+        Sender copies follow their originals: a changed SDP is picked up from the registry and the copy updated in
+        place, its addresses unchanged.
+        <template v-for="w in watch" :key="w.registryId">
+          <span :class="w.state === 'open' ? 'ok' : 'busy'" :title="w.error ?? ''">
+            {{ registryName(w.registryId) }}: {{ w.state === 'open' ? 'live' : w.state === 'connecting' ? 'connecting…' : `reconnecting (${w.error})` }}
+          </span>
+        </template>
+      </small>
+    </p>
     <table v-if="mirrors.length">
       <thead><tr><th>Name</th><th>Kind</th><th>Direction</th><th>Shared in</th><th>State</th><th></th></tr></thead>
       <tbody>
@@ -391,7 +403,7 @@ onMounted(load);
           </td>
           <td :class="stateClass(m)">{{ stateText(m) }}</td>
           <td class="actions">
-            <button v-if="m.kind === 'sender'" :disabled="busy" @click="run(() => api.refreshMirror(m.id))" title="re-read the origin SDP and rebuild">Refresh</button>
+            <button v-if="m.kind === 'sender'" :disabled="busy" @click="run(() => api.refreshMirror(m.id))" title="re-read the original's SDP now — changes are followed automatically while the registry feed is live">Refresh</button>
             <button :disabled="busy" @click="run(() => api.deleteMirror(m.id))">Remove</button>
           </td>
         </tr>
@@ -418,6 +430,7 @@ td small { display: block; opacity: 0.6; }
 .warn { color: #c08a2e; font-size: 0.85rem; }
 .notice { color: #2e9e4f; }
 .muted { opacity: 0.5; }
+.watch small { display: flex; flex-wrap: wrap; gap: 0.2rem 0.75rem; opacity: 0.85; }
 .bulk { margin: 0.2rem 0 0.4rem; }
 .toolbar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 0; margin-bottom: 0.5rem; background: Canvas; border-bottom: 1px solid #8883; }
 .search { flex: 1 1 22rem; padding: 0.45rem 0.6rem; font-size: 0.95rem; }

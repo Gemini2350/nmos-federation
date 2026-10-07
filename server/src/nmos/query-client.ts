@@ -12,6 +12,7 @@ import { log } from '../util/log.js';
 
 export interface QuerySender {
   id: string;
+  version?: string;
   label: string;
   description?: string;
   device_id: string;
@@ -291,6 +292,33 @@ export class QueryClient {
     if (firstRels.has('prev')) await walk('prev', 'x-paging-since', 'paging.until', first);
 
     return { items: [...byId.values()], pages, truncated, limit };
+  }
+
+  /**
+   * Opens an IS-04 Query API subscription and returns the WebSocket URL to read it from.
+   * Non-persistent: the registry drops it once nobody is connected. Downgraded like
+   * every other query, so changes to v1.2-registered senders arrive too.
+   */
+  async subscribe(resourcePath: string): Promise<string> {
+    const url = `${await this.base()}/subscriptions`;
+    const post = (params: Record<string, string>) =>
+      fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ max_update_rate_ms: 100, resource_path: resourcePath, params, persist: false, secure: false }),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      }).catch((e) => {
+        throw new QueryError(failure(e));
+      });
+    let res = await post(this.downgradeParam());
+    if (res.status === 400 && this.downgradeAccepted) {
+      this.downgradeAccepted = false;
+      res = await post({});
+    }
+    if (!res.ok) throw new QueryError(`subscription: HTTP ${res.status}`);
+    const sub = (await res.json()) as { ws_href?: string };
+    if (!sub.ws_href) throw new QueryError('subscription without ws_href');
+    return sub.ws_href;
   }
 
   /**
