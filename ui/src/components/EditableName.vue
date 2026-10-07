@@ -5,6 +5,10 @@ import { ref, watch } from 'vue';
  * A name that is edited where it is shown. Saves on Enter or when the field loses
  * focus, Escape restores. An empty name falls back to `fallback` when one is given
  * (a bridge without a name is "NMOS Federation"), otherwise it is refused.
+ *
+ * Tab and Shift+Tab move to the next or previous name on the page, skipping the
+ * buttons in between, with the text selected — renaming a column of receivers is
+ * type, Tab, type, Tab. Leaving the field saves it as usual.
  */
 const props = defineProps<{ value: string; fallback?: string; disabled?: boolean }>();
 const emit = defineEmits<{ save: [label: string] }>();
@@ -24,6 +28,16 @@ function commit() {
   if (next !== props.value) emit('save', next);
 }
 
+function step(e: KeyboardEvent) {
+  const fields = Array.from(document.querySelectorAll<HTMLInputElement>('input.name:not(:disabled)'));
+  const here = fields.indexOf(e.target as HTMLInputElement);
+  const next = fields[here + (e.shiftKey ? -1 : 1)];
+  if (here < 0 || !next) return; // the last one: let the browser move on as usual
+  e.preventDefault();
+  next.focus();
+  next.select();
+}
+
 function cancel(e: Event) {
   text.value = props.value;
   (e.target as HTMLInputElement).blur();
@@ -36,9 +50,10 @@ function cancel(e: Event) {
     v-model="text"
     :disabled="disabled"
     :size="Math.max(text.length, 6)"
-    title="Click to rename"
+    title="Click to rename · Tab: next name"
     @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
     @keydown.esc.prevent="cancel"
+    @keydown.tab="step"
     @blur="commit"
   />
 </template>

@@ -39,6 +39,37 @@ import { log } from '../util/log.js';
  *   POST     /api/reconcile                    run desired/actual reconciliation now
  *   WS       /api/events                       channel and status changes
  */
+/**
+ * Every changing request runs alone. Each write handler copies the configuration,
+ * changes the copy and saves it; two side by side each saved their own copy, so one
+ * change was silently lost — or both collided on the temp file and one failed with 400.
+ * Tabbing through name fields sends exactly that: a PUT per field, back to back.
+ *
+ * A queue rather than per-handler care, because the window is not only the save: a
+ * handler awaits switch teardowns and registry syncs before it saves, and anything
+ * that lands in between works on a stale copy. Reads are not queued.
+ */
+function serializeWrites(app: FastifyInstance): void {
+  let tail: Promise<void> = Promise.resolve();
+  const releases = new WeakMap<object, () => void>();
+  app.addHook('onRequest', async (req) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || !req.url.startsWith('/api/')) return;
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => (release = resolve));
+    const before = tail;
+    tail = before.then(() => mine);
+    releases.set(req, release);
+    await before;
+  });
+  const done = async (req: object) => {
+    releases.get(req)?.();
+    releases.delete(req);
+  };
+  app.addHook('onResponse', done);
+  // A client that gives up must not hold the queue for everyone after it.
+  app.addHook('onRequestAbort', done);
+}
+
 export function registerRestApi(
   app: FastifyInstance,
   store: ConfigStore,
@@ -46,6 +77,7 @@ export function registerRestApi(
   state: StateStore,
   onConfigChange: () => Promise<void>,
 ): void {
+  serializeWrites(app);
   app.get('/api/status', async () => engine.status());
   app.get('/api/config', async () => store.current);
   app.get('/api/channels', async () => engine.channels());

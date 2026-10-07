@@ -372,7 +372,7 @@ onMounted(load);
       <tbody>
         <tr v-for="m in mirrors" :key="m.id">
           <td>
-            <strong><EditableName :value="m.name" :disabled="busy" @save="(label) => updateMirror(m, { label })" /></strong>
+            <strong><EditableName :value="m.name" @save="(label) => updateMirror(m, { label })" /></strong>
             <small>{{ m.name !== m.originLabel ? `${m.originLabel} · ` : '' }}from {{ registryName(m.registryId) }}</small>
           </td>
           <td>{{ m.kind === 'sender' ? 'sender copy' : 'receiver proxy' }}</td>

@@ -53,6 +53,21 @@ async function refresh() {
   }
 }
 
+/**
+ * A rename saves in the background. Going through `run` disabled every field while
+ * it saved, which threw the cursor out of the next name the moment Tab had put it
+ * there. The server queues the writes, so they can go out back to back.
+ */
+async function rename(fn: () => Promise<unknown>) {
+  try {
+    await fn();
+    error.value = null;
+    await refresh();
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+
 async function run(fn: () => Promise<unknown>) {
   busy.value = true;
   try {
@@ -143,7 +158,7 @@ onMounted(refresh);
   <article v-for="b in bridges" :key="b.id" :class="['bridge', { detached: b.detached }]">
     <header>
       <div>
-        <strong><EditableName :value="b.label" fallback="NMOS Federation" :disabled="busy" @save="(label) => patchBridge(b, { label })" /></strong>
+        <strong><EditableName :value="b.label" fallback="NMOS Federation" @save="(label) => rename(() => api.updateBridge(b.id, { label }))" /></strong>
         <span v-if="b.detached" class="badge">detached</span>
         <small>
           node · {{ domainName(b.domains[0]) }} ⇄ {{ domainName(b.domains[1]) }} ·
@@ -166,14 +181,14 @@ onMounted(refresh);
 
     <article v-for="d in devicesOf(b.id)" :key="d.id" class="device">
       <header>
-        <strong><EditableName :value="d.label" :disabled="busy" @save="(label) => run(() => api.updateDevice(d.id, { label }))" /></strong>
+        <strong><EditableName :value="d.label" @save="(label) => rename(() => api.updateDevice(d.id, { label }))" /></strong>
         <button :disabled="busy" @click="run(() => api.deleteDevice(d.id))">Remove device</button>
       </header>
       <table v-if="d.receivers?.length">
         <thead><tr><th>Virtual receiver</th><th>Direction</th><th>Format</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="vrx in d.receivers" :key="vrx.id">
-            <td><EditableName :value="vrx.label" :disabled="busy" @save="(label) => run(() => api.renameReceiver(vrx.id, label))" /></td>
+            <td><EditableName :value="vrx.label" @save="(label) => rename(() => api.renameReceiver(vrx.id, label))" /></td>
             <td><small class="dir">{{ direction(d, vrx) }}</small></td>
             <td>{{ vrx.format }}</td>
             <td>{{ vrx.enabled ? 'yes' : 'no' }}</td>
@@ -186,7 +201,7 @@ onMounted(refresh);
       <div class="row" v-if="rxDraft[d.id]">
         <label><span>Count</span><input type="number" min="1" max="256" v-model.number="rxDraft[d.id]!.count" /></label>
         <label><span>Name pattern</span><input v-model="rxDraft[d.id]!.pattern" /></label>
-        <label><span>Offered in <InfoHint text="The domain the receiver appears in. A stream connected to it flows to the bridge's other domain, where its sender is published." /></span>
+        <label><span>Direction <InfoHint text="The receivers appear in the domain on the left. A stream connected to one flows to the domain on the right, where its sender is published. Copies on the Copy page need no choice: they run away from the registry they come from." /></span>
           <select v-model="rxDraft[d.id]!.side">
             <option v-for="dom in bridgeOf(d)?.domains ?? []" :key="dom" :value="dom">{{ domainName(dom) }} → {{ domainName(other(bridgeOf(d), dom)) }}</option>
           </select>

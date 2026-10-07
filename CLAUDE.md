@@ -77,6 +77,10 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
 - **A copy is a channel.** Sender copies and receiver proxies go through
   `Engine.runChannel`, the same path as an IS-05 activation — only the trigger and the
   source of the origin SDP differ. Do not grow a second pipeline for them.
+- **Changing REST requests run one at a time** (`serializeWrites` in `api/rest.ts`).
+  Every write handler copies the config, changes the copy and saves it; side by side
+  they overwrote each other or collided on the temp file (4 of 5 quick renames failed
+  with 400). Do not bypass the queue with a second write path.
 - **A failed IS-05 patch to a remote receiver does not fail the channel.** The stream
   is published and working; the miss is reported in `channel.remoteReceiver.error`.
 - **The configuration is a provider, not a snapshot.** `Engine` receives
