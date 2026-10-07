@@ -66,9 +66,11 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
 - **`registered` is in-memory only.** After a restart the software cannot unregister
   what it left in a registry, so `Engine.cleanupOrphans()` finds it through the query
   API instead. Anything that removes resources has to run it, or they stay there forever.
-- **A bridge is the node.** One id, registered in both its domains with that domain's
-  address; a device is likewise one id appearing on both sides with its local children.
-  There is no mirror resource.
+- **A bridge is the node, and it has no direction.** One id, registered in both its
+  domains with that domain's address; a device is likewise one id appearing on both
+  sides with its local children. There is no mirror resource. The direction belongs to
+  each port: a vRX's `side`, or for a copy the domain of the registry it came from.
+  "Source" and "target" are properties of a *channel*, never of a bridge.
 - **The node is registered per bridge, independent of devices.** Otherwise an
   installation with registries but no devices registers nothing and heartbeats 404 in a
   loop.

@@ -124,6 +124,7 @@ export interface BrowseSender {
   device_id: string;
   deviceLabel: string;
   nodeId: string | null;
+  nodeLabel: string | null;
   manifest_href: string | null;
   transport: string;
   /** Belongs to one of our own nodes — copying a copy is rarely what you want. */
@@ -139,6 +140,7 @@ export interface BrowseReceiver {
   device_id: string;
   deviceLabel: string;
   nodeId: string | null;
+  nodeLabel: string | null;
   format: string;
   transport: string;
   caps?: { media_types?: string[] };

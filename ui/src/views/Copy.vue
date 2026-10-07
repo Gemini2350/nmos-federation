@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router';
 import { api, type BrowseReceiver, type BrowseSender, type Config, type Mirror } from '../api';
 import { domainName, primeFromConfig, registryName } from '../names';
 import EditableName from '../components/EditableName.vue';
+import BrowseList from '../components/BrowseList.vue';
 
 const cfg = ref<Config | null>(null);
 const mirrors = ref<Mirror[]>([]);
@@ -33,10 +34,42 @@ const otherSide = computed(() =>
   bridge.value ? (bridge.value.domains[0] === originDomain.value ? bridge.value.domains[1] : bridge.value.domains[0]) : '',
 );
 
-const match = (label: string, dev: string) =>
-  !filter.value || `${label} ${dev}`.toLowerCase().includes(filter.value.toLowerCase());
-const visibleSenders = computed(() => senders.value.filter((s) => match(s.label, s.deviceLabel)));
-const visibleReceivers = computed(() => receivers.value.filter((r) => match(r.label, r.deviceLabel)));
+/**
+ * Search over everything a row is known by: its name, device, node and format. Every
+ * word has to match somewhere, in any order — "snp 3 video" finds the third video
+ * sender of the SNP without typing its exact label.
+ */
+const terms = computed(() => filter.value.toLowerCase().split(/\s+/).filter(Boolean));
+const searching = computed(() => terms.value.length > 0);
+const matches = (...fields: (string | null | undefined)[]) => {
+  const text = fields.filter(Boolean).join(' ').toLowerCase();
+  return terms.value.every((t) => text.includes(t));
+};
+const visibleSenders = computed(() =>
+  senders.value.filter((s) => matches(s.label, s.deviceLabel, s.nodeLabel, s.flow?.media_type)),
+);
+const visibleReceivers = computed(() =>
+  receivers.value.filter((r) => matches(r.label, r.deviceLabel, r.nodeLabel, r.format.split(':').pop(), ...(r.caps?.media_types ?? []))),
+);
+/**
+ * What a receiver is subscribed to, by the sender's name where this registry knows it —
+ * a bare UUID tells nobody anything, and an active receiver without a sender id (a
+ * manual SDP) used to read "connected to null".
+ */
+const senderNames = computed(() => new Map(senders.value.map((s) => [s.id, s.label])));
+function currently(r: BrowseReceiver): string {
+  const sub = r.subscription;
+  if (!sub?.active) return 'idle';
+  if (!sub.sender_id) return 'active, no sender (manual SDP)';
+  return `connected to ${senderNames.value.get(sub.sender_id) ?? sub.sender_id}`;
+}
+
+const senderList = ref<{ expandAll: (open: boolean) => void } | null>(null);
+const receiverList = ref<{ expandAll: (open: boolean) => void } | null>(null);
+function expandAll(open: boolean) {
+  senderList.value?.expandAll(open);
+  receiverList.value?.expandAll(open);
+}
 
 async function load() {
   try {
@@ -72,7 +105,7 @@ async function browse(quiet = false) {
     if (!quiet) {
       // The page count is the sum over senders, receivers, devices and flows — reporting
       // it as "N pages" next to a sender count read as nonsense. Say what it means.
-      const paged = res.paging.limit && res.paging.pages > 4
+      const paged = res.paging.limit && res.paging.pages > 5
         ? ` · this registry caps a page at ${res.paging.limit}, so the list was fetched in ${res.paging.pages} requests`
         : '';
       notify(`${res.senders.length} senders, ${res.receivers.length} receivers${paged}`);
@@ -92,21 +125,13 @@ const selected = reactive({ sender: new Set<string>(), receiver: new Set<string>
 
 const copyableSender = (s: BrowseSender) => !s.copied && !s.ours && !!s.manifest_href;
 const copyableReceiver = (r: BrowseReceiver) => !r.copied && !r.ours && r.controllable;
-const copyableSenders = computed(() => visibleSenders.value.filter(copyableSender));
-const copyableReceivers = computed(() => visibleReceivers.value.filter(copyableReceiver));
 
-function toggle(kind: 'sender' | 'receiver', id: string, on: boolean) {
-  if (on) selected[kind].add(id);
-  else selected[kind].delete(id);
+function toggle(kind: 'sender' | 'receiver', ids: string[], on: boolean) {
+  for (const id of ids) {
+    if (on) selected[kind].add(id);
+    else selected[kind].delete(id);
+  }
 }
-function toggleAll(kind: 'sender' | 'receiver', on: boolean) {
-  const rows = kind === 'sender' ? copyableSenders.value : copyableReceivers.value;
-  for (const r of rows) toggle(kind, r.id, on);
-}
-const allTicked = (kind: 'sender' | 'receiver') => {
-  const rows = kind === 'sender' ? copyableSenders.value : copyableReceivers.value;
-  return rows.length > 0 && rows.every((r) => selected[kind].has(r.id));
-};
 
 /** Messages float over the page instead of being inserted above the tables. */
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -232,7 +257,6 @@ onMounted(load);
           </option>
         </select>
       </label>
-      <label>Filter <input v-model="filter" placeholder="label or device" /></label>
       <button :disabled="busy || !sourceRegistry" @click="browse()">{{ busy ? 'working…' : 'Browse' }}</button>
     </div>
     <p v-if="paging?.truncated" class="warn">
@@ -246,6 +270,23 @@ onMounted(load);
   </section>
 
   <section v-if="senders.length || receivers.length">
+    <div class="toolbar">
+      <input
+        ref="searchBox"
+        v-model="filter"
+        type="search"
+        class="search"
+        placeholder="Search name, device, node or format — e.g. “snp video 3”"
+        @keydown.esc="filter = ''"
+      />
+      <small class="count">
+        {{ visibleSenders.length }}<template v-if="searching"> of {{ senders.length }}</template> senders ·
+        {{ visibleReceivers.length }}<template v-if="searching"> of {{ receivers.length }}</template> receivers
+      </small>
+      <button :disabled="searching" @click="expandAll(true)">Expand all</button>
+      <button :disabled="searching" @click="expandAll(false)">Collapse all</button>
+    </div>
+
     <h3>Senders <small v-if="inBridge">copied from {{ domainName(originDomain) }} into {{ domainName(otherSide) }}</small></h3>
     <!-- With no device there is nothing to say about domains yet; saying it anyway
          produced three contradictory messages and a blank domain name. -->
@@ -261,36 +302,30 @@ onMounted(load);
           Copy selected ({{ selected.sender.size }})
         </button>
       </div>
-      <table class="pick">
-        <colgroup><col class="c-check" /><col /><col class="c-dev" /><col class="c-ess" /><col class="c-state" /></colgroup>
-        <thead>
-          <tr>
-            <th><input type="checkbox" :checked="allTicked('sender')" :disabled="busy || !copyableSenders.length" title="all copyable" @change="toggleAll('sender', ($event.target as HTMLInputElement).checked)" /></th>
-            <th>Sender</th><th>Device</th><th>Essence</th><th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="s in visibleSenders" :key="s.id" :class="{ ticked: selected.sender.has(s.id) }">
-            <td>
-              <!-- A row that cannot be ticked keeps an invisible box, so it is exactly as tall
-                   as one that can and marking a row copied moves nothing below it. -->
-              <input v-if="copyableSender(s)" type="checkbox" :disabled="busy" :checked="selected.sender.has(s.id)" @change="toggle('sender', s.id, ($event.target as HTMLInputElement).checked)" />
-              <input v-else type="checkbox" disabled class="placeholder" aria-hidden="true" tabindex="-1" />
-            </td>
-            <td><strong>{{ s.label }}</strong></td>
-            <td>{{ s.deviceLabel }}<small v-if="s.ours">one of ours</small></td>
-            <td>
-              <template v-if="s.flow">{{ s.flow.media_type }}<small v-if="s.flow.frame_width">{{ s.flow.frame_width }}×{{ s.flow.frame_height }}</small></template>
-              <small v-else>unknown</small>
-            </td>
-            <td>
-              <span v-if="s.copied" class="ok">copied</span>
-              <span v-else-if="s.ours" class="muted" title="copying our own copy would loop">—</span>
-              <span v-else-if="!s.manifest_href" class="muted" title="no manifest_href, so there is no SDP to read">no manifest</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <BrowseList
+        ref="senderList"
+        :rows="visibleSenders"
+        :selected="selected.sender"
+        :copyable="copyableSender"
+        :searching="searching"
+        :busy="busy"
+        noun="sender"
+        :col-classes="['c-ess']"
+        @toggle="(ids, on) => toggle('sender', ids, on)"
+      >
+        <template #head><th>Essence</th></template>
+        <template #cells="{ row: s }">
+          <td>
+            <template v-if="s.flow">{{ s.flow.media_type }}<small v-if="s.flow.frame_width">{{ s.flow.frame_width }}×{{ s.flow.frame_height }}</small></template>
+            <small v-else>unknown</small>
+          </td>
+        </template>
+        <template #status="{ row: s }">
+          <span v-if="s.copied" class="ok">copied</span>
+          <span v-else-if="s.ours" class="muted" title="copying our own copy would loop">—</span>
+          <span v-else-if="!s.manifest_href" class="muted" title="no manifest_href, so there is no SDP to read">no manifest</span>
+        </template>
+      </BrowseList>
     </template>
 
     <h3>Receivers <small v-if="inBridge">proxied into {{ domainName(otherSide) }}, driving them in {{ domainName(originDomain) }}</small></h3>
@@ -305,34 +340,28 @@ onMounted(load);
           Proxy selected ({{ selected.receiver.size }})
         </button>
       </div>
-      <table class="pick">
-        <colgroup><col class="c-check" /><col /><col class="c-dev" /><col class="c-ess" /><col class="c-cur" /><col class="c-state" /></colgroup>
-        <thead>
-          <tr>
-            <th><input type="checkbox" :checked="allTicked('receiver')" :disabled="busy || !copyableReceivers.length" title="all proxyable" @change="toggleAll('receiver', ($event.target as HTMLInputElement).checked)" /></th>
-            <th>Receiver</th><th>Device</th><th>Accepts</th><th>Currently</th><th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in visibleReceivers" :key="r.id" :class="{ ticked: selected.receiver.has(r.id) }">
-            <td>
-              <!-- A row that cannot be ticked keeps an invisible box, so it is exactly as tall
-                   as one that can and marking a row copied moves nothing below it. -->
-              <input v-if="copyableReceiver(r)" type="checkbox" :disabled="busy" :checked="selected.receiver.has(r.id)" @change="toggle('receiver', r.id, ($event.target as HTMLInputElement).checked)" />
-              <input v-else type="checkbox" disabled class="placeholder" aria-hidden="true" tabindex="-1" />
-            </td>
-            <td><strong>{{ r.label }}</strong></td>
-            <td>{{ r.deviceLabel }}<small v-if="r.ours">one of ours</small></td>
-            <td>{{ (r.caps?.media_types ?? []).join(', ') || '—' }}</td>
-            <td><small>{{ r.subscription?.active ? `connected to ${r.subscription.sender_id}` : 'idle' }}</small></td>
-            <td>
-              <span v-if="r.copied" class="ok">proxied</span>
-              <span v-else-if="r.ours" class="muted">—</span>
-              <span v-else-if="!r.controllable" class="muted" title="advertises no sr-ctrl control, so it cannot be driven over IS-05">not controllable</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <BrowseList
+        ref="receiverList"
+        :rows="visibleReceivers"
+        :selected="selected.receiver"
+        :copyable="copyableReceiver"
+        :searching="searching"
+        :busy="busy"
+        noun="receiver"
+        :col-classes="['c-ess', 'c-cur']"
+        @toggle="(ids, on) => toggle('receiver', ids, on)"
+      >
+        <template #head><th>Accepts</th><th>Currently</th></template>
+        <template #cells="{ row: r }">
+          <td>{{ (r.caps?.media_types ?? []).join(', ') || '—' }}</td>
+          <td><small>{{ currently(r) }}</small></td>
+        </template>
+        <template #status="{ row: r }">
+          <span v-if="r.copied" class="ok">proxied</span>
+          <span v-else-if="r.ours" class="muted">—</span>
+          <span v-else-if="!r.controllable" class="muted" title="advertises no sr-ctrl control, so it cannot be driven over IS-05">not controllable</span>
+        </template>
+      </BrowseList>
     </template>
   </section>
 
@@ -390,16 +419,9 @@ td small { display: block; opacity: 0.6; }
 .notice { color: #2e9e4f; }
 .muted { opacity: 0.5; }
 .bulk { margin: 0.2rem 0 0.4rem; }
-/* Fixed columns: ticking a row or marking it copied changes nothing else's width. */
-table.pick { table-layout: fixed; width: 100%; }
-table.pick td { overflow-wrap: anywhere; }
-.c-check { width: 2.2rem; }
-.c-dev { width: 22%; }
-.c-ess { width: 16%; }
-.c-cur { width: 20%; }
-.c-state { width: 9rem; }
-tr.ticked { background: #4a8ad41a; }
-.placeholder { visibility: hidden; }
+.toolbar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 0; margin-bottom: 0.5rem; background: Canvas; border-bottom: 1px solid #8883; }
+.search { flex: 1 1 22rem; padding: 0.45rem 0.6rem; font-size: 0.95rem; }
+.count { opacity: 0.7; white-space: nowrap; }
 .share { display: flex; flex-wrap: wrap; gap: 0.2rem 0.75rem; }
 label.check { flex-direction: row; align-items: center; gap: 0.3rem; font-size: 0.85rem; white-space: nowrap; }
 .toasts { position: fixed; right: 1rem; bottom: 1rem; display: flex; flex-direction: column; gap: 0.5rem; max-width: min(36rem, calc(100vw - 2rem)); z-index: 50; }

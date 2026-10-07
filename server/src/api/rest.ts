@@ -368,11 +368,14 @@ export function registerRestApi(
     try {
       // Paged, not a single GET: a registry that caps a page would otherwise hand us a
       // silently truncated list. The paging stats go to the GUI so a hard cap is visible.
-      const [senderPage, receiverPage, devicePage, flowPage] = await Promise.all([
+      const empty = { items: [], pages: 0, truncated: false, limit: null };
+      const [senderPage, receiverPage, devicePage, flowPage, nodePage] = await Promise.all([
         query.getAll<Awaited<ReturnType<typeof query.senders>>[number]>('senders'),
         query.getAll<Awaited<ReturnType<typeof query.receivers>>[number]>('receivers'),
         query.getAll<Awaited<ReturnType<typeof query.devices>>[number]>('devices'),
-        query.getAll<Awaited<ReturnType<typeof query.flows>>[number]>('flows').catch(() => ({ items: [], pages: 0, truncated: false, limit: null })),
+        query.getAll<Awaited<ReturnType<typeof query.flows>>[number]>('flows').catch(() => empty),
+        // Only for grouping by node in the GUI; a registry that fails it still browses.
+        query.getAll<{ id: string; label?: string; hostname?: string; description?: string }>('nodes').catch(() => empty),
       ]);
       const senders = senderPage.items;
       const receivers = receiverPage.items;
@@ -380,6 +383,14 @@ export function registerRestApi(
       const flows = flowPage.items;
       const deviceById = new Map(devices.map((d) => [d.id, d]));
       const flowById = new Map(flows.map((f) => [f.id, f]));
+      // A node's label is optional in practice (nmos-cpp nodes often carry an empty one);
+      // fall back to what identifies it to a human, then to the id.
+      const nodeLabel = new Map(
+        (nodePage.items as { id: string; label?: string; hostname?: string; description?: string }[]).map((n) => [
+          n.id,
+          n.label?.trim() || n.hostname?.trim() || n.description?.trim() || n.id,
+        ]),
+      );
       const ourNodes = new Set(store.current.bridges.map((b) => engine.nodeId(b.id)));
       const copied = new Set(store.current.mirrors.map((m) => `${m.registryId}:${m.originId}`));
 
@@ -388,6 +399,7 @@ export function registerRestApi(
         return {
           deviceLabel: device?.label ?? r.device_id,
           nodeId: device?.node_id ?? null,
+          nodeLabel: device ? (nodeLabel.get(device.node_id) ?? device.node_id) : null,
           ours: device ? ourNodes.has(device.node_id) : false,
           copied: copied.has(`${req.params.id}:${r.id}`),
           controllable: !!device?.controls?.some((c) => c.type.startsWith('urn:x-nmos:control:sr-ctrl/')),
@@ -397,8 +409,8 @@ export function registerRestApi(
       return {
         paging: {
           limit: senderPage.limit,
-          pages: senderPage.pages + receiverPage.pages + devicePage.pages + flowPage.pages,
-          truncated: senderPage.truncated || receiverPage.truncated || devicePage.truncated || flowPage.truncated,
+          pages: senderPage.pages + receiverPage.pages + devicePage.pages + flowPage.pages + nodePage.pages,
+          truncated: senderPage.truncated || receiverPage.truncated || devicePage.truncated || flowPage.truncated || nodePage.truncated,
         },
         senders: senders.map((s) => ({
           ...s,
