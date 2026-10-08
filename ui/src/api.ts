@@ -118,6 +118,8 @@ export interface Device {
   }[];
   bridge?: Bridge | null;
   detached?: boolean;
+  /** The original device's IS-12 / IS-08, passed through because every port is a copy of it. */
+  passthrough?: { from: string; domainId: string; apis: string[] } | null;
 }
 
 export interface VirtualReceiver {

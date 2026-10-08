@@ -255,3 +255,13 @@ test('receivers and senders carrying a group hint validate', () => {
     buildSender('c4c4c4c4-1111-5111-8111-111111111111', 'b1b1b1b1-1111-5111-8111-111111111111', 'd1d1d1d1-1111-5111-8111-111111111111', 'TX', 'http://10.1.0.10:8081/x', ['eth0'], undefined, tags),
   );
 });
+
+test('a device passing IS-12 and IS-08 through validates', () => {
+  check(
+    'device.json',
+    buildDevice('d2d2d2d2-1111-5111-8111-111111111111', identity.id, 'Copies', 'http://10.1.0.10:8081/x-nmos/connection/v1.1/', [], [], [
+      { type: 'urn:x-nmos:control:ncp/v1.0', href: 'ws://10.1.0.10:8081/x-nmos-proxy/d2d2d2d2-1111-5111-8111-111111111111/ncp' },
+      { type: 'urn:x-nmos:control:cm-ctrl/v1.0', href: 'http://10.1.0.10:8081/x-nmos-proxy/d2d2d2d2-1111-5111-8111-111111111111/cm/' },
+    ]),
+  );
+});

@@ -190,7 +190,12 @@ onMounted(refresh);
 
     <article v-for="d in devicesOf(b.id)" :key="d.id" class="device">
       <header>
-        <strong><EditableName :value="d.label" @save="(label) => rename(() => api.updateDevice(d.id, { label }))" /></strong>
+        <div>
+          <strong><EditableName :value="d.label" @save="(label) => rename(() => api.updateDevice(d.id, { label }))" /></strong>
+          <small v-if="d.passthrough" class="pass" title="Every port of this device is a copy of one original device, so its control APIs are offered here too — through this software, with ids translated to the copies'.">
+            passes through {{ d.passthrough.apis.join(' and ') }} of {{ d.passthrough.from }} · in {{ domainName(d.passthrough.domainId) }}
+          </small>
+        </div>
         <button :disabled="busy" @click="run(() => api.deleteDevice(d.id))">Remove device</button>
       </header>
       <table v-if="d.receivers?.length">
@@ -312,6 +317,7 @@ small { display: block; opacity: 0.65; }
 .both { align-self: center; font-size: 1.2rem; opacity: 0.6; padding-bottom: 0.2rem; }
 .dir { opacity: 0.75; white-space: nowrap; }
 .role { font-size: 0.8rem; opacity: 0.8; margin-top: 0.1rem; }
+.pass { display: block; font-size: 0.75rem; color: #2e7fc0; margin-top: 0.1rem; }
 .orig { display: block; font-size: 0.75rem; opacity: 0.55; margin-top: 0.1rem; }
 table.copies { margin-top: 0.6rem; }
 .ok { color: #2e9e4f; }

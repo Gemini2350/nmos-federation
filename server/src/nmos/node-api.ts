@@ -4,6 +4,7 @@ import type { Engine } from '../federation/engine.js';
 import type { StateStore } from '../federation/state.js';
 import { emptyConnection, type ConnectionState } from '../federation/state.js';
 import { log } from '../util/log.js';
+import { registerControlProxy } from './control-proxy.js';
 
 /**
  * IS-04 Node API + IS-05 Connection API for **one** domain.
@@ -224,4 +225,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
   );
 
   app.get(`/x-nmos/connection/${CONN_VER}/bulk/`, async () => ['senders/', 'receivers/']);
+
+  // Controls of an original device passed through to its copies (IS-12, IS-08).
+  registerControlProxy(app, domain, engine);
 }

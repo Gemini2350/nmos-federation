@@ -9,6 +9,7 @@ import type { Bridge } from '../types.js';
 import { listInterfaces } from '../nmos/resources.js';
 import { nextId, otherDomain, proxyLabel } from '../config/schema.js';
 import { GROUPHINT } from '../federation/grouping.js';
+import { PASSTHROUGH, passableControls } from '../federation/passthrough.js';
 import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
 
@@ -56,14 +57,25 @@ import { log } from '../util/log.js';
  * when the copy is made; `null` records "the original has none" so it is not asked
  * again.
  */
-async function readOrigin(engine: Engine, mirror: MirrorEntry): Promise<Pick<MirrorEntry, 'originGroupHint' | 'originDeviceLabel'>> {
+async function readOrigin(
+  engine: Engine,
+  mirror: MirrorEntry,
+): Promise<Pick<MirrorEntry, 'originGroupHint' | 'originDeviceLabel' | 'originControls' | 'originSourceId'>> {
   const query = engine.queryClient(mirror.registryId);
   if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
   const [resource, device] = await Promise.all([
     mirror.kind === 'sender' ? query.sender(mirror.originId) : query.receiver(mirror.originId),
     query.device(mirror.originDeviceId).catch(() => null),
   ]);
-  return { originGroupHint: resource.tags?.[GROUPHINT]?.[0] ?? null, originDeviceLabel: device?.label ?? null };
+  // IS-08 names a sender's output by its source, so a sender copy needs that id too.
+  const flowId = mirror.kind === 'sender' ? (resource as { flow_id?: string | null }).flow_id : null;
+  const flow = flowId ? await query.flow(flowId).catch(() => null) : null;
+  return {
+    originGroupHint: resource.tags?.[GROUPHINT]?.[0] ?? null,
+    originDeviceLabel: device?.label ?? null,
+    originControls: device ? passableControls(device.controls) : null,
+    ...(mirror.kind === 'sender' ? { originSourceId: flow?.source_id ?? null } : {}),
+  };
 }
 
 function serializeWrites(app: FastifyInstance): void {
@@ -258,6 +270,12 @@ export function registerRestApi(
         }),
       bridge: bridges.get(d.bridgeId) ?? null,
       detached: !engine.isAttached(d),
+      passthrough: (() => {
+        const pt = engine.passthroughOf(d);
+        return pt
+          ? { from: pt.originDeviceLabel ?? pt.originDeviceId, domainId: pt.domainId, apis: pt.controls.map((c) => PASSTHROUGH[c.type]!.label) }
+          : null;
+      })(),
       };
     });
   });
@@ -708,7 +726,7 @@ export function registerRestApi(
     const cfg = structuredClone(store.current);
     let updated = 0;
     const failed: string[] = [];
-    for (const mirror of cfg.mirrors.filter((m) => m.originGroupHint === undefined)) {
+    for (const mirror of cfg.mirrors.filter((m) => m.originGroupHint === undefined || m.originControls === undefined)) {
       try {
         Object.assign(mirror, await readOrigin(engine, mirror));
         updated++;

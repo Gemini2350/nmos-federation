@@ -291,6 +291,13 @@ export interface MirrorEntry {
    */
   originGroupHint?: string | null;
   originDeviceLabel?: string | null;
+  /**
+   * The original device's IS-12 / IS-08 controls, read with it — passed through when a
+   * device consists of copies of this one original only. `undefined` = not read yet.
+   */
+  originControls?: { type: string; href: string }[] | null;
+  /** For a sender copy: the original's source id, which IS-08 refers to. */
+  originSourceId?: string | null;
 }
 
 export interface AppConfig {

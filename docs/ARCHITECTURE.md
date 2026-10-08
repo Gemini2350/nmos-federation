@@ -296,6 +296,31 @@ they are, and a deselected registry has the copy removed. At least one registry 
 always kept; chosen registries that are later disabled drop out, and if none is left
 the default applies again.
 
+### Passing an original's control APIs through
+
+When **every** port of a federation device is a copy of the same original device (same
+registry, no free virtual receiver among them), that device's IS-12 (BCP-008 status)
+and IS-08 (channel mapping) belong to our copies too. Our device then advertises them
+itself, in the domain the copies appear in — pointing at a proxy on this software's
+node API there (`/x-nmos-proxy/<device>/ncp` over WebSocket, `/x-nmos-proxy/<device>/cm/`
+over HTTP), which forwards to the original (`nmos/control-proxy.ts`).
+
+Two reasons it is a proxy and not the original's href copied over:
+
+- **Reachability.** The original's address lives in its own network; this software has
+  one in both. No unicast routing between the domains is needed.
+- **Identity.** Both APIs name IS-04 resources by id — a BCP-008 monitor's touchpoint
+  (which is how a controller such as NMOS-Crosspoint ties a monitor to a receiver), an
+  IS-08 input's parent, an output's source. Every message is translated: original ids
+  to ours on the way out, ours to the original's on the way in. Ids we hold no copy of
+  pass unchanged.
+
+The original's controls and, for sender copies, its source id are read with the copy
+(older copies once after startup). The target of the proxy is always a control the
+original advertised itself, never something a client names. Verified read-only against
+a real IS-12 device: 64 BCP-008 monitors through the proxy, the touchpoints of the two
+copied receivers naming our copies, none of their original ids leaking.
+
 ### Receiver proxy
 
 A copied receiver is a real ordering point, not a decorative IS-04 entry:

@@ -31,6 +31,10 @@ server/src/
   nmos/query-client.ts      IS-04 query API, read-only — browsing a registry
   nmos/is05-client.ts       drives a FOREIGN receiver (receiver proxies)
   nmos/node-api.ts          IS-04 node API, IS-05 vRX/vTX, /transportfile
+  nmos/control-proxy.ts     IS-12 / IS-08 of an original, proxied with ids translated
+  federation/passthrough.ts when a device passes an original's controls through
+  federation/grouping.ts    natural grouping (BCP-002-01) per port
+  federation/origin-watch.ts query-API subscriptions: copies follow their original's SDP
   switch/driver.ts          driver interface program/unprogram/readState
   switch/arista-eapi.ts     eAPI runCmds, command templates
   switch/mock.ts            logs only — federation testable without hardware
@@ -87,6 +91,9 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
   Every write handler copies the config, changes the copy and saves it; side by side
   they overwrote each other or collided on the temp file (4 of 5 quick renames failed
   with 400). Do not bypass the queue with a second write path.
+- **IS-04 versions are strictly increasing** (`nmosVersion`). Millisecond clock stamps
+  collided for two changes in one millisecond, and the second registration was skipped
+  as "already registered at this version".
 - **A failed IS-05 patch to a remote receiver does not fail the channel.** The stream
   is published and working; the miss is reported in `channel.remoteReceiver.error`.
 - **The configuration is a provider, not a snapshot.** `Engine` receives

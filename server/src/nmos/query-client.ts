@@ -44,6 +44,7 @@ export interface QueryDevice {
 
 export interface QueryFlow {
   id: string;
+  source_id?: string;
   label: string;
   format: string;
   media_type: string;
@@ -175,6 +176,7 @@ export class QueryClient {
   sender = async (id: string) => this.getOne<QuerySender>(`senders/${id}`);
   receiver = async (id: string) => this.getOne<QueryReceiver>(`receivers/${id}`);
   device = async (id: string) => this.getOne<QueryDevice>(`devices/${id}`);
+  flow = async (id: string) => this.getOne<QueryFlow>(`flows/${id}`);
 
   private downgradeParam(): Record<string, string> {
     return this.downgradeAccepted ? { 'query.downgrade': QUERY_DOWNGRADE } : {};

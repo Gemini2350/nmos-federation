@@ -2,6 +2,7 @@ import type { AppConfig, DomainConfig } from '../config/schema.js';
 import { bridgeOf, domainById, legOrder, otherDomain, registriesOf } from '../config/schema.js';
 import { groupHints, grouphintTags, type GroupHint, type Port } from './grouping.js';
 import { OriginWatcher, type WatchTarget } from './origin-watch.js';
+import { PASSTHROUGH, type Passthrough } from './passthrough.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
 import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
@@ -384,6 +385,59 @@ export class Engine {
     return groupHints(ports);
   }
 
+  /**
+   * The original device a federation device mirrors, when it mirrors exactly one:
+   * every port a copy (proxy or sender copy) of the same original device, from the same
+   * registry, and that device offering IS-12 or IS-08. Its controls are then passed
+   * through on our device in the domain the copies appear in, see passthrough.ts.
+   * A free virtual receiver among the ports breaks the condition — its status is not
+   * the original's to report.
+   */
+  passthroughOf(device: FederationDevice): Passthrough | null {
+    const vrxs = this.receiversOf(device);
+    const senderCopies = this.cfg.mirrors.filter((m) => m.kind === 'sender' && m.deviceId === device.id);
+    if (vrxs.some((v) => !v.proxyFor)) return null;
+    const proxies = vrxs.map((v) => ({ vrx: v, mirror: this.cfg.mirrors.find((m) => m.id === v.proxyFor!.mirrorId) }));
+    if (proxies.some((p) => !p.mirror)) return null;
+    const copies = [...proxies.map((p) => p.mirror!), ...senderCopies];
+    const first = copies[0];
+    if (!first) return null;
+    if (copies.some((m) => m.originDeviceId !== first.originDeviceId || m.registryId !== first.registryId)) return null;
+    const controls = copies.map((m) => m.originControls ?? []).find((c) => c.length) ?? [];
+    const dir = this.mirrorDirection(first);
+    if (!controls.length || !dir) return null;
+
+    const toOurs = new Map<string, string>([[first.originDeviceId.toLowerCase(), this.deviceId(device.id)]]);
+    for (const { vrx, mirror } of proxies) toOurs.set(mirror!.originId.toLowerCase(), this.receiverNmosId(vrx.id));
+    for (const m of senderCopies) {
+      const key = Engine.mirrorKey(m.id);
+      toOurs.set(m.originId.toLowerCase(), this.senderNmosId(key));
+      if (m.originSourceId) toOurs.set(m.originSourceId.toLowerCase(), this.sourceNmosId(key));
+    }
+    return {
+      domainId: dir.other,
+      originDeviceId: first.originDeviceId,
+      originDeviceLabel: first.originDeviceLabel ?? null,
+      controls,
+      toOurs,
+      toOrigin: new Map([...toOurs].map(([a, b]) => [b.toLowerCase(), a])),
+    };
+  }
+
+  /** Our device by its NMOS id, with what it passes through — for the node API's proxy. */
+  passthroughByNmosId(nmosDeviceId: string, domainId: string): Passthrough | null {
+    const device = this.cfg.devices.find((d) => this.deviceId(d.id) === nmosDeviceId);
+    const pt = device ? this.passthroughOf(device) : null;
+    return pt && pt.domainId === domainId ? pt : null;
+  }
+
+  /** Where a passed-through control is reached on our side: the node API's proxy. */
+  private passthroughHref(domain: DomainConfig, devId: string, type: string): string {
+    const kind = PASSTHROUGH[type]!.kind;
+    const path = `/x-nmos-proxy/${devId}/${kind}${kind === 'cm' ? '/' : ''}`;
+    return canonicalUrl(kind === 'ncp' ? 'ws' : 'http', domain.iface.address, this.portOf(domain.id), path);
+  }
+
   /** Every resource of a domain — exactly what the node API serves there. */
   domainResources(domainId: string) {
     const domain = domainById(this.cfg, domainId);
@@ -463,6 +517,8 @@ export class Engine {
           );
         }
 
+        const pt = this.passthroughOf(device);
+        const passed = pt && pt.domainId === domainId ? pt.controls.map((c) => ({ type: c.type, href: this.passthroughHref(domain, devId, c.type) })) : [];
         devices.push(
           this.stamp(
             buildDevice(
@@ -472,6 +528,7 @@ export class Engine {
               this.controlHref(domain),
               mine.map((c) => this.senderNmosId(c.receiverId)),
               vrxList.map((v) => this.receiverNmosId(v.id)),
+              passed,
             ),
             `device:${domainId}:${devId}`,
           ),

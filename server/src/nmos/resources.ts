@@ -19,10 +19,22 @@ export function uuidv5(namespace: string, name: string): string {
 
 export const newSeed = (): string => randomUUID();
 
-/** IS-04 version stamp "<seconds>:<nanoseconds>". */
+let lastIssued = 0n;
+
+/**
+ * IS-04 version stamp "<seconds>:<nanoseconds>", strictly increasing.
+ *
+ * The clock only has milliseconds. Two changes to one resource within the same
+ * millisecond — switching a setting off and on again, say — used to get the same
+ * version, and a registry client that skips "already registered at this version"
+ * then never sent the second one: the registry kept the first. Each stamp is now at
+ * least one nanosecond after the previous one.
+ */
 export function nmosVersion(date = new Date()): string {
-  const ms = date.getTime();
-  return `${Math.floor(ms / 1000)}:${(ms % 1000) * 1_000_000}`;
+  let ns = BigInt(date.getTime()) * 1_000_000n;
+  if (ns <= lastIssued) ns = lastIssued + 1n;
+  lastIssued = ns;
+  return `${ns / 1_000_000_000n}:${ns % 1_000_000_000n}`;
 }
 
 export type NmosFormat = 'urn:x-nmos:format:video' | 'urn:x-nmos:format:audio' | 'urn:x-nmos:format:data';
@@ -225,9 +237,9 @@ export function syntheticMac(seed: string): string {
 }
 
 /** Canonical URL: a strict registry rejects a URI that spells out the default port. */
-export function canonicalUrl(protocol: 'http' | 'https', host: string, port: number, path = '/'): string {
+export function canonicalUrl(protocol: 'http' | 'https' | 'ws' | 'wss', host: string, port: number, path = '/'): string {
   const authority = host.includes(':') ? `[${host}]` : host;
-  const isDefault = (protocol === 'http' && port === 80) || (protocol === 'https' && port === 443);
+  const isDefault = ((protocol === 'http' || protocol === 'ws') && port === 80) || ((protocol === 'https' || protocol === 'wss') && port === 443);
   return `${protocol}://${authority}${isDefault ? '' : `:${port}`}${path}`;
 }
 
@@ -275,6 +287,7 @@ export function buildDevice(
   controlHref: string,
   senders: string[],
   receivers: string[],
+  extraControls: { type: string; href: string }[] = [],
   version = nmosVersion(),
 ) {
   return {
@@ -287,7 +300,10 @@ export function buildDevice(
     node_id: nodeId,
     senders,
     receivers,
-    controls: [{ href: controlHref, type: 'urn:x-nmos:control:sr-ctrl/v1.1', authorization: false }],
+    controls: [
+      { href: controlHref, type: 'urn:x-nmos:control:sr-ctrl/v1.1', authorization: false },
+      ...extraControls.map((c) => ({ href: c.href, type: c.type, authorization: false })),
+    ],
   };
 }
 
