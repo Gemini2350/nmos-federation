@@ -220,7 +220,9 @@ function stateText(m: Mirror): string {
   if (!m.channel) return m.kind === 'receiver' ? 'idle — nothing connected to the proxy' : 'not built yet';
   const c = m.channel;
   if (c.state !== 'active') return c.error ? `${c.state}: ${c.error}` : c.state;
-  const addr = c.allocation ? `${c.allocation.groups.red} / ${c.allocation.groups.blue}` : 'NAT off, SDP verbatim';
+  // The groups the copy actually sends to: the NAT's, or without NAT the original's own.
+  const groups = c.allocation ? c.legs.map((l) => c.allocation!.groups[l.fabric]) : c.legs.map((l) => l.group);
+  const addr = `${groups.join(' / ') || '—'}${c.allocation ? '' : ' (NAT off, SDP verbatim)'}`;
   if (c.remoteReceiver) {
     return c.remoteReceiver.connected ? `active · ${addr} · remote receiver connected` : `active · ${addr} · remote receiver NOT connected: ${c.remoteReceiver.error}`;
   }

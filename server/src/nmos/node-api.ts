@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { DomainConfig } from '../config/schema.js';
-import type { Engine } from '../federation/engine.js';
+import { SenderChangeError, type Engine } from '../federation/engine.js';
 import type { StateStore } from '../federation/state.js';
 import { emptyConnection, type ConnectionState } from '../federation/state.js';
 import { log } from '../util/log.js';
@@ -92,22 +92,37 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
 
   app.get<{ Params: { id: string } }>(`/x-nmos/connection/${CONN_VER}/single/senders/:id/transporttype`, async () => 'urn:x-nmos:transport:rtp.mcast');
 
+  /**
+   * What a sender sends to, per leg. With NAT that is the channel's group and source;
+   * without NAT the stream is the original's, so its own group, source and port — it
+   * used to be reported as null, and a controller showed copies without a multicast.
+   */
+  const senderLegs = (channel: ReturnType<typeof channelBySenderNmosId>) =>
+    (channel?.legs ?? []).map((leg) => ({
+      destination_ip: channel!.allocation ? channel!.allocation.groups[leg.fabric] : leg.group,
+      source_ip: channel!.allocation ? (channel!.allocation.sources?.[leg.fabric] ?? null) : leg.source,
+      destination_port: leg.port,
+    }));
+
+  // The multicast group can change only where the stream is NATted (see
+  // Engine.setSenderGroups); everything else is fixed, and the constraints say so.
   app.get<{ Params: { id: string } }>(`/x-nmos/connection/${CONN_VER}/single/senders/:id/constraints`, async (req) => {
     const channel = channelBySenderNmosId(req.params.id);
-    return (channel?.legs ?? [{}]).map(() => ({}));
+    const legs = senderLegs(channel);
+    if (!legs.length) return [{}];
+    return legs.map((l) => ({
+      ...(channel!.allocation ? {} : { destination_ip: { enum: [l.destination_ip] } }),
+      source_ip: { enum: [l.source_ip] },
+      destination_port: { enum: [l.destination_port] },
+    }));
   });
 
   const senderState = (id: string) => {
     const channel = channelBySenderNmosId(id);
-    const alloc = channel?.allocation ?? null;
-    const params = alloc
-      ? channel!.legs.map((leg) => ({
-          destination_ip: alloc.groups[leg.fabric],
-          source_ip: alloc.sources?.[leg.fabric] ?? null,
-          destination_port: leg.port,
-          rtp_enabled: true,
-        }))
-      : [{ destination_ip: null, source_ip: null, destination_port: null, rtp_enabled: channel?.state === 'active' }];
+    const legs = senderLegs(channel);
+    const params = legs.length
+      ? legs.map((l) => ({ ...l, rtp_enabled: channel?.state === 'active' }))
+      : [{ destination_ip: null, source_ip: null, destination_port: null, rtp_enabled: false }];
     return {
       master_enable: channel?.state === 'active',
       activation: { mode: null, requested_time: null, activation_time: null },
@@ -124,13 +139,58 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
     return reply.type('application/sdp').send(channel.senderSdp);
   });
 
-  // A foreign controller must not reconfigure our virtual senders.
-  app.patch<{ Params: { id: string } }>(`/x-nmos/connection/${CONN_VER}/single/senders/:id/staged`, async (req, reply) =>
-    reply.code(423).send({
-      code: 423,
-      error: 'virtual senders are driven by the federation and cannot be patched',
-      debug: null,
-    }),
+  /**
+   * A controller may move a NATted sender to another multicast group — that only changes
+   * the NAT's egress. Anything else is the original stream's and refused with the reason:
+   * a group change without NAT, a port or source change, disabling the sender. A PATCH
+   * that changes nothing (some controllers "enable" a sender before routing) succeeds.
+   */
+  app.patch<{ Params: { id: string }; Body: { master_enable?: boolean; transport_params?: Record<string, unknown>[]; activation?: { mode?: string | null } } }>(
+    `/x-nmos/connection/${CONN_VER}/single/senders/:id/staged`,
+    async (req, reply) => {
+      const channel = channelBySenderNmosId(req.params.id);
+      if (!channel || channel.state !== 'active') return reply.code(404).send({ code: 404, error: 'no active sender with that id', debug: null });
+      const body = req.body ?? {};
+      const fail = (code: number, error: string) => reply.code(code).send({ code, error, debug: null });
+      const mode = body.activation?.mode;
+      if (mode && mode !== 'activate_immediate') return fail(501, `activation mode ${mode} is not supported — only activate_immediate`);
+      if (body.master_enable === false) return fail(400, 'a federated sender cannot be disabled here — remove the copy or disconnect its source');
+
+      const current = senderLegs(channel);
+      const wanted: (string | undefined)[] = [];
+      for (const [i, tp] of (body.transport_params ?? []).entries()) {
+        const leg = current[i];
+        if (!leg) return fail(400, `leg ${i} does not exist`);
+        if (tp.destination_port !== undefined && tp.destination_port !== 'auto' && tp.destination_port !== leg.destination_port) {
+          return fail(400, `the destination port is the original stream's (${leg.destination_port}) and cannot be changed`);
+        }
+        if (tp.source_ip !== undefined && tp.source_ip !== 'auto' && tp.source_ip !== leg.source_ip) {
+          return fail(400, `the source address is the stream's (${leg.source_ip}) and cannot be changed`);
+        }
+        const ip = tp.destination_ip;
+        if (ip !== undefined && ip !== 'auto' && ip !== leg.destination_ip) {
+          if (!channel.allocation) {
+            return fail(400, 'NAT is off for this sender: it carries the original stream unchanged, its multicast cannot be changed');
+          }
+          if (typeof ip !== 'string') return fail(400, 'destination_ip must be an address');
+          wanted[i] = ip;
+        }
+      }
+      if (wanted.some(Boolean)) {
+        try {
+          await engine.setSenderGroups(req.params.id, wanted);
+        } catch (e) {
+          if (e instanceof SenderChangeError) return fail(e.status, e.message);
+          log.error({ sender: req.params.id, err: String(e) }, 'sender multicast change failed');
+          return fail(500, `changing the multicast failed: ${(e as Error).message}`);
+        }
+      }
+      const state = senderState(req.params.id);
+      return {
+        ...state,
+        activation: mode ? { mode, requested_time: null, activation_time: nmosTimeNow() } : state.activation,
+      };
+    },
   );
 
   // ---- IS-05 receivers ---------------------------------------------------
@@ -228,4 +288,10 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
 
   // Controls of an original device passed through to its copies (IS-12, IS-08).
   registerControlProxy(app, domain, engine);
+}
+
+/** "<seconds>:<nanoseconds>" for an activation_time. */
+function nmosTimeNow(): string {
+  const ms = Date.now();
+  return `${Math.floor(ms / 1000)}:${(ms % 1000) * 1_000_000}`;
 }

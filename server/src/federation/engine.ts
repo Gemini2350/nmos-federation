@@ -2,6 +2,7 @@ import type { AppConfig, DomainConfig } from '../config/schema.js';
 import { bridgeOf, domainById, legOrder, otherDomain, registriesOf } from '../config/schema.js';
 import { groupHints, grouphintTags, type GroupHint, type Port } from './grouping.js';
 import { OriginWatcher, type WatchTarget } from './origin-watch.js';
+import { ipToInt } from './pool.js';
 import { PASSTHROUGH, type Passthrough } from './passthrough.js';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
@@ -987,6 +988,58 @@ export class Engine {
     }
   }
 
+  /**
+   * Changes the multicast group a published sender sends to — what an IS-05 PATCH of
+   * `destination_ip` on one of our senders asks for. Only possible where the stream is
+   * NATted: the new group is simply the NAT's egress, so the switch is reprogrammed and
+   * the SDP rewritten, nothing else moves. Without NAT the stream IS the original's, and
+   * its group is not ours to change.
+   *
+   * The pool pair stays reserved; only the published group differs from it. A group
+   * inside a federation pool is refused unless it is the channel's own — the pool
+   * would otherwise hand it to the next channel as well.
+   */
+  async setSenderGroups(senderNmosId: string, groups: (string | undefined)[]): Promise<Channel> {
+    const channel = this.activeChannels().find((c) => this.senderNmosId(c.receiverId) === senderNmosId);
+    if (!channel) throw new SenderChangeError(404, 'no active sender with that id');
+    if (!channel.allocation) {
+      throw new SenderChangeError(400, 'NAT is off for this sender: it carries the original stream unchanged, its multicast cannot be changed');
+    }
+    const alloc = channel.allocation;
+    const own = new Set(Object.values(alloc.groups));
+    const next = { ...alloc.groups };
+    channel.legs.forEach((leg, i) => {
+      const wanted = groups[i];
+      if (!wanted || wanted === alloc.groups[leg.fabric]) return;
+      const n = ipToIntSafe(wanted);
+      if (n === null || n < 0xe0000000 || n > 0xefffffff) throw new SenderChangeError(400, `${wanted} is not an IPv4 multicast address`);
+      for (const d of this.cfg.domains) {
+        const base = ipToIntSafe(d.pool.base);
+        if (base !== null && n >= base && n < base + 2 * d.pool.pairs && !own.has(wanted)) {
+          throw new SenderChangeError(400, `${wanted} lies in the federation pool of ${d.label}; pick an address outside the pools`);
+        }
+      }
+      const taken = this.activeChannels().find(
+        (c) => c.id !== channel.id && c.allocation && Object.values(c.allocation.groups).includes(wanted),
+      );
+      if (taken) throw new SenderChangeError(409, `${wanted} is already used by another federated sender`);
+      next[leg.fabric] = wanted;
+    });
+    if (JSON.stringify(next) === JSON.stringify(alloc.groups)) return channel;
+
+    await unprogramChannel(this.deps.drivers, buildChannelPlan(channel, this.cfg));
+    alloc.groups = next;
+    await programChannel(this.deps.drivers, buildChannelPlan(channel, this.cfg));
+    channel.senderSdp = this.senderSdpFor(channel, channel.originSdp ?? channel.senderSdp ?? '');
+    channel.updatedAt = new Date().toISOString();
+    this.deps.state.upsertChannel(channel);
+    await this.deps.state.save();
+    await this.syncRegistries(this.channelRegistryIds(channel));
+    log.info({ channel: channel.id, groups: next }, 'sender multicast changed over IS-05');
+    this.emit({ type: 'channel', channel });
+    return channel;
+  }
+
   private async updateChannelSdp(channel: Channel, sdp: string, originVersion?: string): Promise<Channel> {
     const parsed = parseSdp(sdp);
     const essences = essenceCount(parsed);
@@ -1442,4 +1495,22 @@ function sameSdp(a: string, b: string | null): boolean {
       .filter((l) => l && !l.startsWith('o='))
       .join('\n');
   return norm(a) === norm(b);
+}
+
+/** Why a sender change was refused, with the HTTP status IS-05 should answer. */
+export class SenderChangeError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function ipToIntSafe(ip: string): number | null {
+  try {
+    return ipToInt(ip);
+  } catch {
+    return null;
+  }
 }

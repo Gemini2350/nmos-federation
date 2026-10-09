@@ -281,6 +281,22 @@ everything after that is the ordinary channel path. `POST /api/mirrors/<id>/refr
 re-reads the manifest and rebuilds — that is how a changed origin SDP is picked up,
 since nothing notifies us.
 
+### A published sender over IS-05
+
+Our senders report what they send to in `/active`: with NAT the channel's group and
+source, without NAT the original's own group, source and port (the SDP is passed
+through, so that is what is on the wire — it used to be reported as null, and a
+controller showed copies without a multicast). `/constraints` says what is fixed.
+
+A controller may change `destination_ip` of a **NATted** sender: the new group is
+simply the NAT's egress, so the switch is reprogrammed and the SDP rewritten
+(`Engine.setSenderGroups`). Refused, with the reason in the IS-05 error: any group
+change without NAT (the stream is the original's), a non-multicast address, an address
+inside a federation pool (the pool would hand it out again), one used by another
+federated sender, a port or source change, and `master_enable: false`. A PATCH that
+re-states the current values succeeds. The pool pair stays reserved; an in-place
+update from the original keeps the chosen group, a full rebuild returns to the pool's.
+
 ### Name and sharing per copy
 
 Every copy can be renamed and shared individually, without touching its stream:
