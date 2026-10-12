@@ -150,6 +150,27 @@ async function main() {
   await gui.listen({ host: '0.0.0.0', port: cfg.port });
 
   await engine.start();
+  // Originals that changed their ids are looked for every minute, and right after the
+  // change feed reports one gone (debounced: its replacement usually registers within
+  // seconds). Through the REST route, so it queues like any other change.
+  let rebindTimer: ReturnType<typeof setTimeout> | null = null;
+  const rebind = () =>
+    void gui
+      .inject({ method: 'POST', url: '/api/mirrors/rebind' })
+      .then((res) => {
+        const body = res.json() as { rebound?: unknown[]; missing?: unknown[] };
+        if (body.rebound?.length) log.info({ rebound: body.rebound }, 'copies re-bound to their originals');
+      })
+      .catch((e) => log.warn({ err: String(e) }, 're-binding failed'));
+  const rebindInterval = setInterval(rebind, 60_000);
+  rebindInterval.unref();
+  engine.on((e) => {
+    if (e.type !== 'origin-gone') return;
+    if (rebindTimer) clearTimeout(rebindTimer);
+    rebindTimer = setTimeout(rebind, 5_000);
+    rebindTimer.unref();
+  });
+
   // Copies made before grouping existed get their original's group hint once — through
   // the REST route, so it queues behind any write that is already running.
   void gui
@@ -175,6 +196,7 @@ async function main() {
   const shutdown = async () => {
     log.info({}, 'shutting down');
     clearInterval(addressRetry);
+    clearInterval(rebindInterval);
     await engine.stop();
     await Promise.allSettled([gui.close(), ...nmosApps.map((a) => a.close())]);
     process.exit(0);

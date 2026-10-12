@@ -214,9 +214,10 @@ async function run(fn: () => Promise<unknown>) {
 }
 
 const stateClass = (m: Mirror) =>
-  m.channel?.state === 'active' ? 'ok' : m.channel?.state === 'failed' ? 'bad' : 'busy';
+  m.originMissing ? 'bad' : m.channel?.state === 'active' ? 'ok' : m.channel?.state === 'failed' ? 'bad' : 'busy';
 
 function stateText(m: Mirror): string {
+  if (m.originMissing) return `original ${m.originMissing.reason} (since ${new Date(m.originMissing.since).toLocaleString()})`;
   if (!m.channel) return m.kind === 'receiver' ? 'idle — nothing connected to the proxy' : 'not built yet';
   const c = m.channel;
   if (c.state !== 'active') return c.error ? `${c.state}: ${c.error}` : c.state;

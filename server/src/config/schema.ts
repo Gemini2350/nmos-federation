@@ -298,6 +298,8 @@ export interface MirrorEntry {
   originControls?: { type: string; href: string }[] | null;
   /** For a sender copy: the original's source id, which IS-08 refers to. */
   originSourceId?: string | null;
+  /** Set while the original cannot be found in its registry (see federation/rebind.ts). */
+  originMissing?: { since: string; reason: string };
 }
 
 export interface AppConfig {

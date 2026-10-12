@@ -219,6 +219,8 @@ export interface Mirror {
   enabled: boolean;
   /** The name the copy carries in the registries. */
   name: string;
+  /** Set while the original cannot be found in its registry. */
+  originMissing?: { since: string; reason: string };
   /** Where it is shared, and where it could be. */
   registries: string[];
   registryChoices: string[];

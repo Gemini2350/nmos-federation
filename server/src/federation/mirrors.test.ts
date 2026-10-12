@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
+import { rebindMirrors } from './rebind.js';
 import fastifyWebsocket from '@fastify/websocket';
 
 import { Engine } from './engine.js';
@@ -56,6 +57,10 @@ interface Stub {
   /** What the original's manifest serves, and its IS-04 version; tests change both. */
   sdp: string;
   senderVersion: string;
+  /** The original's ids and device label — a device that does not keep its ids changes them. */
+  senderId: string;
+  deviceId: string;
+  deviceLabel: string;
   /** Where a query subscription points; set by tests that run a WebSocket. */
   wsHref?: string;
   manifestDown?: boolean;
@@ -63,7 +68,7 @@ interface Stub {
 }
 
 async function startStub(): Promise<Stub> {
-  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0' } as unknown as Stub;
+  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0', senderId: ORIGIN_SENDER, deviceId: ORIGIN_DEVICE, deviceLabel: 'Foreign device' } as unknown as Stub;
   const server = createServer((req, res) => {
     const url = req.url ?? '';
     const json = (code: number, body: unknown) => {
@@ -89,10 +94,10 @@ async function startStub(): Promise<Stub> {
       stub.queries.push(url);
       const tail = (url.split('/x-nmos/query/v1.3/')[1] ?? '').split('?')[0]!;
       const sender = {
-        id: ORIGIN_SENDER,
+        id: stub.senderId,
         version: stub.senderVersion,
         label: 'CAM07 Video',
-        device_id: ORIGIN_DEVICE,
+        device_id: stub.deviceId,
         flow_id: null,
         manifest_href: `${origin}/manifest.sdp`,
         transport: 'urn:x-nmos:transport:rtp.mcast',
@@ -100,23 +105,23 @@ async function startStub(): Promise<Stub> {
       const receiver = {
         id: ORIGIN_RECEIVER,
         label: 'MON03',
-        device_id: ORIGIN_DEVICE,
+        device_id: stub.deviceId,
         format: 'urn:x-nmos:format:video',
         transport: 'urn:x-nmos:transport:rtp.mcast',
         caps: { media_types: ['video/raw'] },
       };
       const device = {
-        id: ORIGIN_DEVICE,
-        label: 'Foreign device',
+        id: stub.deviceId,
+        label: stub.deviceLabel,
         node_id: FOREIGN_NODE,
         controls: [{ href: `${origin}/x-nmos/connection/v1.1`, type: 'urn:x-nmos:control:sr-ctrl/v1.1' }],
       };
       if (tail === 'senders') return json(200, [sender]);
-      if (tail === `senders/${ORIGIN_SENDER}`) return json(200, sender);
+      if (tail === `senders/${stub.senderId}`) return json(200, sender);
       if (tail === 'receivers') return json(200, [receiver]);
       if (tail === `receivers/${ORIGIN_RECEIVER}`) return json(200, receiver);
       if (tail === 'devices') return json(200, [device]);
-      if (tail === `devices/${ORIGIN_DEVICE}`) return json(200, device);
+      if (tail === `devices/${stub.deviceId}`) return json(200, device);
       if (tail === 'flows') return json(200, []);
       return json(200, []);
     }
@@ -739,4 +744,49 @@ test('the registry reports a change to the original and the copy follows by itse
   await until(() => /exactframerate=25/.test(channel().senderSdp ?? ''), 'the copy took the new SDP');
   assert.equal(channel().originVersion, '101:0');
   assert.ok(partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.version, 'and was re-registered');
+});
+
+test('an original that comes back under new ids is found again, and its copy follows', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [{ id: mirrorId, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', originDeviceLabel: 'Foreign device', enabled: true }],
+  });
+  cfg.nat.enabled = false; // as in the lab: without NAT the copy publishes the original's groups
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  await engine.copySender(mirrorId);
+  const queryOf = (id: string) => engine.queryClient(id);
+
+  // Nothing changed: nothing to do.
+  assert.deepEqual(await rebindMirrors(cfg, queryOf), { rebound: [], missing: [], recovered: [] });
+
+  // The device restarts with new ids — and new multicast groups.
+  internal.senderId = randomUUID();
+  internal.deviceId = randomUUID();
+  internal.sdp = SDP.replaceAll('239.10.1.7', '239.10.1.70').replaceAll('239.10.2.7', '239.10.2.70');
+  const result = await rebindMirrors(cfg, queryOf);
+  assert.equal(result.rebound.length, 1);
+  assert.equal(cfg.mirrors[0]!.originId, internal.senderId);
+  assert.equal(cfg.mirrors[0]!.originDeviceId, internal.deviceId);
+
+  // The copy then re-reads its new original: the published SDP carries the new groups.
+  const channel = await engine.followOrigin(mirrorId);
+  assert.match(channel.senderSdp!, /c=IN IP4 239\.10\.1\.70\//);
+
+  // Gone without a replacement: marked, not re-bound to something else.
+  internal.deviceLabel = 'Some other box';
+  const gone = { ...cfg.mirrors[0]!, originId: randomUUID() };
+  cfg.mirrors[0] = gone;
+  const missing = await rebindMirrors(cfg, queryOf);
+  assert.equal(missing.rebound.length, 0);
+  assert.equal(missing.missing.length, 1);
+  assert.match(cfg.mirrors[0]!.originMissing!.reason, /nothing named/);
 });

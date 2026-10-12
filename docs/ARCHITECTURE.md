@@ -312,6 +312,23 @@ they are, and a deselected registry has the copy removed. At least one registry 
 always kept; chosen registries that are later disabled drop out, and if none is left
 the default applies again.
 
+### Originals that change their ids
+
+IS-04 wants ids to survive a restart; not every device obliges. One in the lab came back
+with a new device id, new sender ids and new multicast groups. Its copies stayed bound
+to ids that no longer existed — the change feed and Refresh both look an original up by
+id — so without NAT they went on publishing the old groups, and BCP-008 passthrough
+could not translate the touchpoints either.
+
+Every minute, and a few seconds after the change feed reports an original removed,
+every copy is checked against its registry (`federation/rebind.ts`, registry reads
+only). A copy whose original id is gone is re-bound when **exactly one** resource of the
+same kind carries the original's label on a device with the original device's label,
+and no other copy is bound to it. The copy then re-reads its new original: a sender copy
+updates in place (new SDP, NAT if any), a running proxy re-drives the new receiver.
+Anything less certain is not guessed: the copy is marked "original gone" with the reason,
+shown on the Copy page, and the mark clears when the original reappears.
+
 ### Passing an original's control APIs through
 
 When **every** port of a federation device is a copy of the same original device (same

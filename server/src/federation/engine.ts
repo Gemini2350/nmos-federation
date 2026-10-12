@@ -35,7 +35,7 @@ import type { ConnectionState, StateStore } from './state.js';
 import { log } from '../util/log.js';
 
 export interface EngineEvent {
-  type: 'channel' | 'registry' | 'switch';
+  type: 'channel' | 'registry' | 'switch' | 'origin-gone';
   [key: string]: unknown;
 }
 
@@ -100,6 +100,7 @@ export class Engine {
           this.followOrigin(m.id).catch((e) => log.warn({ mirror: m.id, err: String(e) }, 'copy not updated'));
         }
       },
+      onGone: (target) => this.emit({ type: 'origin-gone', registryId: target.registryId, originId: target.originId }),
     });
   }
 

@@ -8,8 +8,8 @@ import type { MirrorEntry } from '../config/schema.js';
 import type { Bridge } from '../types.js';
 import { listInterfaces } from '../nmos/resources.js';
 import { nextId, otherDomain, proxyLabel } from '../config/schema.js';
-import { GROUPHINT } from '../federation/grouping.js';
-import { PASSTHROUGH, passableControls } from '../federation/passthrough.js';
+import { PASSTHROUGH } from '../federation/passthrough.js';
+import { readOrigin, rebindMirrors } from '../federation/rebind.js';
 import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
 
@@ -51,33 +51,6 @@ import { log } from '../util/log.js';
  * handler awaits switch teardowns and registry syncs before it saves, and anything
  * that lands in between works on a stale copy. Reads are not queued.
  */
-/**
- * What a copy keeps of its original besides the stream: its group hint and the label of
- * its device, which disambiguates group names that repeat across devices. Read once
- * when the copy is made; `null` records "the original has none" so it is not asked
- * again.
- */
-async function readOrigin(
-  engine: Engine,
-  mirror: MirrorEntry,
-): Promise<Pick<MirrorEntry, 'originGroupHint' | 'originDeviceLabel' | 'originControls' | 'originSourceId'>> {
-  const query = engine.queryClient(mirror.registryId);
-  if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
-  const [resource, device] = await Promise.all([
-    mirror.kind === 'sender' ? query.sender(mirror.originId) : query.receiver(mirror.originId),
-    query.device(mirror.originDeviceId).catch(() => null),
-  ]);
-  // IS-08 names a sender's output by its source, so a sender copy needs that id too.
-  const flowId = mirror.kind === 'sender' ? (resource as { flow_id?: string | null }).flow_id : null;
-  const flow = flowId ? await query.flow(flowId).catch(() => null) : null;
-  return {
-    originGroupHint: resource.tags?.[GROUPHINT]?.[0] ?? null,
-    originDeviceLabel: device?.label ?? null,
-    originControls: device ? passableControls(device.controls) : null,
-    ...(mirror.kind === 'sender' ? { originSourceId: flow?.source_id ?? null } : {}),
-  };
-}
-
 function serializeWrites(app: FastifyInstance): void {
   let tail: Promise<void> = Promise.resolve();
   const releases = new WeakMap<object, () => void>();
@@ -107,6 +80,11 @@ export function registerRestApi(
   onConfigChange: () => Promise<void>,
 ): void {
   serializeWrites(app);
+  const originOf = (m: MirrorEntry) => {
+    const query = engine.queryClient(m.registryId);
+    if (!query) throw new Error(`registry ${m.registryId} is not enabled`);
+    return readOrigin(query, m);
+  };
   app.get('/api/status', async () => engine.status());
   app.get('/api/config', async () => store.current);
   app.get('/api/channels', async () => engine.channels());
@@ -622,7 +600,7 @@ export function registerRestApi(
     };
     // Its grouping comes along. A registry that cannot answer right now does not stop the
     // copy; the startup pass fills it in later.
-    Object.assign(mirror, await readOrigin(engine, mirror).catch(() => ({})));
+    Object.assign(mirror, await originOf(mirror).catch(() => ({})));
     cfg.mirrors.push(mirror);
 
     // A receiver copy needs a proxy receiver to exist as an ordering point. A sender
@@ -728,7 +706,7 @@ export function registerRestApi(
     const failed: string[] = [];
     for (const mirror of cfg.mirrors.filter((m) => m.originGroupHint === undefined || m.originControls === undefined)) {
       try {
-        Object.assign(mirror, await readOrigin(engine, mirror));
+        Object.assign(mirror, await originOf(mirror));
         updated++;
       } catch (e) {
         failed.push(`${mirror.originLabel}: ${(e as Error).message}`);
@@ -739,6 +717,35 @@ export function registerRestApi(
       await engine.syncRegistries();
     }
     return { updated, failed };
+  });
+
+  /**
+   * Re-binds copies whose original changed its ids (see federation/rebind.ts), then
+   * brings their channels up to date: a sender copy re-reads its new original's SDP in
+   * place, a running proxy re-drives the new receiver. Runs every minute and when the
+   * change feed reports an original gone — through the write queue, like any change.
+   */
+  app.post('/api/mirrors/rebind', async () => {
+    const cfg = structuredClone(store.current);
+    const result = await rebindMirrors(cfg, (id) => engine.queryClient(id));
+    const changed = result.rebound.length || result.recovered.length || result.missing.some((m) => !store.current.mirrors.find((x) => x.id === m.mirrorId)?.originMissing);
+    if (!changed) return result;
+    await store.save(cfg);
+    await engine.syncRegistries();
+    for (const r of result.rebound) {
+      const mirror = store.current.mirrors.find((m) => m.id === r.mirrorId)!;
+      log.info({ copy: mirror.label || mirror.originLabel, from: r.from, to: r.to }, 'original changed its ids — copy re-bound');
+      if (mirror.kind === 'sender') {
+        await engine.followOrigin(mirror.id).catch((e) => log.warn({ copy: mirror.id, err: String(e) }, 're-bound copy not updated'));
+      } else {
+        const proxy = store.current.receivers.find((x) => x.proxyFor?.mirrorId === mirror.id);
+        const conn = proxy && engine.connectionOf(proxy.id);
+        if (proxy && conn?.master_enable && conn.transport_file.data) {
+          await engine.activate(proxy.id, conn).catch((e) => log.warn({ proxy: proxy.id, err: String(e) }, 're-bound proxy not re-driven'));
+        }
+      }
+    }
+    return result;
   });
 
   app.post<{ Params: { id: string } }>('/api/mirrors/:id/refresh', async (req, reply) => {

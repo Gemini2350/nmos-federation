@@ -31,6 +31,8 @@ interface Deps {
   subscribe: (registryId: string) => Promise<string>;
   /** An original is at another version than its copy was built from. */
   onChange: (target: WatchTarget, version: string) => void;
+  /** An original left its registry — possibly to come back under new ids. */
+  onGone?: (target: WatchTarget) => void;
   /** Reconnect delay; tests make it short. */
   retryMs?: number;
 }
@@ -139,7 +141,13 @@ export class OriginWatcher {
     for (const item of msg.grain?.data ?? []) {
       const id = item.post?.id;
       const version = item.post?.version;
-      if (!id || !version) continue; // removed: the copy keeps running on what it has
+      if (!id || !version) {
+        // Removed. The copy keeps running on what it has; whether the original came
+        // back under new ids is for the re-binding pass to find out.
+        const gone = item.pre?.id && watched.get(item.pre.id);
+        if (gone) this.deps.onGone?.(gone);
+        continue;
+      }
       const target = watched.get(id);
       if (target && target.version !== version) this.deps.onChange(target, version);
     }
