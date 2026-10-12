@@ -28,6 +28,8 @@ const props = defineProps<{
   noun: string;
   /** Classes for the extra columns between name and state, for fixed widths. */
   colClasses: string[];
+  /** Rows shown greyed out — a sender that is switched off. Still copyable. */
+  inactive?: (row: T) => boolean;
 }>();
 const emit = defineEmits<{ toggle: [ids: string[], on: boolean] }>();
 defineSlots<{
@@ -176,7 +178,7 @@ const span = computed(() => props.colClasses.length + 2);
             </td>
           </tr>
           <template v-if="deviceOpen(d.key)">
-            <tr v-for="row in d.rows" :key="row.id" class="item" :class="{ ticked: selected.has(row.id) }">
+            <tr v-for="row in d.rows" :key="row.id" class="item" :class="{ ticked: selected.has(row.id), inactive: inactive?.(row) }">
               <td>
                 <!-- A row that cannot be ticked keeps an invisible box, so it is exactly as
                      tall as one that can and marking a row copied moves nothing below it. -->
@@ -215,6 +217,8 @@ tr.device { cursor: pointer; }
 tr.device > td:nth-child(2) { padding-left: 1.3rem; }
 tr.item > td.name { padding-left: 2.6rem; font-weight: 600; }
 tr.ticked { background: #4a8ad41a; }
+tr.inactive > td { opacity: 0.45; }
+tr.inactive > td:first-child { opacity: 1; }
 .chev { display: inline-block; width: 1rem; opacity: 0.6; }
 .chev.hidden { visibility: hidden; }
 .meta { opacity: 0.6; margin-left: 0.4rem; font-size: 0.8rem; }

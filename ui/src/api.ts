@@ -160,6 +160,8 @@ export interface BrowseSender {
   ours: boolean;
   copied: boolean;
   controllable: boolean;
+  /** IS-04 subscription: `active: false` = the sender is switched off. */
+  subscription?: { receiver_id: string | null; active: boolean };
   flow: { media_type: string; frame_width?: number; frame_height?: number; grain_rate?: { numerator: number; denominator?: number } } | null;
 }
 
@@ -243,6 +245,8 @@ export interface Channel {
   senderSdp: string | null;
   publishedIn: string[];
   mirrorId?: string;
+  /** For a sender copy: false while the original sender is switched off. */
+  originActive?: boolean;
   remoteReceiver?: { registryId: string; receiverId: string; connected: boolean; error: string | null };
   error: string | null;
   updatedAt: string;

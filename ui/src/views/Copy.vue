@@ -214,9 +214,12 @@ async function run(fn: () => Promise<unknown>) {
 }
 
 const stateClass = (m: Mirror) =>
-  m.originMissing ? 'bad' : m.channel?.state === 'active' ? 'ok' : m.channel?.state === 'failed' ? 'bad' : 'busy';
+  m.channel?.state === 'active' && m.channel.originActive === false ? 'muted' : m.originMissing ? 'bad' : m.channel?.state === 'active' ? 'ok' : m.channel?.state === 'failed' ? 'bad' : 'busy';
 
 function stateText(m: Mirror): string {
+  if (m.channel?.state === 'active' && m.channel.originActive === false) {
+    return 'inactive — the original sender is switched off; the copy follows it when it is switched on';
+  }
   if (m.originMissing) return `offline — original ${m.originMissing.reason} (since ${new Date(m.originMissing.since).toLocaleString()}); back when it is`;
   if (!m.channel) return m.kind === 'receiver' ? 'idle — nothing connected to the proxy' : 'not built yet';
   const c = m.channel;
@@ -315,6 +318,7 @@ onMounted(load);
         :busy="busy"
         noun="sender"
         :col-classes="['c-ess']"
+        :inactive="(s) => s.subscription?.active === false"
         @toggle="(ids, on) => toggle('sender', ids, on)"
       >
         <template #head><th>Essence</th></template>
@@ -326,6 +330,7 @@ onMounted(load);
         </template>
         <template #status="{ row: s }">
           <span v-if="s.copied" class="ok">copied</span>
+          <span v-else-if="s.subscription?.active === false" class="muted" title="switched off at the device — a copy would be inactive too until it is switched on">inactive</span>
           <span v-else-if="s.ours" class="muted" title="copying our own copy would loop">—</span>
           <span v-else-if="!s.manifest_href" class="muted" title="no manifest_href, so there is no SDP to read">no manifest</span>
         </template>

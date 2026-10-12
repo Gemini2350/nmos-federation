@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import { rebindMirrors } from './rebind.js';
+import { acceptEmptyJson } from '../api/http.js';
+import { registerNodeApi } from '../nmos/node-api.js';
 import fastifyWebsocket from '@fastify/websocket';
 
 import { Engine } from './engine.js';
@@ -61,6 +63,8 @@ interface Stub {
   senderId: string;
   receiverId: string;
   deviceId: string;
+  /** The original sender's IS-04 subscription.active — switched on or off. */
+  senderActive: boolean;
   deviceLabel: string;
   /** Where a query subscription points; set by tests that run a WebSocket. */
   wsHref?: string;
@@ -69,7 +73,7 @@ interface Stub {
 }
 
 async function startStub(): Promise<Stub> {
-  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0', senderId: ORIGIN_SENDER, receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, deviceLabel: 'Foreign device' } as unknown as Stub;
+  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0', senderId: ORIGIN_SENDER, receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, senderActive: true, deviceLabel: 'Foreign device' } as unknown as Stub;
   const server = createServer((req, res) => {
     const url = req.url ?? '';
     const json = (code: number, body: unknown) => {
@@ -102,6 +106,7 @@ async function startStub(): Promise<Stub> {
         flow_id: null,
         manifest_href: `${origin}/manifest.sdp`,
         transport: 'urn:x-nmos:transport:rtp.mcast',
+        subscription: { receiver_id: null, active: stub.senderActive },
       };
       const receiver = {
         id: stub.receiverId,
@@ -852,4 +857,53 @@ test('copies go offline with their original and come back with it — same id, s
   assert.deepEqual(published(), { sender: true, proxy: true }, 'back with them');
   const again = engine.channels().find((c) => c.receiverId === `mirror-${senderCopy}`)!;
   assert.deepEqual(again.allocation!.groups, first.allocation!.groups, 'at the same address');
+});
+
+test('a copy is switched off with its original sender, and cannot be switched on by a controller', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, cfg, state } = await build(internal, partner, dir, {
+    mirrors: [{ id: mirrorId, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', enabled: true }],
+  });
+  // The node API where the copy appears.
+  const nodeApi = Fastify({ routerOptions: { ignoreTrailingSlash: true } });
+  acceptEmptyJson(nodeApi);
+  registerNodeApi(nodeApi, cfg.domains[1]!, engine, state);
+  t.after(async () => {
+    await nodeApi.close();
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  await engine.copySender(mirrorId);
+  const senderId = engine.senderNmosId(`mirror-${mirrorId}`);
+  const base = `/x-nmos/connection/v1.1/single/senders/${senderId}`;
+  const active = async () => (await nodeApi.inject({ method: 'GET', url: `${base}/active` })).json() as { master_enable: boolean; transport_params: { rtp_enabled: boolean }[] };
+  const registered = () => partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.subscription as { active: boolean };
+  assert.equal((await active()).master_enable, true);
+  assert.equal(registered().active, true);
+
+  // The original is switched off — and, like many devices, then serves no transport file.
+  internal.senderActive = false;
+  internal.manifestDown = true;
+  internal.senderVersion = '200:0';
+  await engine.followOrigin(mirrorId);
+  assert.equal(registered().active, false, 'the registry shows the copy inactive (greyed out in a controller)');
+  assert.equal((await active()).master_enable, false);
+  assert.equal((await active()).transport_params[0]!.rtp_enabled, false);
+  const res = await nodeApi.inject({ method: 'PATCH', url: `${base}/staged`, headers: { 'content-type': 'application/json' }, payload: JSON.stringify({ master_enable: true, activation: { mode: 'activate_immediate' } }) });
+  assert.equal(res.statusCode, 423, 'a controller cannot switch the copy on');
+  assert.equal(engine.channels()[0]!.state, 'active', 'the channel and its address stay');
+
+  // Switched on again at the original: the copy follows.
+  internal.senderActive = true;
+  internal.manifestDown = false;
+  internal.senderVersion = '201:0';
+  await engine.followOrigin(mirrorId);
+  assert.equal(registered().active, true);
+  assert.equal((await active()).master_enable, true);
 });

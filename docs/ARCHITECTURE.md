@@ -340,6 +340,16 @@ registry with a missing original triggers the check again; failing that, the min
 pass catches it. A registry that cannot be reached marks nothing — no answer is not
 "gone".
 
+**A sender copy is switched on and off with its original.** The original's IS-04
+`subscription.active` is followed through the same change feed (a switch bumps the
+sender's version). Off: the copy's own `subscription.active`, IS-05 `master_enable` and
+`rtp_enabled` go false, so controllers grey it out like any other inactive sender;
+the copy stays registered, its channel and address unchanged. The state is decided
+before the manifest is read, since many devices serve no transport file for a sender
+that is off. A controller cannot switch a copy on — a PATCH with `master_enable: true`
+on a copy whose original is off answers 423; the copy follows the original only. The
+Copy page shows switched-off originals greyed out, and inactive copies as such.
+
 ### Passing an original's control APIs through
 
 When **every** port of a federation device is a copy of the same original device (same

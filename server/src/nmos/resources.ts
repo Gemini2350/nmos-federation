@@ -378,6 +378,7 @@ export function buildSender(
   interfaceBindings: string[],
   essence?: Pick<EssenceParams, 'sender'>,
   tags: Record<string, string[]> = {},
+  active = true,
   version = nmosVersion(),
 ) {
   const extra = essence?.sender;
@@ -392,7 +393,7 @@ export function buildSender(
     device_id: deviceId,
     manifest_href: manifestHref,
     interface_bindings: interfaceBindings,
-    subscription: { receiver_id: null, active: true },
+    subscription: { receiver_id: null, active },
     caps: {},
     ...(extra?.bitRate !== undefined ? { bit_rate: extra.bitRate } : {}),
     ...(extra?.st2110_21SenderType ? { st2110_21_sender_type: `urn:x-nmos:st2110_21_sender_type:${extra.st2110_21SenderType}` } : {}),

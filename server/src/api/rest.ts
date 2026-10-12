@@ -240,7 +240,7 @@ export function registerRestApi(
             registryId: m.registryId,
             from: dir?.origin ?? null,
             to: dir?.other ?? null,
-            state: m.originMissing ? 'offline' : (channel?.state ?? null),
+            state: m.originMissing ? 'offline' : channel?.state === 'active' && channel.originActive === false ? 'inactive' : (channel?.state ?? null),
             error: m.originMissing ? `original ${m.originMissing.reason}` : (channel?.error ?? null),
             group: m.group ?? null,
             role: m.role ?? null,

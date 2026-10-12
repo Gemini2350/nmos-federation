@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { DomainConfig } from '../config/schema.js';
-import { SenderChangeError, type Engine } from '../federation/engine.js';
+import { Engine, SenderChangeError } from '../federation/engine.js';
 import type { StateStore } from '../federation/state.js';
 import { emptyConnection, type ConnectionState } from '../federation/state.js';
 import { log } from '../util/log.js';
@@ -120,11 +120,14 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
   const senderState = (id: string) => {
     const channel = channelBySenderNmosId(id);
     const legs = senderLegs(channel);
+    // A copy whose original sender is switched off is off too — controllers grey it out
+    // like any other inactive sender.
+    const on = !!channel && Engine.senderActive(channel);
     const params = legs.length
-      ? legs.map((l) => ({ ...l, rtp_enabled: channel?.state === 'active' }))
+      ? legs.map((l) => ({ ...l, rtp_enabled: on }))
       : [{ destination_ip: null, source_ip: null, destination_port: null, rtp_enabled: false }];
     return {
-      master_enable: channel?.state === 'active',
+      master_enable: on,
       activation: { mode: null, requested_time: null, activation_time: null },
       receiver_id: null,
       transport_params: params,
@@ -155,6 +158,10 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
       const mode = body.activation?.mode;
       if (mode && mode !== 'activate_immediate') return fail(501, `activation mode ${mode} is not supported — only activate_immediate`);
       if (body.master_enable === false) return fail(400, 'a federated sender cannot be disabled here — remove the copy or disconnect its source');
+      // A copy follows its original: switched on there, not here.
+      if (body.master_enable === true && !Engine.senderActive(channel)) {
+        return fail(423, 'this sender is a copy and follows its original, which is switched off — it cannot be activated here');
+      }
 
       const current = senderLegs(channel);
       const wanted: (string | undefined)[] = [];

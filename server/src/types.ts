@@ -74,6 +74,11 @@ export interface Channel {
   originSenderId: string | null;
   /** For a sender copy: the original's IS-04 version this channel was built from. */
   originVersion?: string;
+  /**
+   * For a sender copy: whether the original sender is switched on (its IS-04
+   * `subscription.active`). Off makes the copy inactive too. Missing = on.
+   */
+  originActive?: boolean;
   legs: Leg[];
   allocation: Allocation | null;
   /** The virtual sender's SDP (rewritten, or copied verbatim when NAT is off). */

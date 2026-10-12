@@ -521,6 +521,7 @@ export class Engine {
                 [domain.iface.name],
                 essence,
                 grouphintTags(hints.get(vrxId)),
+                Engine.senderActive(channel),
               ),
               senderId,
               channel.senderSdp ?? '',
@@ -942,6 +943,11 @@ export class Engine {
     });
   }
 
+  /** A published sender is active while its channel runs and, for a copy, its original is on. */
+  static senderActive(channel: Pick<Channel, 'state' | 'originActive'>): boolean {
+    return channel.state === 'active' && channel.originActive !== false;
+  }
+
   /** The published SDP: rewritten to the channel's pool pair, or verbatim without NAT. */
   private senderSdpFor(channel: Channel, sdp: string): string {
     if (!channel.allocation) return sdp;
@@ -981,13 +987,36 @@ export class Engine {
     const query = this.queries.get(mirror.registryId);
     if (!query) throw new Error(`registry ${mirror.registryId} is not enabled`);
     const sender = await query.sender(mirror.originId);
-    const sdp = await query.transportFile(sender);
 
-    if (sameSdp(sdp, channel.originSdp)) {
-      // A new version without a new SDP (a label, a subscription): note it and stop.
+    // Switched on or off: the copy follows. Off is decided before the manifest is read —
+    // many devices serve no transport file for a sender that is off.
+    const active = sender.subscription?.active !== false;
+    const activeChanged = active !== Engine.senderActive(channel);
+    if (activeChanged) {
+      channel.originActive = active;
+      log.info({ channel: channel.id, active }, active ? 'original sender switched on — copy active' : 'original sender switched off — copy inactive');
+    }
+    if (!active) {
       if (sender.version) channel.originVersion = sender.version;
       this.deps.state.upsertChannel(channel);
       await this.deps.state.save();
+      if (activeChanged) {
+        await this.syncRegistries(this.channelRegistryIds(channel));
+        this.emit({ type: 'channel', channel });
+      }
+      return channel;
+    }
+    const sdp = await query.transportFile(sender);
+
+    if (sameSdp(sdp, channel.originSdp)) {
+      // A new version without a new SDP (a label, switched back on): note it.
+      if (sender.version) channel.originVersion = sender.version;
+      this.deps.state.upsertChannel(channel);
+      await this.deps.state.save();
+      if (activeChanged) {
+        await this.syncRegistries(this.channelRegistryIds(channel));
+        this.emit({ type: 'channel', channel });
+      }
       return channel;
     }
     try {
@@ -1149,6 +1178,7 @@ export class Engine {
       sdp,
       originSenderId: sender.id,
       ...(sender.version ? { originVersion: sender.version } : {}),
+      originActive: sender.subscription?.active !== false,
       mirrorId,
     });
   }
@@ -1167,6 +1197,7 @@ export class Engine {
     sdp: string;
     originSenderId: string | null;
     originVersion?: string;
+    originActive?: boolean;
     mirrorId?: string;
     proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
   }): Promise<Channel> {
@@ -1185,6 +1216,7 @@ export class Engine {
       originSdp: sdp,
       originSenderId: opts.originSenderId,
       ...(opts.originVersion ? { originVersion: opts.originVersion } : {}),
+      ...(opts.originActive === false ? { originActive: false } : {}),
       legs: [],
       allocation: null,
       senderSdp: null,

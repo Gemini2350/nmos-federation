@@ -259,7 +259,7 @@ onMounted(refresh);
               </div>
             </td>
             <td><small class="dir">{{ c.from ? `${domainName(c.from)} → ${domainName(c.to ?? '')}` : '—' }}</small></td>
-            <td :class="c.state === 'active' ? 'ok' : c.state === 'failed' ? 'bad' : 'warn'" :title="c.error ?? ''">{{ c.state ?? 'not built yet' }}</td>
+            <td :class="c.state === 'active' ? 'ok' : c.state === 'failed' ? 'bad' : c.state === 'inactive' ? 'muted' : 'warn'" :title="c.state === 'inactive' ? 'the original sender is switched off' : (c.error ?? '')">{{ c.state ?? 'not built yet' }}</td>
             <td><button :disabled="busy" @click="run(() => api.deleteMirror(c.id))">Remove</button></td>
           </tr>
         </tbody>
@@ -322,4 +322,5 @@ small { display: block; opacity: 0.65; }
 .orig { display: block; font-size: 0.75rem; opacity: 0.55; margin-top: 0.1rem; }
 table.copies { margin-top: 0.6rem; }
 .ok { color: #2e9e4f; }
+.muted { opacity: 0.5; }
 </style>
