@@ -59,6 +59,7 @@ interface Stub {
   senderVersion: string;
   /** The original's ids and device label — a device that does not keep its ids changes them. */
   senderId: string;
+  receiverId: string;
   deviceId: string;
   deviceLabel: string;
   /** Where a query subscription points; set by tests that run a WebSocket. */
@@ -68,7 +69,7 @@ interface Stub {
 }
 
 async function startStub(): Promise<Stub> {
-  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0', senderId: ORIGIN_SENDER, deviceId: ORIGIN_DEVICE, deviceLabel: 'Foreign device' } as unknown as Stub;
+  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0', senderId: ORIGIN_SENDER, receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, deviceLabel: 'Foreign device' } as unknown as Stub;
   const server = createServer((req, res) => {
     const url = req.url ?? '';
     const json = (code: number, body: unknown) => {
@@ -103,7 +104,7 @@ async function startStub(): Promise<Stub> {
         transport: 'urn:x-nmos:transport:rtp.mcast',
       };
       const receiver = {
-        id: ORIGIN_RECEIVER,
+        id: stub.receiverId,
         label: 'MON03',
         device_id: stub.deviceId,
         format: 'urn:x-nmos:format:video',
@@ -119,7 +120,7 @@ async function startStub(): Promise<Stub> {
       if (tail === 'senders') return json(200, [sender]);
       if (tail === `senders/${stub.senderId}`) return json(200, sender);
       if (tail === 'receivers') return json(200, [receiver]);
-      if (tail === `receivers/${ORIGIN_RECEIVER}`) return json(200, receiver);
+      if (tail === `receivers/${stub.receiverId}`) return json(200, receiver);
       if (tail === 'devices') return json(200, [device]);
       if (tail === `devices/${stub.deviceId}`) return json(200, device);
       if (tail === 'flows') return json(200, []);
@@ -789,4 +790,66 @@ test('an original that comes back under new ids is found again, and its copy fol
   assert.equal(missing.rebound.length, 0);
   assert.equal(missing.missing.length, 1);
   assert.match(cfg.mirrors[0]!.originMissing!.reason, /nothing named/);
+});
+
+test('copies go offline with their original and come back with it — same id, same address', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const senderCopy = randomUUID();
+  const proxyCopy = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      { id: senderCopy, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', originDeviceLabel: 'Foreign device', enabled: true },
+      { id: proxyCopy, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', originDeviceLabel: 'Foreign device', enabled: true },
+    ],
+    receivers: [
+      { id: 'proxy', label: 'Proxy MON03', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId: proxyCopy } },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy'];
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  const first = await engine.copySender(senderCopy);
+  const senderId = engine.senderNmosId(`mirror-${senderCopy}`);
+  const proxyId = engine.receiverNmosId('proxy');
+  const queryOf = (id: string) => engine.queryClient(id);
+  const published = () => ({
+    sender: engine.domainResources('partnerA').senders.some((s) => s.id === senderId),
+    proxy: engine.domainResources('internal').receivers.some((r) => r.id === proxyId),
+  });
+  assert.deepEqual(published(), { sender: true, proxy: true });
+
+  // Both originals' devices go offline: the registries drop them.
+  internal.senderId = randomUUID();
+  internal.deviceLabel = 'gone';
+  partner.receiverId = randomUUID();
+  partner.deviceLabel = 'gone';
+  const off = await rebindMirrors(cfg, queryOf);
+  assert.equal(off.missing.length, 2);
+  partner.deletes.length = 0;
+  internal.deletes.length = 0;
+  await engine.syncRegistries();
+  assert.deepEqual(published(), { sender: false, proxy: false }, 'offline with their originals');
+  assert.ok(partner.deletes.some((u) => u.endsWith(`/senders/${senderId}`)), 'the sender copy is withdrawn');
+  assert.ok(internal.deletes.some((u) => u.endsWith(`/receivers/${proxyId}`)), 'the proxy is withdrawn');
+  assert.equal(engine.channels().find((c) => c.receiverId === `mirror-${senderCopy}`)?.state, 'active', 'the channel itself stays');
+
+  // They come back.
+  internal.senderId = ORIGIN_SENDER;
+  internal.deviceLabel = 'Foreign device';
+  partner.receiverId = ORIGIN_RECEIVER;
+  partner.deviceLabel = 'Foreign device';
+  const on = await rebindMirrors(cfg, queryOf);
+  assert.equal(on.recovered.length, 2);
+  await engine.syncRegistries();
+  assert.deepEqual(published(), { sender: true, proxy: true }, 'back with them');
+  const again = engine.channels().find((c) => c.receiverId === `mirror-${senderCopy}`)!;
+  assert.deepEqual(again.allocation!.groups, first.allocation!.groups, 'at the same address');
 });

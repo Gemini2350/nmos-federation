@@ -35,7 +35,7 @@ import type { ConnectionState, StateStore } from './state.js';
 import { log } from '../util/log.js';
 
 export interface EngineEvent {
-  type: 'channel' | 'registry' | 'switch' | 'origin-gone';
+  type: 'channel' | 'registry' | 'switch' | 'origin-gone' | 'origin-back';
   [key: string]: unknown;
 }
 
@@ -101,6 +101,7 @@ export class Engine {
         }
       },
       onGone: (target) => this.emit({ type: 'origin-gone', registryId: target.registryId, originId: target.originId }),
+      onBack: (registryId) => this.emit({ type: 'origin-back', registryId }),
     });
   }
 
@@ -112,6 +113,7 @@ export class Engine {
         registryId: m.registryId,
         originId: m.originId,
         version: this.deps.state.channelFor(Engine.mirrorKey(m.id))?.originVersion,
+        missing: !!m.originMissing,
       }));
   }
 
@@ -354,6 +356,11 @@ export class Engine {
     }
   }
 
+  /** The copy's original cannot be found in its registry — see federation/rebind.ts. */
+  private originOffline(mirrorId: string | undefined): boolean {
+    return !!mirrorId && !!this.cfg.mirrors.find((m) => m.id === mirrorId)?.originMissing;
+  }
+
   /**
    * Natural group per port of a device (BCP-002-01): its virtual receivers, proxies
    * included, and its sender copies. Keyed like channels — a receiver's id, or
@@ -461,7 +468,9 @@ export class Engine {
         // A receiver lives in the domain it is offered in, the sender its stream becomes
         // in the other one. The same device appears in both, carrying whatever exists
         // there — receivers of one direction next to senders of the other.
-        const vrxList = this.receiversOf(device).filter((v) => this.sideOf(v, bridge) === domainId);
+        // A copy whose original is offline is offline too: not published, and not listed
+        // on its device. Its channel and addresses stay, so it returns unchanged.
+        const vrxList = this.receiversOf(device).filter((v) => this.sideOf(v, bridge) === domainId && !this.originOffline(v.proxyFor?.mirrorId));
         // Off: no hints at all, the stored groups simply wait.
         const hints = bridge.grouping === false ? new Map<string, GroupHint>() : this.groupHintsOf(device);
         {
@@ -485,7 +494,7 @@ export class Engine {
           }
         }
 
-        const mine = active.filter((c) => c.deviceId === device.id && c.targetDomain === domainId);
+        const mine = active.filter((c) => c.deviceId === device.id && c.targetDomain === domainId && !this.originOffline(c.mirrorId));
         for (const channel of mine) {
           const essence = this.essenceOf(channel);
           if (!essence) continue;

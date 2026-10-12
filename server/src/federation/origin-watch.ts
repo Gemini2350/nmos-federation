@@ -22,6 +22,8 @@ export interface WatchTarget {
   originId: string;
   /** Version of the original the copy was last built from; undefined = not known. */
   version?: string;
+  /** The original is currently gone from its registry (and its copy offline). */
+  missing?: boolean;
 }
 
 interface Deps {
@@ -33,6 +35,11 @@ interface Deps {
   onChange: (target: WatchTarget, version: string) => void;
   /** An original left its registry — possibly to come back under new ids. */
   onGone?: (target: WatchTarget) => void;
+  /**
+   * A sender appeared in a registry where an original is missing — maybe it is back,
+   * under its old id or a new one. Deciding which is the re-binding pass's job.
+   */
+  onBack?: (registryId: string) => void;
   /** Reconnect delay; tests make it short. */
   retryMs?: number;
 }
@@ -138,6 +145,8 @@ export class OriginWatcher {
         .filter((t) => t.registryId === registryId)
         .map((t) => [t.originId, t]),
     );
+    const anyMissing = [...watched.values()].some((t) => t.missing);
+    let maybeBack = false;
     for (const item of msg.grain?.data ?? []) {
       const id = item.post?.id;
       const version = item.post?.version;
@@ -149,7 +158,9 @@ export class OriginWatcher {
         continue;
       }
       const target = watched.get(id);
-      if (target && target.version !== version) this.deps.onChange(target, version);
+      if (anyMissing && (target?.missing || !item.pre)) maybeBack = true;
+      if (target && !target.missing && target.version !== version) this.deps.onChange(target, version);
     }
+    if (maybeBack) this.deps.onBack?.(registryId);
   }
 }

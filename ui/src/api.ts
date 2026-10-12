@@ -101,7 +101,7 @@ export interface Device {
   label: string;
   bridgeId: string;
   receiverIds: string[];
-  receivers?: (VirtualReceiver & { origin?: { label: string; registryId: string } | null; groupHint?: GroupHint | null })[];
+  receivers?: (VirtualReceiver & { origin?: { label: string; registryId: string } | null; offline?: boolean; groupHint?: GroupHint | null })[];
   /** Sender copies on this device: no virtual receiver, but ports on it all the same. */
   senderCopies?: {
     id: string;

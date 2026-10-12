@@ -205,6 +205,7 @@ onMounted(refresh);
             <td>
               <EditableName :value="vrx.label" @save="(label) => rename(() => api.renameReceiver(vrx.id, label))" />
               <small v-if="vrx.origin" class="orig">proxy of {{ vrx.origin.label }} · {{ registryName(vrx.origin.registryId) }}</small>
+              <small v-if="vrx.offline" class="bad" title="The original receiver is gone from its registry; this proxy is withdrawn until it is back.">offline — original gone</small>
             </td>
             <td v-if="groupingOn(d)">
               <EditableName

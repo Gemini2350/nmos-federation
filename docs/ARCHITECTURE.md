@@ -329,6 +329,17 @@ updates in place (new SDP, NAT if any), a running proxy re-drives the new receiv
 Anything less certain is not guessed: the copy is marked "original gone" with the reason,
 shown on the Copy page, and the mark clears when the original reappears.
 
+**A copy is offline exactly while its original is.** A sender copy or proxy whose
+original is marked gone is withdrawn from every registry and dropped from its device's
+lists (`Engine.originOffline`); its channel, pool pair and NAT rules stay, so when the
+original returns — under its old ids or re-bound to new ones — the copy reappears with
+the same id at the same address, after re-reading the original's SDP. Timing: a
+registry drops an offline device after its heartbeat expires; the change feed reports
+that, and the copies are withdrawn about five seconds later. A sender reappearing in a
+registry with a missing original triggers the check again; failing that, the minute
+pass catches it. A registry that cannot be reached marks nothing — no answer is not
+"gone".
+
 ### Passing an original's control APIs through
 
 When **every** port of a federation device is a copy of the same original device (same

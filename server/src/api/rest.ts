@@ -222,6 +222,7 @@ export function registerRestApi(
         return {
           ...vrx,
           origin: mirror ? { label: mirror.originLabel, registryId: mirror.registryId } : null,
+          offline: !!mirror?.originMissing,
           groupHint: hints.get(vrx.id) ?? null,
         };
       }),
@@ -239,8 +240,8 @@ export function registerRestApi(
             registryId: m.registryId,
             from: dir?.origin ?? null,
             to: dir?.other ?? null,
-            state: channel?.state ?? null,
-            error: channel?.error ?? null,
+            state: m.originMissing ? 'offline' : (channel?.state ?? null),
+            error: m.originMissing ? `original ${m.originMissing.reason}` : (channel?.error ?? null),
             group: m.group ?? null,
             role: m.role ?? null,
             groupHint: hints.get(`mirror-${m.id}`) ?? null,
@@ -727,11 +728,21 @@ export function registerRestApi(
    */
   app.post('/api/mirrors/rebind', async () => {
     const cfg = structuredClone(store.current);
+    const before = new Set(store.current.mirrors.filter((m) => m.originMissing).map((m) => m.id));
     const result = await rebindMirrors(cfg, (id) => engine.queryClient(id));
     const changed = result.rebound.length || result.recovered.length || result.missing.some((m) => !store.current.mirrors.find((x) => x.id === m.mirrorId)?.originMissing);
     if (!changed) return result;
     await store.save(cfg);
+    // Publishes what came back and withdraws what went missing: a copy is offline
+    // exactly while its original is (Engine.originOffline).
     await engine.syncRegistries();
+    for (const m of result.missing.filter((x) => !before.has(x.mirrorId))) log.info({ copy: m.label, reason: m.reason }, 'original offline — copy withdrawn');
+    for (const id of result.recovered) {
+      const mirror = store.current.mirrors.find((m) => m.id === id);
+      log.info({ copy: mirror?.label || mirror?.originLabel }, 'original back — copy published again');
+      // It may have come back with another SDP.
+      if (mirror?.kind === 'sender') await engine.followOrigin(id).catch((e) => log.warn({ copy: id, err: String(e) }, 'returned copy not updated'));
+    }
     for (const r of result.rebound) {
       const mirror = store.current.mirrors.find((m) => m.id === r.mirrorId)!;
       log.info({ copy: mirror.label || mirror.originLabel, from: r.from, to: r.to }, 'original changed its ids — copy re-bound');

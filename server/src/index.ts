@@ -165,7 +165,7 @@ async function main() {
   const rebindInterval = setInterval(rebind, 60_000);
   rebindInterval.unref();
   engine.on((e) => {
-    if (e.type !== 'origin-gone') return;
+    if (e.type !== 'origin-gone' && e.type !== 'origin-back') return;
     if (rebindTimer) clearTimeout(rebindTimer);
     rebindTimer = setTimeout(rebind, 5_000);
     rebindTimer.unref();
