@@ -502,7 +502,7 @@ export class Engine {
           const vrxId = channel.receiverId;
           const vrx = this.cfg.receivers.find((r) => r.id === vrxId);
           const label =
-            (vrx?.proxyFor ? this.arrivalLabel(vrx.label, channel) : vrx?.label) ??
+            (vrx?.proxyFor ? this.arrivalLabel(channel) : vrx?.label) ??
             this.mirrorOf(vrxId)?.label ??
             this.mirrorOf(vrxId)?.originLabel ??
             essence.label ??
@@ -968,17 +968,19 @@ export class Engine {
   }
 
   /**
-   * The name of the sender a connected proxy publishes next to the real receiver. Named
-   * after the proxy alone, it looked like the receiver had turned up as a sender in its
-   * own registry; it is the stream arriving FOR that receiver, so it says so —
-   * "Studio CAM 3 → 1 PIP 2", or "→ 1 PIP 2 (from Studios)" when the feeding sender's
-   * name is unknown.
+   * The name of the sender a connected proxy publishes next to the real receiver: who
+   * switched it and what — "Studio 2 – REF TX 1". Named after the proxy, it looked like
+   * the receiver had turned up as a sender in its own registry; and the destination is
+   * what a crosspoint shows anyway, so the name says where the stream comes from. The
+   * controller's name falls back to the source domain ("Studios – REF TX 1") when the
+   * switch was not attributed, the feeding sender's to "unknown source".
    */
-  private arrivalLabel(proxyLabel: string, channel: Channel): string {
-    const who = channel.switchedBy ? this.controllerName(channel.switchedBy) : null;
-    if (channel.originSenderLabel) return `${channel.originSenderLabel} → ${proxyLabel}${who ? ` (${who})` : ''}`;
-    const from = who ?? this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ?? channel.sourceDomain;
-    return `→ ${proxyLabel} (from ${from})`;
+  private arrivalLabel(channel: Channel): string {
+    const who =
+      (channel.switchedBy ? this.controllerName(channel.switchedBy) : null) ??
+      this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ??
+      channel.sourceDomain;
+    return `${who} – ${channel.originSenderLabel || 'unknown source'}`;
   }
 
   /**

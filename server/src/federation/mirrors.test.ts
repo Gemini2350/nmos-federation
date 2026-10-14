@@ -908,7 +908,7 @@ test('a copy is switched off with its original sender, and cannot be switched on
   assert.equal((await active()).master_enable, true);
 });
 
-test('the sender a connected proxy publishes is named after what feeds it, not after the proxy', async (t) => {
+test('the sender a connected proxy publishes is named after where it comes from, not after the proxy', async (t) => {
   const internal = await startStub();
   const partner = await startStub();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
@@ -933,10 +933,11 @@ test('the sender a connected proxy publishes is named after what feeds it, not a
 
   // A sender the source registry knows: its name, an arrow, the proxy.
   await engine.activate('proxy', conn(ORIGIN_SENDER));
-  assert.equal(lastLabel(), 'CAM07 Video → 1 PIP 2');
-  // One it does not: where it comes from instead.
+  // Not attributed to a controller: the source domain stands in.
+  assert.equal(lastLabel(), 'internal – CAM07 Video');
+  // A sender the registry does not know.
   await engine.activate('proxy', conn(randomUUID()));
-  assert.equal(lastLabel(), '→ 1 PIP 2 (from internal)');
+  assert.equal(lastLabel(), 'internal – unknown source');
 });
 
 test('a switch is attributed to the controller that sent it', async (t) => {
@@ -976,15 +977,16 @@ test('a switch is attributed to the controller that sent it', async (t) => {
   const lastLabel = () => partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.label;
 
   assert.equal((await patchFrom('10.9.9.2')).statusCode, 200);
-  assert.equal(lastLabel(), 'CAM07 Video → 1 PIP 2 (Studio 2)');
+  assert.equal(lastLabel(), 'Studio 2 – CAM07 Video', 'who switched, and what — the crosspoint shows the destination');
   assert.deepEqual(state.channelFor('proxy')!.switchedBy?.address, '10.9.9.2');
 
   // From a controller nobody named: its address stands in.
   assert.equal((await patchFrom('10.9.9.3')).statusCode, 200);
-  assert.match(lastLabel(), /^CAM07 Video → 1 PIP 2 \((10\.9\.9\.3|[^)]+)\)$/);
+  assert.match(lastLabel(), / – CAM07 Video$/);
+  assert.notEqual(lastLabel(), 'Studio 2 – CAM07 Video');
 
   // Naming it afterwards applies to the switch already made.
   cfg.controllers!.push({ address: '10.9.9.3', label: 'Studio 3' });
   await engine.syncRegistries();
-  assert.equal(lastLabel(), 'CAM07 Video → 1 PIP 2 (Studio 3)');
+  assert.equal(lastLabel(), 'Studio 3 – CAM07 Video');
 });
