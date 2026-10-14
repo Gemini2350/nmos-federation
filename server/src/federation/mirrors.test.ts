@@ -65,6 +65,9 @@ interface Stub {
   deviceId: string;
   /** The original sender's IS-04 subscription.active — switched on or off. */
   senderActive: boolean;
+  /** What the originals advertise as caps. */
+  receiverCaps: Record<string, unknown>;
+  senderCaps: Record<string, unknown>;
   deviceLabel: string;
   /** Where a query subscription points; set by tests that run a WebSocket. */
   wsHref?: string;
@@ -73,7 +76,7 @@ interface Stub {
 }
 
 async function startStub(): Promise<Stub> {
-  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0', senderId: ORIGIN_SENDER, receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, senderActive: true, deviceLabel: 'Foreign device' } as unknown as Stub;
+  const stub = { posts: [], deletes: [], patches: [], manifestHits: 0, manifestDown: false, queries: [], sdp: SDP, senderVersion: '100:0', senderId: ORIGIN_SENDER, receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, senderActive: true, receiverCaps: { media_types: ['video/raw'] }, senderCaps: {}, deviceLabel: 'Foreign device' } as unknown as Stub;
   const server = createServer((req, res) => {
     const url = req.url ?? '';
     const json = (code: number, body: unknown) => {
@@ -107,6 +110,7 @@ async function startStub(): Promise<Stub> {
         manifest_href: `${origin}/manifest.sdp`,
         transport: 'urn:x-nmos:transport:rtp.mcast',
         subscription: { receiver_id: null, active: stub.senderActive },
+        caps: stub.senderCaps,
       };
       const receiver = {
         id: stub.receiverId,
@@ -114,7 +118,7 @@ async function startStub(): Promise<Stub> {
         device_id: stub.deviceId,
         format: 'urn:x-nmos:format:video',
         transport: 'urn:x-nmos:transport:rtp.mcast',
-        caps: { media_types: ['video/raw'] },
+        caps: stub.receiverCaps,
       };
       const device = {
         id: stub.deviceId,
@@ -775,8 +779,9 @@ test('an original that comes back under new ids is found again, and its copy fol
   await engine.copySender(mirrorId);
   const queryOf = (id: string) => engine.queryClient(id);
 
-  // Nothing changed: nothing to do.
-  assert.deepEqual(await rebindMirrors(cfg, queryOf), { rebound: [], missing: [], recovered: [] });
+  // Nothing changed: nothing to re-bind (its caps, never read before, are merely recorded).
+  const first = await rebindMirrors(cfg, queryOf);
+  assert.deepEqual([first.rebound, first.missing, first.recovered], [[], [], []]);
 
   // The device restarts with new ids — and new multicast groups.
   internal.senderId = randomUUID();
@@ -1043,4 +1048,51 @@ test('a sender passing a stream through unchanged says whose stream it is — th
   cfg.bridges[0]!.nat = true;
   await engine.copySender(copyId); // rebuilt with an allocation
   assert.equal(tagOf(partner.posts, copySenderId), undefined);
+});
+
+test('copies carry their original\'s capabilities, and follow when they change', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const proxyMirror = randomUUID();
+  const senderCopy = randomUUID();
+  const constrained = {
+    media_types: ['video/raw'],
+    constraint_sets: [{ 'urn:x-nmos:cap:format:frame_width': { enum: [1920] }, 'urn:x-nmos:cap:format:frame_height': { enum: [1080] } }],
+  };
+  partner.receiverCaps = constrained;
+  internal.senderCaps = { media_types: ['video/raw'] };
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      { id: proxyMirror, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', originDeviceLabel: 'Foreign device', enabled: true },
+      { id: senderCopy, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', originDeviceLabel: 'Foreign device', enabled: true },
+    ],
+    receivers: [
+      { id: 'proxy', label: 'Proxy MON03', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId: proxyMirror } },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy'];
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  // As the startup pass does for copies that have none recorded.
+  const { readOrigin } = await import('./rebind.js');
+  await engine.start();
+  for (const m of cfg.mirrors) Object.assign(m, await readOrigin(engine.queryClient(m.registryId)!, m));
+  await engine.syncRegistries();
+  await engine.copySender(senderCopy);
+  const lastOf = (posts: Stub['posts'], type: string) => posts.filter((p) => p.type === type).at(-1)!.data.caps;
+  assert.deepEqual(lastOf(internal.posts, 'receiver'), constrained, 'the proxy can take what the original can');
+  assert.deepEqual(lastOf(partner.posts, 'sender'), { media_types: ['video/raw'] }, 'the sender copy says what the original says');
+
+  // The device changes what it can take: within the next pass the proxy follows.
+  partner.receiverCaps = { media_types: ['video/raw', 'video/jxsv'] };
+  const res = await rebindMirrors(cfg, (id) => engine.queryClient(id));
+  assert.deepEqual(res.capsChanged, [proxyMirror]);
+  await engine.syncRegistries();
+  assert.deepEqual(lastOf(internal.posts, 'receiver'), { media_types: ['video/raw', 'video/jxsv'] });
 });

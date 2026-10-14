@@ -21,6 +21,7 @@ export interface QuerySender {
   transport: string;
   subscription?: { receiver_id: string | null; active: boolean };
   tags?: Record<string, string[]>;
+  caps?: Record<string, unknown>;
 }
 
 export interface QueryReceiver {
@@ -30,7 +31,7 @@ export interface QueryReceiver {
   device_id: string;
   format: string;
   transport: string;
-  caps?: { media_types?: string[] };
+  caps?: { media_types?: string[]; [key: string]: unknown };
   subscription?: { sender_id: string | null; active: boolean };
   tags?: Record<string, string[]>;
 }

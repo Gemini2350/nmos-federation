@@ -359,6 +359,12 @@ export class Engine {
     }
   }
 
+  /** The original's caps for a copy, when read — published on the copy unchanged. */
+  private originCapsOf(mirrorId: string | undefined): Record<string, unknown> | undefined {
+    const caps = mirrorId ? this.cfg.mirrors.find((m) => m.id === mirrorId)?.originCaps : undefined;
+    return caps ?? undefined;
+  }
+
   /** The copy's original cannot be found in its registry — see federation/rebind.ts. */
   private originOffline(mirrorId: string | undefined): boolean {
     return !!mirrorId && !!this.cfg.mirrors.find((m) => m.id === mirrorId)?.originMissing;
@@ -485,6 +491,7 @@ export class Engine {
             essence,
             tags,
             Engine.senderActive(channel),
+            this.originCapsOf(channel.mirrorId) ?? {},
           ),
           senderId,
           channel.senderSdp ?? '',
@@ -523,6 +530,9 @@ export class Engine {
                   [domain.iface.name],
                   { sender_id: conn.sender_id, active: conn.master_enable },
                   grouphintTags(hints.get(vrx.id)),
+                  // A proxy takes what its original can take — its caps, constraint sets
+                  // included, so a controller checks a connection against the real thing.
+                  this.originCapsOf(vrx.proxyFor?.mirrorId),
                 ),
               ),
             );

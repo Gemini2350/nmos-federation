@@ -705,7 +705,7 @@ export function registerRestApi(
     const cfg = structuredClone(store.current);
     let updated = 0;
     const failed: string[] = [];
-    for (const mirror of cfg.mirrors.filter((m) => m.originGroupHint === undefined || m.originControls === undefined)) {
+    for (const mirror of cfg.mirrors.filter((m) => m.originGroupHint === undefined || m.originControls === undefined || m.originCaps === undefined)) {
       try {
         Object.assign(mirror, await originOf(mirror));
         updated++;
@@ -730,7 +730,11 @@ export function registerRestApi(
     const cfg = structuredClone(store.current);
     const before = new Set(store.current.mirrors.filter((m) => m.originMissing).map((m) => m.id));
     const result = await rebindMirrors(cfg, (id) => engine.queryClient(id));
-    const changed = result.rebound.length || result.recovered.length || result.missing.some((m) => !store.current.mirrors.find((x) => x.id === m.mirrorId)?.originMissing);
+    const changed =
+      result.rebound.length ||
+      result.recovered.length ||
+      result.capsChanged.length ||
+      result.missing.some((m) => !store.current.mirrors.find((x) => x.id === m.mirrorId)?.originMissing);
     if (!changed) return result;
     await store.save(cfg);
     // Publishes what came back and withdraws what went missing: a copy is offline

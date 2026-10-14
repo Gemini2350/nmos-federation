@@ -379,6 +379,7 @@ export function buildSender(
   essence?: Pick<EssenceParams, 'sender'>,
   tags: Record<string, string[]> = {},
   active = true,
+  caps: Record<string, unknown> = {},
   version = nmosVersion(),
 ) {
   const extra = essence?.sender;
@@ -394,7 +395,7 @@ export function buildSender(
     manifest_href: manifestHref,
     interface_bindings: interfaceBindings,
     subscription: { receiver_id: null, active },
-    caps: {},
+    caps,
     ...(extra?.bitRate !== undefined ? { bit_rate: extra.bitRate } : {}),
     ...(extra?.st2110_21SenderType ? { st2110_21_sender_type: `urn:x-nmos:st2110_21_sender_type:${extra.st2110_21SenderType}` } : {}),
   };
@@ -409,6 +410,8 @@ export function buildReceiver(
   interfaceBindings: string[],
   subscription: { sender_id: string | null; active: boolean },
   tags: Record<string, string[]> = {},
+  /** Replaces the media-type caps entirely — a proxy carries its original's. */
+  caps?: Record<string, unknown>,
   version = nmosVersion(),
 ) {
   return {
@@ -418,7 +421,7 @@ export function buildReceiver(
     description: label,
     tags,
     format,
-    caps: { media_types: mediaTypes },
+    caps: caps ?? { media_types: mediaTypes },
     device_id: deviceId,
     transport: 'urn:x-nmos:transport:rtp.mcast',
     interface_bindings: interfaceBindings,

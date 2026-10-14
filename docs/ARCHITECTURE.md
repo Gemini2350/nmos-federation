@@ -400,6 +400,14 @@ the registry the proxy is offered in decides, if that narrows it to one; otherwi
 for a sender found nowhere ("unknown source"), the device is named after the domain.
 These senders carry no group hint: the proxy's group describes the destination.
 
+**Capabilities travel with the copy.** A receiver proxy carries its original's IS-04
+`caps` unchanged — media types and BCP-004 constraint sets (resolution, rate, colour,
+channels, packet time) — so a controller checks a connection against what the real
+receiver can take; a sender copy carries the original sender's `caps`. Read with the
+copy (older copies once after startup) and kept current by the minute pass, which has
+the full resources in hand anyway: a device that changes its caps passes that on within
+a minute. A free virtual receiver keeps the generic media types of its format.
+
 **Same stream, not a duplicate.** Without NAT a channel passes the SDP through, so its
 sender carries the very multicast of the sender it came from — a copy, and even more so
 a copy routed back to its own domain through a proxy, where it appears next to its

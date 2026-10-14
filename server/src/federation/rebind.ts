@@ -12,7 +12,7 @@ import { passableControls } from './passthrough.js';
 export async function readOrigin(
   query: QueryClient,
   mirror: Pick<MirrorEntry, 'kind' | 'originId' | 'originDeviceId'>,
-): Promise<Pick<MirrorEntry, 'originGroupHint' | 'originDeviceLabel' | 'originControls' | 'originSourceId'>> {
+): Promise<Pick<MirrorEntry, 'originGroupHint' | 'originDeviceLabel' | 'originControls' | 'originSourceId' | 'originCaps'>> {
   const [resource, device] = await Promise.all([
     mirror.kind === 'sender' ? query.sender(mirror.originId) : query.receiver(mirror.originId),
     query.device(mirror.originDeviceId).catch(() => null),
@@ -22,6 +22,7 @@ export async function readOrigin(
   const flow = flowId ? await query.flow(flowId).catch(() => null) : null;
   return {
     originGroupHint: resource.tags?.[GROUPHINT]?.[0] ?? null,
+    originCaps: (resource.caps as Record<string, unknown> | undefined) ?? null,
     originDeviceLabel: device?.label ?? null,
     originControls: device ? passableControls(device.controls) : null,
     ...(mirror.kind === 'sender' ? { originSourceId: flow?.source_id ?? null } : {}),
@@ -74,6 +75,8 @@ export interface RebindResult {
   missing: { mirrorId: string; label: string; reason: string }[];
   /** Copies whose original was marked missing and is back. */
   recovered: string[];
+  /** Copies whose original changed its caps, taken over. */
+  capsChanged: string[];
 }
 
 /**
@@ -86,15 +89,15 @@ export async function rebindMirrors(
   queryOf: (registryId: string) => QueryClient | null,
   now = new Date(),
 ): Promise<RebindResult> {
-  const result: RebindResult = { rebound: [], missing: [], recovered: [] };
+  const result: RebindResult = { rebound: [], missing: [], recovered: [], capsChanged: [] };
   for (const registryId of new Set(cfg.mirrors.map((m) => m.registryId))) {
     const query = queryOf(registryId);
     if (!query) continue;
     let senders, receivers, devices;
     try {
       [senders, receivers, devices] = await Promise.all([
-        query.getAll<{ id: string; label: string; device_id: string }>('senders'),
-        query.getAll<{ id: string; label: string; device_id: string }>('receivers'),
+        query.getAll<{ id: string; label: string; device_id: string; caps?: Record<string, unknown> }>('senders'),
+        query.getAll<{ id: string; label: string; device_id: string; caps?: Record<string, unknown> }>('receivers'),
         query.getAll<{ id: string; label: string }>('devices'),
       ]);
     } catch {
@@ -109,6 +112,13 @@ export async function rebindMirrors(
         if (mirror.originMissing) {
           delete mirror.originMissing;
           result.recovered.push(mirror.id);
+        }
+        // The whole resource is in hand anyway: a device that changed what it can take
+        // passes that on to its copy within a minute.
+        const caps = list.find((r) => r.id === mirror.originId)?.caps ?? null;
+        if (JSON.stringify(caps) !== JSON.stringify(mirror.originCaps ?? null)) {
+          mirror.originCaps = caps;
+          result.capsChanged.push(mirror.id);
         }
         continue;
       }

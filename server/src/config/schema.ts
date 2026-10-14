@@ -300,6 +300,11 @@ export interface MirrorEntry {
   originControls?: { type: string; href: string }[] | null;
   /** For a sender copy: the original's source id, which IS-08 refers to. */
   originSourceId?: string | null;
+  /**
+   * The original's IS-04 `caps` — a receiver's media types and BCP-004 constraint sets,
+   * a sender's caps — published on the copy unchanged. `undefined` = not read yet.
+   */
+  originCaps?: Record<string, unknown> | null;
   /** Set while the original cannot be found in its registry (see federation/rebind.ts). */
   originMissing?: { since: string; reason: string };
 }

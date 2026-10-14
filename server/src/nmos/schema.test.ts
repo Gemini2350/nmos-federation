@@ -265,3 +265,24 @@ test('a device passing IS-12 and IS-08 through validates', () => {
     ]),
   );
 });
+
+test('a proxy receiver carrying its original\'s BCP-004 caps validates', () => {
+  // As an SDI card in the lab advertises them.
+  const caps = {
+    media_types: ['audio/L24', 'audio/L16'],
+    constraint_sets: [
+      {
+        'urn:x-nmos:cap:format:channel_count': { maximum: 64, minimum: 1 },
+        'urn:x-nmos:cap:format:sample_depth': { enum: [16, 24] },
+        'urn:x-nmos:cap:format:sample_rate': { enum: [{ numerator: 48000, denominator: 1 }] },
+        'urn:x-nmos:cap:transport:packet_time': { enum: [0.125] },
+      },
+    ],
+  };
+  const rx = buildReceiver('e3e3e3e3-1111-5111-8111-111111111111', 'd1d1d1d1-1111-5111-8111-111111111111', 'Proxy SDI RX 3/Audio', 'urn:x-nmos:format:audio', ['audio/L24'], ['eth0'], { sender_id: null, active: false }, {}, caps);
+  check('receiver_audio.json', rx);
+  assert.deepEqual(rx.caps, caps, 'carried unchanged');
+  for (const senderCaps of [{ media_types: ['audio/L24'] }, { version: '0:0' }]) {
+    check('sender.json', buildSender('c5c5c5c5-1111-5111-8111-111111111111', 'b1b1b1b1-1111-5111-8111-111111111111', 'd1d1d1d1-1111-5111-8111-111111111111', 'TX', 'http://10.1.0.10:8081/x', ['eth0'], undefined, {}, true, senderCaps));
+  }
+});
