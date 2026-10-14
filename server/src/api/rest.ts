@@ -87,7 +87,9 @@ export function registerRestApi(
   };
   app.get('/api/status', async () => engine.status());
   app.get('/api/config', async () => store.current);
-  app.get('/api/channels', async () => engine.channels());
+  app.get('/api/channels', async () =>
+    engine.channels().map((c) => ({ ...c, switchedByName: c.switchedBy ? engine.controllerName(c.switchedBy) : null })),
+  );
 
   app.post<{ Body: AppConfig }>('/api/config/validate', async (req) => ({ issues: store.validate(req.body) }));
 

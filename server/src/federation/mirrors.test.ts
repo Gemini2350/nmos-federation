@@ -938,3 +938,53 @@ test('the sender a connected proxy publishes is named after what feeds it, not a
   await engine.activate('proxy', conn(randomUUID()));
   assert.equal(lastLabel(), '→ 1 PIP 2 (from internal)');
 });
+
+test('a switch is attributed to the controller that sent it', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, cfg, state } = await build(internal, partner, dir, {
+    mirrors: [{ id: mirrorId, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true }],
+    receivers: [
+      { id: 'proxy', label: '1 PIP 2', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId } },
+    ],
+    controllers: [{ address: '10.9.9.2', label: 'Studio 2' }],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy'];
+  // The node API where the proxy is offered — a controller's PATCH arrives here.
+  const nodeApi = Fastify({ routerOptions: { ignoreTrailingSlash: true } });
+  acceptEmptyJson(nodeApi);
+  registerNodeApi(nodeApi, cfg.domains[0]!, engine, state);
+  t.after(async () => {
+    await nodeApi.close();
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  const patchFrom = (address: string) =>
+    nodeApi.inject({
+      method: 'PATCH',
+      url: `/x-nmos/connection/v1.1/single/receivers/${engine.receiverNmosId('proxy')}/staged`,
+      remoteAddress: address,
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ sender_id: ORIGIN_SENDER, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, activation: { mode: 'activate_immediate' } }),
+    });
+  const lastLabel = () => partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.label;
+
+  assert.equal((await patchFrom('10.9.9.2')).statusCode, 200);
+  assert.equal(lastLabel(), 'CAM07 Video → 1 PIP 2 (Studio 2)');
+  assert.deepEqual(state.channelFor('proxy')!.switchedBy?.address, '10.9.9.2');
+
+  // From a controller nobody named: its address stands in.
+  assert.equal((await patchFrom('10.9.9.3')).statusCode, 200);
+  assert.match(lastLabel(), /^CAM07 Video → 1 PIP 2 \((10\.9\.9\.3|[^)]+)\)$/);
+
+  // Naming it afterwards applies to the switch already made.
+  cfg.controllers!.push({ address: '10.9.9.3', label: 'Studio 3' });
+  await engine.syncRegistries();
+  assert.equal(lastLabel(), 'CAM07 Video → 1 PIP 2 (Studio 3)');
+});

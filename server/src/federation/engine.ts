@@ -29,6 +29,7 @@ import type { Channel, FederationDevice, VirtualReceiver } from '../types.js';
 import type { MirrorEntry } from '../config/schema.js';
 import type { Bridge } from '../types.js';
 import { createHash } from 'node:crypto';
+import { reverse } from 'node:dns/promises';
 import { buildChannelPlan } from './channel.js';
 import type { PoolManager } from './pools.js';
 import type { ConnectionState, StateStore } from './state.js';
@@ -935,7 +936,7 @@ export class Engine {
   /**
    * IS-05 activation of a virtual receiver — the trigger for the whole chain.
    */
-  async activate(vrxId: string, conn: ConnectionState): Promise<Channel> {
+  async activate(vrxId: string, conn: ConnectionState, meta: { by?: string } = {}): Promise<Channel> {
     const vrx = this.cfg.receivers.find((r) => r.id === vrxId);
     if (!vrx) throw new Error(`unknown virtual receiver ${vrxId}`);
     const device = this.cfg.devices.find((d) => d.id === vrx.deviceId);
@@ -950,6 +951,8 @@ export class Engine {
     // A proxy's sender appears next to the real receiver, so it is named after what
     // feeds it; look the connected sender up — briefly, an activation must not wait.
     const originSenderLabel = vrx.proxyFor && conn.sender_id ? await this.senderLabelIn(from, conn.sender_id) : null;
+    // Who switched it. A rebuild from the GUI (Retry) keeps the controller that did.
+    const switchedBy = meta.by ? await this.whoIs(meta.by) : this.deps.state.channelFor(vrxId)?.switchedBy;
     return this.runChannel({
       key: vrxId,
       device,
@@ -959,6 +962,7 @@ export class Engine {
       sdp,
       originSenderId: conn.sender_id,
       originSenderLabel,
+      ...(switchedBy ? { switchedBy } : {}),
       ...(vrx.proxyFor ? { proxy: vrx.proxyFor } : {}),
     });
   }
@@ -971,9 +975,32 @@ export class Engine {
    * name is unknown.
    */
   private arrivalLabel(proxyLabel: string, channel: Channel): string {
-    if (channel.originSenderLabel) return `${channel.originSenderLabel} → ${proxyLabel}`;
-    const from = this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ?? channel.sourceDomain;
+    const who = channel.switchedBy ? this.controllerName(channel.switchedBy) : null;
+    if (channel.originSenderLabel) return `${channel.originSenderLabel} → ${proxyLabel}${who ? ` (${who})` : ''}`;
+    const from = who ?? this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ?? channel.sourceDomain;
     return `→ ${proxyLabel} (from ${from})`;
+  }
+
+  /**
+   * The name of whoever switched a channel: a name given to that controller address in
+   * the settings, else the registry running on that host, else its DNS name, else the
+   * address. Resolved when shown, so a name given later applies at once.
+   */
+  controllerName(by: { address: string; dnsName: string | null }): string {
+    return (
+      this.cfg.controllers?.find((c) => c.address === by.address)?.label ||
+      this.cfg.registries.find((r) => r.ip === by.address)?.label ||
+      by.dnsName ||
+      by.address
+    );
+  }
+
+  /** The address an IS-05 PATCH came from, and its DNS name (0.5 s at most). */
+  private async whoIs(address: string): Promise<{ address: string; dnsName: string | null }> {
+    const ip = address.replace(/^::ffff:/, '');
+    const timeout = new Promise<null>((r) => setTimeout(() => r(null), 500).unref?.());
+    const name = await Promise.race([reverse(ip).then((n) => n[0] ?? null).catch(() => null), timeout]);
+    return { address: ip, dnsName: name };
   }
 
   /** A sender's label from any registry of a domain — registry reads, 1 s at most. */
@@ -1242,6 +1269,7 @@ export class Engine {
     originVersion?: string;
     originActive?: boolean;
     originSenderLabel?: string | null;
+    switchedBy?: { address: string; dnsName: string | null };
     mirrorId?: string;
     proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
   }): Promise<Channel> {
@@ -1262,6 +1290,7 @@ export class Engine {
       ...(opts.originVersion ? { originVersion: opts.originVersion } : {}),
       ...(opts.originActive === false ? { originActive: false } : {}),
       ...(opts.originSenderLabel ? { originSenderLabel: opts.originSenderLabel } : {}),
+      ...(opts.switchedBy ? { switchedBy: opts.switchedBy } : {}),
       legs: [],
       allocation: null,
       senderSdp: null,

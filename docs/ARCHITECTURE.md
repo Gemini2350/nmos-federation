@@ -392,7 +392,15 @@ So a proxy receiver is a virtual receiver that additionally drives a remote one.
 The sender published next to R is named after what feeds it — "Studio CAM 3 → 1 PIP 2",
 the connected sender's label looked up in its registry at activation (1 s at most), or
 "→ 1 PIP 2 (from Studios)" when it is unknown. Named after the proxy alone, it looked as
-if the receiver had turned up as a sender in its own registry. The
+if the receiver had turned up as a sender in its own registry.
+
+It also says **who switched it**: every activation records the address the IS-05
+PATCH came from (and its DNS name), and the name shown — "REF TX 1 → 1 PIP 2
+(Studio 2)", and "switched by" on the Channels page — is resolved when shown: a name
+given to that address under Settings → Controllers, else a registry running on that
+host, else the DNS name, else the address. The feeding sender cannot tell the studios
+apart (a copy is registered in all of them); the controller can. A Retry from the GUI
+keeps the controller that made the switch. The
 published sender is not redundant work: it gives the stream a first-class identity in
 the target domain, and R's `subscription.sender_id` then points at something a
 controller over there can actually see.

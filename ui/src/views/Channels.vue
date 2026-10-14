@@ -82,7 +82,10 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
     <tbody>
       <tr v-for="c in channels" :key="c.id">
         <td><span :class="badge(c.state)">{{ c.state }}</span></td>
-        <td>{{ domainName(c.sourceDomain) }} → {{ domainName(c.targetDomain) }}</td>
+        <td>
+          {{ domainName(c.sourceDomain) }} → {{ domainName(c.targetDomain) }}
+          <small v-if="c.switchedByName" class="by" :title="c.switchedBy?.address">switched by {{ c.switchedByName }}</small>
+        </td>
         <td>
           <div v-for="leg in c.legs" :key="leg.fabric">
             <span :class="leg.fabric">{{ leg.fabric }}</span> {{ leg.group }}:{{ leg.port }}
@@ -127,4 +130,5 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
 .registries h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
 h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
 small { opacity: 0.65; }
+.by { display: block; opacity: 0.65; }
 </style>

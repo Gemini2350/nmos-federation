@@ -81,6 +81,12 @@ export interface Channel {
   originActive?: boolean;
   /** Label of the sender connected to the virtual receiver, looked up in its registry. */
   originSenderLabel?: string | null;
+  /**
+   * Who switched it: the address the IS-05 PATCH came from, and its DNS name if it has
+   * one. The display name is resolved when shown (Engine.controllerName), so naming a
+   * controller later applies to switches already made.
+   */
+  switchedBy?: { address: string; dnsName: string | null };
   legs: Leg[];
   allocation: Allocation | null;
   /** The virtual sender's SDP (rewritten, or copied verbatim when NAT is off). */
