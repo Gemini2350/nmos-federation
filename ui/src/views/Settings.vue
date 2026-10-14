@@ -112,11 +112,6 @@ function addDomain() {
   });
 }
 
-function addController() {
-  if (!cfg.value) return;
-  (cfg.value.controllers ??= []).push({ address: '', label: '' });
-}
-
 function addRegistry() {
   if (!cfg.value) return;
   cfg.value.registries.push({
@@ -431,35 +426,6 @@ onMounted(refresh);
           </ul>
         </details>
       </template>
-    </section>
-
-    <!-- ── Controllers: names for who switches ── -->
-    <section>
-      <div class="head">
-        <h3>
-          Controllers
-          <InfoHint wide>
-            A switch on one of our receivers is attributed to whoever sent the IS-05 PATCH. Give a controller's
-            address a name — "Studio 2" — and that name appears on the Channels page and as the device the
-            streams it switches onto proxies arrive in: device "Studio 2" with senders "SDI 1", "SDI 2" … next to
-            the real receivers. Without a name, a registry on that host, the DNS name or the address stands in.
-            Names apply to switches already made.
-          </InfoHint>
-        </h3>
-        <button @click="addController">Add controller</button>
-      </div>
-      <table v-if="cfg.controllers?.length" class="grid">
-        <colgroup><col style="width: 30%" /><col /><col style="width: 4%" /></colgroup>
-        <thead><tr><th>Address</th><th>Name</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="(c, i) in cfg.controllers" :key="i">
-            <td><input v-model.trim="c.address" placeholder="10.0.100.21" /></td>
-            <td><input v-model.trim="c.label" placeholder="Studio 2" /></td>
-            <td><button title="remove" @click="cfg.controllers!.splice(i, 1)">×</button></td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else><small>None named — switches show the registry on that host, the DNS name or the address.</small></p>
     </section>
 
     <!-- ── NAT: the plant. How each domain hangs on each switch, and the pools. ── -->

@@ -29,7 +29,6 @@ import type { Channel, FederationDevice, VirtualReceiver } from '../types.js';
 import type { MirrorEntry } from '../config/schema.js';
 import type { Bridge } from '../types.js';
 import { createHash } from 'node:crypto';
-import { reverse } from 'node:dns/promises';
 import { buildChannelPlan } from './channel.js';
 import type { PoolManager } from './pools.js';
 import type { ConnectionState, StateStore } from './state.js';
@@ -957,11 +956,13 @@ export class Engine {
   /** Proxies connected before their feeding sender's name was recorded get it once. */
   private async fillArrivalLabels(): Promise<void> {
     const pending = this.activeChannels().filter(
-      (c) => c.originSenderLabel === undefined && c.originSenderId && this.cfg.receivers.find((r) => r.id === c.receiverId)?.proxyFor,
+      (c) => c.originRegistries === undefined && c.originSenderId && this.cfg.receivers.find((r) => r.id === c.receiverId)?.proxyFor,
     );
     if (!pending.length) return;
     for (const c of pending) {
-      c.originSenderLabel = await this.senderLabelIn(c.sourceDomain, c.originSenderId!);
+      const origin = await this.senderOriginIn(c.sourceDomain, c.originSenderId!);
+      c.originSenderLabel = origin.label;
+      c.originRegistries = origin.registries;
       this.deps.state.upsertChannel(c);
     }
     await this.deps.state.save();
@@ -977,7 +978,7 @@ export class Engine {
   /**
    * IS-05 activation of a virtual receiver — the trigger for the whole chain.
    */
-  async activate(vrxId: string, conn: ConnectionState, meta: { by?: string } = {}): Promise<Channel> {
+  async activate(vrxId: string, conn: ConnectionState): Promise<Channel> {
     const vrx = this.cfg.receivers.find((r) => r.id === vrxId);
     if (!vrx) throw new Error(`unknown virtual receiver ${vrxId}`);
     const device = this.cfg.devices.find((d) => d.id === vrx.deviceId);
@@ -991,9 +992,7 @@ export class Engine {
     const from = this.sideOf(vrx, bridge);
     // A proxy's sender appears next to the real receiver, so it is named after what
     // feeds it; look the connected sender up — briefly, an activation must not wait.
-    const originSenderLabel = vrx.proxyFor && conn.sender_id ? await this.senderLabelIn(from, conn.sender_id) : null;
-    // Who switched it. A rebuild from the GUI (Retry) keeps the controller that did.
-    const switchedBy = meta.by ? await this.whoIs(meta.by) : this.deps.state.channelFor(vrxId)?.switchedBy;
+    const origin = vrx.proxyFor && conn.sender_id ? await this.senderOriginIn(from, conn.sender_id) : null;
     return this.runChannel({
       key: vrxId,
       device,
@@ -1002,8 +1001,7 @@ export class Engine {
       to: otherDomain(bridge, from)!,
       sdp,
       originSenderId: conn.sender_id,
-      originSenderLabel,
-      ...(switchedBy ? { switchedBy } : {}),
+      ...(origin ? { originSenderLabel: origin.label, originRegistries: origin.registries } : {}),
       ...(vrx.proxyFor ? { proxy: vrx.proxyFor } : {}),
     });
   }
@@ -1011,11 +1009,10 @@ export class Engine {
   /**
    * Streams arriving through a connected proxy — published next to the real receiver
    * the proxy drives. They are grouped by where they come from, not under the proxy's
-   * device: one device per studio (whoever switched them, see controllerName; the
-   * source domain when nobody is known), and each sender named after its feeding sender
-   * — "Studio1" with "SDI 1", "SDI 2". Under the proxy's device they read as if the
-   * receivers had turned up as senders in their own registry; and the destination is
-   * what a crosspoint shows anyway.
+   * device: one device per registry the switched sender is registered in ("Studio1"),
+   * each sender named after the switched sender ("SDI 1", "SDI 2"). Under the proxy's
+   * device they read as if the receivers had turned up as senders in their own
+   * registry; and the destination is what a crosspoint shows anyway.
    */
   private arrivalsOf(bridge: Bridge, domainId: string): { channel: Channel; who: string; devId: string }[] {
     const deviceIds = new Set(this.devicesOf(bridge).map((d) => d.id));
@@ -1032,44 +1029,41 @@ export class Engine {
     return !!vrx?.proxyFor && !this.originOffline(vrx.proxyFor.mirrorId);
   }
 
+  /**
+   * The registry the switched sender comes from. Found in exactly one: that one. In
+   * several (a copy is registered in every studio): the one the proxy is offered in, if
+   * that narrows it to one. Otherwise — or for a sender found nowhere — the domain.
+   */
   private arrivalOrigin(channel: Channel): string {
+    const regs = channel.originRegistries ?? [];
+    let pick = regs.length === 1 ? regs[0] : undefined;
+    if (!pick && regs.length > 1) {
+      const vrx = this.cfg.receivers.find((r) => r.id === channel.receiverId);
+      const mirror = vrx?.proxyFor && this.cfg.mirrors.find((m) => m.id === vrx.proxyFor!.mirrorId);
+      const offered = mirror ? this.mirrorRegistries(mirror).chosen : [];
+      const both = regs.filter((r) => offered.includes(r));
+      if (both.length === 1) pick = both[0];
+    }
     return (
-      (channel.switchedBy ? this.controllerName(channel.switchedBy) : null) ??
-      this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ??
+      (pick && this.cfg.registries.find((r) => r.id === pick)?.label) ||
+      this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ||
       channel.sourceDomain
     );
   }
 
-  /**
-   * The name of whoever switched a channel: a name given to that controller address in
-   * the settings, else the registry running on that host, else its DNS name, else the
-   * address. Resolved when shown, so a name given later applies at once.
-   */
-  controllerName(by: { address: string; dnsName: string | null }): string {
-    return (
-      this.cfg.controllers?.find((c) => c.address === by.address)?.label ||
-      this.cfg.registries.find((r) => r.ip === by.address)?.label ||
-      by.dnsName ||
-      by.address
+  /** The connected sender's label and the registries of a domain holding it — 1 s at most. */
+  private async senderOriginIn(domainId: string, senderId: string): Promise<{ label: string | null; registries: string[] }> {
+    const lookups = registriesOf(this.cfg, domainId).map(async (r) => {
+      const q = this.queries.get(r.id);
+      if (!q) return null;
+      const s = await q.sender(senderId).catch(() => null);
+      return s?.id === senderId ? { registryId: r.id, label: s.label || null } : null;
+    });
+    const timeout = new Promise<null[]>((r) => setTimeout(() => r([]), 1000).unref?.());
+    const found = ((await Promise.race([Promise.all(lookups), timeout])) as ({ registryId: string; label: string | null } | null)[]).filter(
+      (x): x is { registryId: string; label: string | null } => !!x,
     );
-  }
-
-  /** The address an IS-05 PATCH came from, and its DNS name (0.5 s at most). */
-  private async whoIs(address: string): Promise<{ address: string; dnsName: string | null }> {
-    const ip = address.replace(/^::ffff:/, '');
-    const timeout = new Promise<null>((r) => setTimeout(() => r(null), 500).unref?.());
-    const name = await Promise.race([reverse(ip).then((n) => n[0] ?? null).catch(() => null), timeout]);
-    return { address: ip, dnsName: name };
-  }
-
-  /** A sender's label from any registry of a domain — registry reads, 1 s at most. */
-  private async senderLabelIn(domainId: string, senderId: string): Promise<string | null> {
-    const queries = registriesOf(this.cfg, domainId)
-      .map((r) => this.queries.get(r.id))
-      .filter((q): q is QueryClient => !!q);
-    const lookups = queries.map((q) => q.sender(senderId).then((s) => s.label || null));
-    const timeout = new Promise<null>((r) => setTimeout(() => r(null), 1000).unref?.());
-    return Promise.race([Promise.any(lookups).catch(() => null), timeout]);
+    return { label: found.find((f) => f.label)?.label ?? null, registries: found.map((f) => f.registryId) };
   }
 
   /** A published sender is active while its channel runs and, for a copy, its original is on. */
@@ -1328,7 +1322,7 @@ export class Engine {
     originVersion?: string;
     originActive?: boolean;
     originSenderLabel?: string | null;
-    switchedBy?: { address: string; dnsName: string | null };
+    originRegistries?: string[];
     mirrorId?: string;
     proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
   }): Promise<Channel> {
@@ -1349,7 +1343,7 @@ export class Engine {
       ...(opts.originVersion ? { originVersion: opts.originVersion } : {}),
       ...(opts.originActive === false ? { originActive: false } : {}),
       ...(opts.originSenderLabel ? { originSenderLabel: opts.originSenderLabel } : {}),
-      ...(opts.switchedBy ? { switchedBy: opts.switchedBy } : {}),
+      ...(opts.originRegistries ? { originRegistries: opts.originRegistries } : {}),
       legs: [],
       allocation: null,
       senderSdp: null,

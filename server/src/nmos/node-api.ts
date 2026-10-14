@@ -278,7 +278,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
 
       try {
         if (staged.master_enable && staged.transport_file.data) {
-          await engine.activate(vrx.id, conn.active, { by: req.ip });
+          await engine.activate(vrx.id, conn.active);
         } else {
           await engine.deactivate(vrx.id);
         }

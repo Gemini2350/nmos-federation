@@ -129,6 +129,8 @@ async function startStub(): Promise<Stub> {
       if (tail === 'devices') return json(200, [device]);
       if (tail === `devices/${stub.deviceId}`) return json(200, device);
       if (tail === 'flows') return json(200, []);
+      // A single resource the registry does not hold is a 404, as in a real one.
+      if (tail.includes('/')) return json(404, { code: 404, error: 'not found' });
       return json(200, []);
     }
     if (req.method === 'PATCH' && url.includes('/single/receivers/')) {
@@ -947,63 +949,9 @@ test('the sender a connected proxy publishes is named after where it comes from,
   assert.equal(lastLabel(), 'unknown source');
 });
 
-test('a switch is attributed to the controller that sent it', async (t) => {
+test('streams arriving through proxies sit in a device named after the registry their source is in', async (t) => {
   const internal = await startStub();
-  const partner = await startStub();
-  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
-  const mirrorId = randomUUID();
-  const { engine, cfg, state } = await build(internal, partner, dir, {
-    mirrors: [{ id: mirrorId, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true }],
-    receivers: [
-      { id: 'proxy', label: '1 PIP 2', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
-        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId } },
-    ],
-    controllers: [{ address: '10.9.9.2', label: 'Studio 2' }],
-  });
-  cfg.devices[0]!.receiverIds = ['proxy'];
-  // The node API where the proxy is offered — a controller's PATCH arrives here.
-  const nodeApi = Fastify({ routerOptions: { ignoreTrailingSlash: true } });
-  acceptEmptyJson(nodeApi);
-  registerNodeApi(nodeApi, cfg.domains[0]!, engine, state);
-  t.after(async () => {
-    await nodeApi.close();
-    await engine.stop();
-    internal.server.close();
-    partner.server.close();
-    await rm(dir, { recursive: true, force: true });
-  });
-  await engine.start();
-  const patchFrom = (address: string) =>
-    nodeApi.inject({
-      method: 'PATCH',
-      url: `/x-nmos/connection/v1.1/single/receivers/${engine.receiverNmosId('proxy')}/staged`,
-      remoteAddress: address,
-      headers: { 'content-type': 'application/json' },
-      payload: JSON.stringify({ sender_id: ORIGIN_SENDER, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, activation: { mode: 'activate_immediate' } }),
-    });
-  const last = () => {
-    const sender = partner.posts.filter((p) => p.type === 'sender').at(-1)!.data;
-    const device = partner.posts.filter((p) => p.type === 'device' && p.id === sender.device_id).at(-1)?.data;
-    return `${device?.label} / ${sender.label}`;
-  };
-
-  assert.equal((await patchFrom('10.9.9.2')).statusCode, 200);
-  assert.equal(last(), 'Studio 2 / CAM07 Video', 'a device per studio, the sender named after its source');
-  assert.deepEqual(state.channelFor('proxy')!.switchedBy?.address, '10.9.9.2');
-
-  // From a controller nobody named: its address stands in.
-  assert.equal((await patchFrom('10.9.9.3')).statusCode, 200);
-  assert.match(last(), / \/ CAM07 Video$/);
-  assert.notEqual(last(), 'Studio 2 / CAM07 Video');
-
-  // Naming it afterwards applies to the switch already made.
-  cfg.controllers!.push({ address: '10.9.9.3', label: 'Studio 3' });
-  await engine.syncRegistries();
-  assert.equal(last(), 'Studio 3 / CAM07 Video');
-});
-
-test('streams switched by one studio share that studio\'s device, not the proxies\' device', async (t) => {
-  const internal = await startStub();
+  const studio = await startStub();
   const partner = await startStub();
   const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
   const m1 = randomUUID();
@@ -1018,29 +966,37 @@ test('streams switched by one studio share that studio\'s device, not the proxie
       { id: m2, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: randomUUID(), originDeviceId: ORIGIN_DEVICE, originLabel: 'MON04', enabled: true },
     ],
     receivers: [proxy('p1', '1 PIP 2', m1), proxy('p2', '1 PIP 3', m2)],
-    controllers: [{ address: '10.9.9.2', label: 'Studio 2' }],
   });
   cfg.devices[0]!.receiverIds = ['p1', 'p2'];
+  // A second registry on the source side, "Studio1", the only one holding the source.
+  cfg.registries.push({ id: 'st1', label: 'Studio1', domainId: 'internal', mode: 'manual', ip: studio.ip, port: studio.port, version: 'v1.3', enabled: true });
+  internal.senderId = randomUUID();
   t.after(async () => {
     await engine.stop();
-    internal.server.close();
-    partner.server.close();
+    for (const s of [internal, studio, partner]) s.server.close();
     await rm(dir, { recursive: true, force: true });
   });
   await engine.start();
   const conn = { sender_id: ORIGIN_SENDER, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, transport_params: [{}, {}] };
-  await engine.activate('p1', conn, { by: '10.9.9.2' });
-  await engine.activate('p2', conn, { by: '10.9.9.2' });
+  await engine.activate('p1', conn);
+  await engine.activate('p2', conn);
 
   const res = engine.domainResources('partnerA');
-  const studio = res.devices.find((d) => d.label === 'Studio 2')!;
-  assert.ok(studio, 'a device named after the studio');
-  assert.equal(studio.senders.length, 2, 'both streams in it');
-  assert.ok(res.senders.filter((s) => studio.senders.includes(s.id)).every((s) => s.label === 'CAM07 Video'), 'named after their source');
-  const proxiesDevice = res.devices.find((d) => d.id === engine.deviceId('dev1'))!;
-  assert.equal(proxiesDevice.senders.length, 0, 'the proxies\' device no longer carries them');
-  // And it is what the registry gets: the studio device before its senders.
-  const devPost = partner.posts.findIndex((p) => p.type === 'device' && p.data.label === 'Studio 2');
-  const senderPost = partner.posts.findIndex((p) => p.type === 'sender' && p.data.device_id === studio.id);
-  assert.ok(devPost >= 0 && senderPost > devPost);
+  const studioDevice = res.devices.find((d) => d.label === 'Studio1')!;
+  assert.ok(studioDevice, "a device named after the source's registry");
+  assert.equal(studioDevice.senders.length, 2, 'both streams in it');
+  assert.ok(res.senders.filter((s) => studioDevice.senders.includes(s.id)).every((s) => s.label === 'CAM07 Video'), 'named after their source');
+  assert.equal(res.devices.find((d) => d.id === engine.deviceId('dev1'))!.senders.length, 0, "the proxies' device no longer carries them");
+  const devPost = partner.posts.findIndex((p) => p.type === 'device' && p.data.label === 'Studio1');
+  const senderPost = partner.posts.findIndex((p) => p.type === 'sender' && p.data.device_id === studioDevice.id);
+  assert.ok(devPost >= 0 && senderPost > devPost, 'the device is registered before its senders');
+
+  // A source in several registries (a copy in every studio): the registry the proxy is
+  // offered in decides; when that does not narrow it, the domain.
+  internal.senderId = ORIGIN_SENDER;
+  await engine.activate('p1', conn);
+  assert.ok(engine.domainResources('partnerA').devices.some((d) => d.label === 'internal' && d.senders.length === 1), 'ambiguous: the domain');
+  cfg.mirrors[0]!.registries = ['st1'];
+  await engine.activate('p1', conn);
+  assert.equal(engine.domainResources('partnerA').devices.find((d) => d.label === 'Studio1')!.senders.length, 2, 'offered only in Studio1: Studio1');
 });

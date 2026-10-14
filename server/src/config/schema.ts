@@ -161,7 +161,8 @@ export function otherDomain(bridge: Bridge, domainId: string): string | undefine
 
 export function normalizeConfig(cfg: AppConfig): AppConfig {
   cfg.bridges ??= [];
-  cfg.controllers ??= [];
+  // Controller names existed briefly; the registry of the switched sender replaced them.
+  delete (cfg as unknown as Record<string, unknown>)['controllers'];
   migrateDevicesToBridges(cfg);
   migrateDirectedBridges(cfg);
   for (const b of cfg.bridges) {
@@ -318,12 +319,6 @@ export interface AppConfig {
   receivers: VirtualReceiver[];
   /** Direct registry-to-registry copies. */
   mirrors: MirrorEntry[];
-  /**
-   * Names for the controllers that switch our receivers, by address — "Studio 2". A
-   * switch is attributed to whoever sent the IS-05 PATCH; without a name here the
-   * registry on that host, the DNS name or the address stands in.
-   */
-  controllers?: { address: string; label: string }[];
 }
 
 const emptyPool = (base: string): PoolConfig => ({ base, pairs: 64, sourceNat: null });
@@ -371,7 +366,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   devices: [],
   receivers: [],
   mirrors: [],
-  controllers: [],
 };
 
 export function bridgeOf(cfg: AppConfig, device: FederationDevice): Bridge | undefined {

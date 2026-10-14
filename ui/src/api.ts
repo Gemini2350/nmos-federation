@@ -145,8 +145,6 @@ export interface Config {
   bridges: Bridge[];
   devices: Device[];
   receivers: VirtualReceiver[];
-  /** Names for controller addresses — who switched what. */
-  controllers?: { address: string; label: string }[];
 }
 
 export interface BrowseSender {
@@ -249,9 +247,8 @@ export interface Channel {
   mirrorId?: string;
   /** For a sender copy: false while the original sender is switched off. */
   originActive?: boolean;
-  /** The controller that switched it, by address — and its name as resolved now. */
-  switchedBy?: { address: string; dnsName: string | null };
-  switchedByName?: string | null;
+  /** Registries the connected sender was found in — where a proxy's stream comes from. */
+  originRegistries?: string[];
   remoteReceiver?: { registryId: string; receiverId: string; connected: boolean; error: string | null };
   error: string | null;
   updatedAt: string;

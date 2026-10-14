@@ -84,7 +84,7 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
         <td><span :class="badge(c.state)">{{ c.state }}</span></td>
         <td>
           {{ domainName(c.sourceDomain) }} → {{ domainName(c.targetDomain) }}
-          <small v-if="c.switchedByName" class="by" :title="c.switchedBy?.address">switched by {{ c.switchedByName }}</small>
+          <small v-if="c.originRegistries?.length" class="by">source in {{ registryNames(c.originRegistries) }}</small>
         </td>
         <td>
           <div v-for="leg in c.legs" :key="leg.fabric">
