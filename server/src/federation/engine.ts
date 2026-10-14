@@ -459,6 +459,36 @@ export class Engine {
     const flows: ReturnType<typeof buildFlow>[] = [];
     const active = this.activeChannels();
 
+    /** Source, flow and sender of one channel, under the device given. */
+    const publish = (channel: Channel, devId: string, label: string, tags: Record<string, string[]>): boolean => {
+      const essence = this.essenceOf(channel);
+      if (!essence) return false;
+      const key = channel.receiverId;
+      const sourceId = this.sourceNmosId(key);
+      const flowId = this.flowNmosId(key);
+      const senderId = this.senderNmosId(key);
+      sources.push(this.stamp(buildSource(sourceId, devId, label, essence)));
+      flows.push(this.stamp(buildFlow(flowId, sourceId, devId, label, essence)));
+      senders.push(
+        this.stamp(
+          buildSender(
+            senderId,
+            flowId,
+            devId,
+            label,
+            `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
+            [domain.iface.name],
+            essence,
+            tags,
+            Engine.senderActive(channel),
+          ),
+          senderId,
+          channel.senderSdp ?? '',
+        ),
+      );
+      return true;
+    };
+
     for (const bridge of this.usableBridges()) {
       if (!bridge.domains.includes(domainId)) continue;
 
@@ -495,40 +525,19 @@ export class Engine {
           }
         }
 
-        const mine = active.filter((c) => c.deviceId === device.id && c.targetDomain === domainId && !this.originOffline(c.mirrorId));
+        // Arrivals through proxies live in their studio's device, below.
+        const mine = active.filter(
+          (c) => c.deviceId === device.id && c.targetDomain === domainId && !this.originOffline(c.mirrorId) && !this.cfg.receivers.find((r) => r.id === c.receiverId)?.proxyFor,
+        );
         for (const channel of mine) {
-          const essence = this.essenceOf(channel);
-          if (!essence) continue;
           const vrxId = channel.receiverId;
-          const vrx = this.cfg.receivers.find((r) => r.id === vrxId);
           const label =
-            (vrx?.proxyFor ? this.arrivalLabel(channel) : vrx?.label) ??
+            this.cfg.receivers.find((r) => r.id === vrxId)?.label ??
             this.mirrorOf(vrxId)?.label ??
             this.mirrorOf(vrxId)?.originLabel ??
-            essence.label ??
+            this.essenceOf(channel)?.label ??
             vrxId;
-          const sourceId = this.sourceNmosId(vrxId);
-          const flowId = this.flowNmosId(vrxId);
-          const senderId = this.senderNmosId(vrxId);
-          sources.push(this.stamp(buildSource(sourceId, devId, label, essence)));
-          flows.push(this.stamp(buildFlow(flowId, sourceId, devId, label, essence)));
-          senders.push(
-            this.stamp(
-              buildSender(
-                senderId,
-                flowId,
-                devId,
-                label,
-                `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
-                [domain.iface.name],
-                essence,
-                grouphintTags(hints.get(vrxId)),
-                Engine.senderActive(channel),
-              ),
-              senderId,
-              channel.senderSdp ?? '',
-            ),
-          );
+          publish(channel, devId, label, grouphintTags(hints.get(vrxId)));
         }
 
         const pt = this.passthroughOf(device);
@@ -544,6 +553,24 @@ export class Engine {
               vrxList.map((v) => this.receiverNmosId(v.id)),
               passed,
             ),
+            `device:${domainId}:${devId}`,
+          ),
+        );
+      }
+
+      // One device per studio for what arrives through proxies, each sender named after
+      // its feeding sender.
+      const byWho = new Map<string, { who: string; devId: string; channels: Channel[] }>();
+      for (const a of this.arrivalsOf(bridge, domainId)) {
+        const group = byWho.get(a.devId) ?? { who: a.who, devId: a.devId, channels: [] };
+        group.channels.push(a.channel);
+        byWho.set(a.devId, group);
+      }
+      for (const { who, devId, channels } of byWho.values()) {
+        const published = channels.filter((c) => publish(c, devId, c.originSenderLabel || 'unknown source', {}));
+        devices.push(
+          this.stamp(
+            buildDevice(devId, this.nodeId(bridge.id), who, this.controlHref(domain), published.map((c) => this.senderNmosId(c.receiverId)), []),
             `device:${domainId}:${devId}`,
           ),
         );
@@ -631,10 +658,12 @@ export class Engine {
               (c) =>
                 c.deviceId === device.id &&
                 c.targetDomain === domainId &&
+                !this.cfg.receivers.find((r) => r.id === c.receiverId)?.proxyFor && // arrivals: below
                 this.publishTargets(c.receiverId, bridge, domainId).includes(registryId),
             ),
           }));
-          if (!wide && !held.some((h) => h.receivers.length || h.channels.length)) continue;
+          const arrivals = this.arrivalsOf(bridge, domainId).filter((a) => this.publishTargets(a.channel.receiverId, bridge, domainId).includes(registryId));
+          if (!wide && !arrivals.length && !held.some((h) => h.receivers.length || h.channels.length)) continue;
 
           if (self) add(registryId, { type: 'node', data: self });
           for (const { device, receivers, channels } of held) {
@@ -655,6 +684,18 @@ export class Engine {
               if (flow) add(registryId, { type: 'flow', data: flow });
               if (sender) add(registryId, { type: 'sender', data: sender });
             }
+          }
+          // What arrives through proxies: each studio's device, then its streams.
+          for (const { channel, devId } of arrivals) {
+            const dev = res.devices.find((d) => d.id === devId);
+            if (dev) add(registryId, { type: 'device', data: dev });
+            const key = channel.receiverId;
+            const src = res.sources.find((x) => x.id === this.sourceNmosId(key));
+            const flow = res.flows.find((f) => f.id === this.flowNmosId(key));
+            const sender = res.senders.find((x) => x.id === this.senderNmosId(key));
+            if (src) add(registryId, { type: 'source', data: src });
+            if (flow) add(registryId, { type: 'flow', data: flow });
+            if (sender) add(registryId, { type: 'sender', data: sender });
           }
         }
       }
@@ -968,19 +1009,35 @@ export class Engine {
   }
 
   /**
-   * The name of the sender a connected proxy publishes next to the real receiver: who
-   * switched it and what — "Studio 2 – REF TX 1". Named after the proxy, it looked like
-   * the receiver had turned up as a sender in its own registry; and the destination is
-   * what a crosspoint shows anyway, so the name says where the stream comes from. The
-   * controller's name falls back to the source domain ("Studios – REF TX 1") when the
-   * switch was not attributed, the feeding sender's to "unknown source".
+   * Streams arriving through a connected proxy — published next to the real receiver
+   * the proxy drives. They are grouped by where they come from, not under the proxy's
+   * device: one device per studio (whoever switched them, see controllerName; the
+   * source domain when nobody is known), and each sender named after its feeding sender
+   * — "Studio1" with "SDI 1", "SDI 2". Under the proxy's device they read as if the
+   * receivers had turned up as senders in their own registry; and the destination is
+   * what a crosspoint shows anyway.
    */
-  private arrivalLabel(channel: Channel): string {
-    const who =
+  private arrivalsOf(bridge: Bridge, domainId: string): { channel: Channel; who: string; devId: string }[] {
+    const deviceIds = new Set(this.devicesOf(bridge).map((d) => d.id));
+    return this.activeChannels()
+      .filter((c) => deviceIds.has(c.deviceId) && c.targetDomain === domainId && this.isArrival(c))
+      .map((channel) => {
+        const who = this.arrivalOrigin(channel);
+        return { channel, who, devId: uuidv5(this.seed, `arrival:${bridge.id}:${who.toLowerCase()}`) };
+      });
+  }
+
+  private isArrival(channel: Channel): boolean {
+    const vrx = this.cfg.receivers.find((r) => r.id === channel.receiverId);
+    return !!vrx?.proxyFor && !this.originOffline(vrx.proxyFor.mirrorId);
+  }
+
+  private arrivalOrigin(channel: Channel): string {
+    return (
       (channel.switchedBy ? this.controllerName(channel.switchedBy) : null) ??
       this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ??
-      channel.sourceDomain;
-    return `${who} – ${channel.originSenderLabel || 'unknown source'}`;
+      channel.sourceDomain
+    );
   }
 
   /**

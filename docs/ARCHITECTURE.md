@@ -389,15 +389,19 @@ receiver R in one of the bridge's domains (the origin)
 
 So a proxy receiver is a virtual receiver that additionally drives a remote one.
 
-The sender published next to R is named after where it comes from — who switched it
-and what: "Studio 2 – REF TX 1". The destination is left out; a crosspoint shows it
-anyway. Named after the proxy, it looked as if the receiver had turned up as a sender in
-its own registry. The feeding sender's label is looked up in its registry at activation
-(1 s at most; "unknown source" otherwise). Who switched it: every activation records
-the address the IS-05 PATCH came from (and its DNS name), resolved when shown — a name
-given to that address under Settings → Controllers, else a registry running on that
-host, else the DNS name, else the address; an activation not attributed to anyone shows
-the source domain instead. It also appears as "switched by" on the Channels page. The feeding sender cannot tell the studios
+The stream published next to R is grouped by where it comes from: one device per
+studio — whoever switched it — and each sender named after its feeding sender, e.g.
+device "Studio1" with "SDI 1", "SDI 2". The destination is left out; a crosspoint shows
+it anyway. Under the proxy's device these senders read as if the receivers had turned
+up as senders in their own registry. The feeding sender's label is looked up in its
+registry at activation (1 s at most; "unknown source" otherwise). Who switched it: every
+activation records the address the IS-05 PATCH came from (and its DNS name), resolved
+when shown — a name given to that address under Settings → Controllers, else a registry
+running on that host, else the DNS name, else the address; an activation not attributed
+to anyone goes into a device named after the source domain. It also appears as
+"switched by" on the Channels page. The device id follows the studio's name, so naming a
+controller later moves its streams into that studio's device. These senders carry no
+group hint: the proxy's group describes the destination. The feeding sender cannot tell the studios
 apart (a copy is registered in all of them); the controller can. A Retry from the GUI
 keeps the controller that made the switch. The
 published sender is not redundant work: it gives the stream a first-class identity in

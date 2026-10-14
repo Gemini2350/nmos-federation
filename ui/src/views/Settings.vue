@@ -440,9 +440,10 @@ onMounted(refresh);
           Controllers
           <InfoHint wide>
             A switch on one of our receivers is attributed to whoever sent the IS-05 PATCH. Give a controller's
-            address a name — "Studio 2" — and that name appears on the Channels page and in the name of the
-            sender a connected proxy publishes ("REF TX 1 → 1 PIP 2 (Studio 2)"). Without a name, a registry on
-            that host, the DNS name or the address stands in. Names apply to switches already made.
+            address a name — "Studio 2" — and that name appears on the Channels page and as the device the
+            streams it switches onto proxies arrive in: device "Studio 2" with senders "SDI 1", "SDI 2" … next to
+            the real receivers. Without a name, a registry on that host, the DNS name or the address stands in.
+            Names apply to switches already made.
           </InfoHint>
         </h3>
         <button @click="addController">Add controller</button>

@@ -634,8 +634,10 @@ test('grouping travels: a proxy keeps its original group, and so does the sender
     transport_file: { data: SDP, type: 'application/sdp' },
     transport_params: [{}, {}],
   });
+  // The stream arriving for the original lives in its studio's device, not in the
+  // proxy's group — that group describes the destination.
   const sender = partner.posts.filter((p) => p.type === 'sender').at(-1)!;
-  assert.deepEqual((sender.data.tags as Record<string, string[]>)['urn:x-nmos:tag:grouphint/v1.0'], ['Monitor wall:Video 1:device'], 'the published sender groups the same way');
+  assert.deepEqual(sender.data.tags, {}, 'no destination group on the arriving stream');
 
   // The operator regroups the proxy: the new name, the original's role.
   cfg.receivers[0]!.group = 'Gallery';
@@ -930,14 +932,19 @@ test('the sender a connected proxy publishes is named after where it comes from,
   await engine.start();
   const conn = (senderId: string) => ({ sender_id: senderId, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, transport_params: [{}, {}] });
   const lastLabel = () => partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.label;
+  const lastDevice = () => {
+    const devId = partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.device_id;
+    return partner.posts.filter((p) => p.type === 'device' && p.id === devId).at(-1)?.data.label;
+  };
 
-  // A sender the source registry knows: its name, an arrow, the proxy.
   await engine.activate('proxy', conn(ORIGIN_SENDER));
-  // Not attributed to a controller: the source domain stands in.
-  assert.equal(lastLabel(), 'internal – CAM07 Video');
+  // Named after its feeding sender, in a device named after where it comes from — here
+  // not attributed to a controller, so the source domain.
+  assert.equal(lastLabel(), 'CAM07 Video');
+  assert.equal(lastDevice(), 'internal');
   // A sender the registry does not know.
   await engine.activate('proxy', conn(randomUUID()));
-  assert.equal(lastLabel(), 'internal – unknown source');
+  assert.equal(lastLabel(), 'unknown source');
 });
 
 test('a switch is attributed to the controller that sent it', async (t) => {
@@ -974,19 +981,66 @@ test('a switch is attributed to the controller that sent it', async (t) => {
       headers: { 'content-type': 'application/json' },
       payload: JSON.stringify({ sender_id: ORIGIN_SENDER, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, activation: { mode: 'activate_immediate' } }),
     });
-  const lastLabel = () => partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.label;
+  const last = () => {
+    const sender = partner.posts.filter((p) => p.type === 'sender').at(-1)!.data;
+    const device = partner.posts.filter((p) => p.type === 'device' && p.id === sender.device_id).at(-1)?.data;
+    return `${device?.label} / ${sender.label}`;
+  };
 
   assert.equal((await patchFrom('10.9.9.2')).statusCode, 200);
-  assert.equal(lastLabel(), 'Studio 2 – CAM07 Video', 'who switched, and what — the crosspoint shows the destination');
+  assert.equal(last(), 'Studio 2 / CAM07 Video', 'a device per studio, the sender named after its source');
   assert.deepEqual(state.channelFor('proxy')!.switchedBy?.address, '10.9.9.2');
 
   // From a controller nobody named: its address stands in.
   assert.equal((await patchFrom('10.9.9.3')).statusCode, 200);
-  assert.match(lastLabel(), / – CAM07 Video$/);
-  assert.notEqual(lastLabel(), 'Studio 2 – CAM07 Video');
+  assert.match(last(), / \/ CAM07 Video$/);
+  assert.notEqual(last(), 'Studio 2 / CAM07 Video');
 
   // Naming it afterwards applies to the switch already made.
   cfg.controllers!.push({ address: '10.9.9.3', label: 'Studio 3' });
   await engine.syncRegistries();
-  assert.equal(lastLabel(), 'Studio 3 – CAM07 Video');
+  assert.equal(last(), 'Studio 3 / CAM07 Video');
+});
+
+test('streams switched by one studio share that studio\'s device, not the proxies\' device', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const m1 = randomUUID();
+  const m2 = randomUUID();
+  const proxy = (id: string, label: string, mirrorId: string) => ({
+    id, label, deviceId: 'dev1', format: 'video' as const, enabled: true, side: 'internal',
+    proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId },
+  });
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      { id: m1, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true },
+      { id: m2, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: randomUUID(), originDeviceId: ORIGIN_DEVICE, originLabel: 'MON04', enabled: true },
+    ],
+    receivers: [proxy('p1', '1 PIP 2', m1), proxy('p2', '1 PIP 3', m2)],
+    controllers: [{ address: '10.9.9.2', label: 'Studio 2' }],
+  });
+  cfg.devices[0]!.receiverIds = ['p1', 'p2'];
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  const conn = { sender_id: ORIGIN_SENDER, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, transport_params: [{}, {}] };
+  await engine.activate('p1', conn, { by: '10.9.9.2' });
+  await engine.activate('p2', conn, { by: '10.9.9.2' });
+
+  const res = engine.domainResources('partnerA');
+  const studio = res.devices.find((d) => d.label === 'Studio 2')!;
+  assert.ok(studio, 'a device named after the studio');
+  assert.equal(studio.senders.length, 2, 'both streams in it');
+  assert.ok(res.senders.filter((s) => studio.senders.includes(s.id)).every((s) => s.label === 'CAM07 Video'), 'named after their source');
+  const proxiesDevice = res.devices.find((d) => d.id === engine.deviceId('dev1'))!;
+  assert.equal(proxiesDevice.senders.length, 0, 'the proxies\' device no longer carries them');
+  // And it is what the registry gets: the studio device before its senders.
+  const devPost = partner.posts.findIndex((p) => p.type === 'device' && p.data.label === 'Studio 2');
+  const senderPost = partner.posts.findIndex((p) => p.type === 'sender' && p.data.device_id === studio.id);
+  assert.ok(devPost >= 0 && senderPost > devPost);
 });
