@@ -907,3 +907,34 @@ test('a copy is switched off with its original sender, and cannot be switched on
   assert.equal(registered().active, true);
   assert.equal((await active()).master_enable, true);
 });
+
+test('the sender a connected proxy publishes is named after what feeds it, not after the proxy', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const mirrorId = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [{ id: mirrorId, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true }],
+    receivers: [
+      { id: 'proxy', label: '1 PIP 2', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId } },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy'];
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  const conn = (senderId: string) => ({ sender_id: senderId, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, transport_params: [{}, {}] });
+  const lastLabel = () => partner.posts.filter((p) => p.type === 'sender').at(-1)!.data.label;
+
+  // A sender the source registry knows: its name, an arrow, the proxy.
+  await engine.activate('proxy', conn(ORIGIN_SENDER));
+  assert.equal(lastLabel(), 'CAM07 Video → 1 PIP 2');
+  // One it does not: where it comes from instead.
+  await engine.activate('proxy', conn(randomUUID()));
+  assert.equal(lastLabel(), '→ 1 PIP 2 (from internal)');
+});

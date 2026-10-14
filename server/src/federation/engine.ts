@@ -499,8 +499,9 @@ export class Engine {
           const essence = this.essenceOf(channel);
           if (!essence) continue;
           const vrxId = channel.receiverId;
+          const vrx = this.cfg.receivers.find((r) => r.id === vrxId);
           const label =
-            this.cfg.receivers.find((r) => r.id === vrxId)?.label ??
+            (vrx?.proxyFor ? this.arrivalLabel(vrx.label, channel) : vrx?.label) ??
             this.mirrorOf(vrxId)?.label ??
             this.mirrorOf(vrxId)?.originLabel ??
             essence.label ??
@@ -908,6 +909,21 @@ export class Engine {
     this.reconcileTimer = setInterval(() => void this.reconcile(), 30_000);
     this.reconcileTimer.unref?.();
     this.watcher.sync();
+    void this.fillArrivalLabels();
+  }
+
+  /** Proxies connected before their feeding sender's name was recorded get it once. */
+  private async fillArrivalLabels(): Promise<void> {
+    const pending = this.activeChannels().filter(
+      (c) => c.originSenderLabel === undefined && c.originSenderId && this.cfg.receivers.find((r) => r.id === c.receiverId)?.proxyFor,
+    );
+    if (!pending.length) return;
+    for (const c of pending) {
+      c.originSenderLabel = await this.senderLabelIn(c.sourceDomain, c.originSenderId!);
+      this.deps.state.upsertChannel(c);
+    }
+    await this.deps.state.save();
+    await this.syncRegistries([...new Set(pending.flatMap((c) => c.publishedIn))]);
   }
 
   async stop(): Promise<void> {
@@ -931,6 +947,9 @@ export class Engine {
     const sdp = conn.transport_file.data;
     if (!sdp) throw new Error('activation without a transport_file');
     const from = this.sideOf(vrx, bridge);
+    // A proxy's sender appears next to the real receiver, so it is named after what
+    // feeds it; look the connected sender up — briefly, an activation must not wait.
+    const originSenderLabel = vrx.proxyFor && conn.sender_id ? await this.senderLabelIn(from, conn.sender_id) : null;
     return this.runChannel({
       key: vrxId,
       device,
@@ -939,8 +958,32 @@ export class Engine {
       to: otherDomain(bridge, from)!,
       sdp,
       originSenderId: conn.sender_id,
+      originSenderLabel,
       ...(vrx.proxyFor ? { proxy: vrx.proxyFor } : {}),
     });
+  }
+
+  /**
+   * The name of the sender a connected proxy publishes next to the real receiver. Named
+   * after the proxy alone, it looked like the receiver had turned up as a sender in its
+   * own registry; it is the stream arriving FOR that receiver, so it says so —
+   * "Studio CAM 3 → 1 PIP 2", or "→ 1 PIP 2 (from Studios)" when the feeding sender's
+   * name is unknown.
+   */
+  private arrivalLabel(proxyLabel: string, channel: Channel): string {
+    if (channel.originSenderLabel) return `${channel.originSenderLabel} → ${proxyLabel}`;
+    const from = this.cfg.domains.find((d) => d.id === channel.sourceDomain)?.label ?? channel.sourceDomain;
+    return `→ ${proxyLabel} (from ${from})`;
+  }
+
+  /** A sender's label from any registry of a domain — registry reads, 1 s at most. */
+  private async senderLabelIn(domainId: string, senderId: string): Promise<string | null> {
+    const queries = registriesOf(this.cfg, domainId)
+      .map((r) => this.queries.get(r.id))
+      .filter((q): q is QueryClient => !!q);
+    const lookups = queries.map((q) => q.sender(senderId).then((s) => s.label || null));
+    const timeout = new Promise<null>((r) => setTimeout(() => r(null), 1000).unref?.());
+    return Promise.race([Promise.any(lookups).catch(() => null), timeout]);
   }
 
   /** A published sender is active while its channel runs and, for a copy, its original is on. */
@@ -1198,6 +1241,7 @@ export class Engine {
     originSenderId: string | null;
     originVersion?: string;
     originActive?: boolean;
+    originSenderLabel?: string | null;
     mirrorId?: string;
     proxy?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
   }): Promise<Channel> {
@@ -1217,6 +1261,7 @@ export class Engine {
       originSenderId: opts.originSenderId,
       ...(opts.originVersion ? { originVersion: opts.originVersion } : {}),
       ...(opts.originActive === false ? { originActive: false } : {}),
+      ...(opts.originSenderLabel ? { originSenderLabel: opts.originSenderLabel } : {}),
       legs: [],
       allocation: null,
       senderSdp: null,

@@ -387,7 +387,12 @@ receiver R in one of the bridge's domains (the origin)
   → PATCH R over IS-05 to subscribe to the sender we just published
 ```
 
-So a proxy receiver is a virtual receiver that additionally drives a remote one. The
+So a proxy receiver is a virtual receiver that additionally drives a remote one.
+
+The sender published next to R is named after what feeds it — "Studio CAM 3 → 1 PIP 2",
+the connected sender's label looked up in its registry at activation (1 s at most), or
+"→ 1 PIP 2 (from Studios)" when it is unknown. Named after the proxy alone, it looked as
+if the receiver had turned up as a sender in its own registry. The
 published sender is not redundant work: it gives the stream a first-class identity in
 the target domain, and R's `subscription.sender_id` then points at something a
 controller over there can actually see.

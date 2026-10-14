@@ -79,6 +79,8 @@ export interface Channel {
    * `subscription.active`). Off makes the copy inactive too. Missing = on.
    */
   originActive?: boolean;
+  /** Label of the sender connected to the virtual receiver, looked up in its registry. */
+  originSenderLabel?: string | null;
   legs: Leg[];
   allocation: Allocation | null;
   /** The virtual sender's SDP (rewritten, or copied verbatim when NAT is off). */
