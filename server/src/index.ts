@@ -150,9 +150,11 @@ async function main() {
   await gui.listen({ host: '0.0.0.0', port: cfg.port });
 
   await engine.start();
-  // Originals that changed their ids are looked for every minute, and right after the
-  // change feed reports one gone (debounced: its replacement usually registers within
-  // seconds). Through the REST route, so it queues like any other change.
+  // The re-binding pass runs when the registries' change feeds say an original changed,
+  // left or may be back (debounced: a device restarting sends a burst, its replacement
+  // registers within seconds). Every ten minutes it also runs as a safety net — for a
+  // registry whose feed is down or missed something. Through the REST route, so it
+  // queues like any other change. No device is contacted by it.
   let rebindTimer: ReturnType<typeof setTimeout> | null = null;
   const rebind = () =>
     void gui
@@ -162,12 +164,14 @@ async function main() {
         if (body.rebound?.length) log.info({ rebound: body.rebound }, 'copies re-bound to their originals');
       })
       .catch((e) => log.warn({ err: String(e) }, 're-binding failed'));
-  const rebindInterval = setInterval(rebind, 60_000);
+  const rebindInterval = setInterval(rebind, 10 * 60_000);
+  // Once now: what changed while this software was not running.
+  rebind();
   rebindInterval.unref();
   engine.on((e) => {
-    if (e.type !== 'origin-gone' && e.type !== 'origin-back') return;
+    if (e.type !== 'origin-gone' && e.type !== 'origin-back' && e.type !== 'origin-changed') return;
     if (rebindTimer) clearTimeout(rebindTimer);
-    rebindTimer = setTimeout(rebind, 5_000);
+    rebindTimer = setTimeout(rebind, 3_000);
     rebindTimer.unref();
   });
 

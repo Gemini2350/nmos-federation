@@ -320,9 +320,13 @@ to ids that no longer existed — the change feed and Refresh both look an origi
 id — so without NAT they went on publishing the old groups, and BCP-008 passthrough
 could not translate the touchpoints either.
 
-Every minute, and a few seconds after the change feed reports an original removed,
-every copy is checked against its registry (`federation/rebind.ts`, registry reads
-only). A copy whose original id is gone is re-bound when **exactly one** resource of the
+The registries' change feeds drive it (`federation/origin-watch.ts`): one Query API
+WebSocket subscription on `/senders` and one on `/receivers` per registry holding an
+original. When an original changes version (caps, label, switched on or off), leaves or
+may be back, every copy is checked against its registry a few seconds later
+(`federation/rebind.ts`, registry reads only). The same pass runs once at startup and
+every ten minutes as a safety net — for a feed that is down or missed something. No
+device is polled. A copy whose original id is gone is re-bound when **exactly one** resource of the
 same kind carries the original's label on a device with the original device's label,
 and no other copy is bound to it. The copy then re-reads its new original: a sender copy
 updates in place (new SDP, NAT if any), a running proxy re-drives the new receiver.
@@ -335,9 +339,9 @@ lists (`Engine.originOffline`); its channel, pool pair and NAT rules stay, so wh
 original returns — under its old ids or re-bound to new ones — the copy reappears with
 the same id at the same address, after re-reading the original's SDP. Timing: a
 registry drops an offline device after its heartbeat expires; the change feed reports
-that, and the copies are withdrawn about five seconds later. A sender reappearing in a
-registry with a missing original triggers the check again; failing that, the minute
-pass catches it. A registry that cannot be reached marks nothing — no answer is not
+that, and the copies are withdrawn about three seconds later. Something reappearing in
+a registry with a missing original triggers the check again; failing that, the
+ten-minute pass catches it. A registry that cannot be reached marks nothing — no answer is not
 "gone".
 
 **A sender copy is switched on and off with its original.** The original's IS-04
@@ -404,9 +408,9 @@ These senders carry no group hint: the proxy's group describes the destination.
 `caps` unchanged — media types and BCP-004 constraint sets (resolution, rate, colour,
 channels, packet time) — so a controller checks a connection against what the real
 receiver can take; a sender copy carries the original sender's `caps`. Read with the
-copy (older copies once after startup) and kept current by the minute pass, which has
-the full resources in hand anyway: a device that changes its caps passes that on within
-a minute. A free virtual receiver keeps the generic media types of its format.
+copy (older copies once after startup) and kept current through the change feeds: a
+device that changes its caps bumps the resource's version, and the pass that runs on it
+takes the new caps over within seconds. A free virtual receiver keeps the generic media types of its format.
 
 **Same stream, not a duplicate.** Without NAT a channel passes the SDP through, so its
 sender carries the very multicast of the sender it came from — a copy, and even more so

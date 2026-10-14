@@ -8,7 +8,21 @@ import BrowseList from '../components/BrowseList.vue';
 
 const cfg = ref<Config | null>(null);
 const mirrors = ref<Mirror[]>([]);
-const watch = ref<{ registryId: string; state: 'connecting' | 'open' | 'retrying'; error: string | null }[]>([]);
+const watchFeeds = ref<{ registryId: string; kind: 'sender' | 'receiver'; state: 'connecting' | 'open' | 'retrying'; error: string | null }[]>([]);
+/** One line per registry: live when every feed of it (senders, receivers) is. */
+const watch = computed(() => {
+  const by = new Map<string, { registryId: string; state: 'connecting' | 'open' | 'retrying'; error: string | null; kinds: string[] }>();
+  for (const f of watchFeeds.value) {
+    const cur = by.get(f.registryId) ?? { registryId: f.registryId, state: 'open' as const, error: null, kinds: [] };
+    cur.kinds.push(f.kind);
+    if (f.state !== 'open' && cur.state === 'open') {
+      cur.state = f.state;
+      cur.error = f.error;
+    }
+    by.set(f.registryId, cur);
+  }
+  return [...by.values()];
+});
 const senders = ref<BrowseSender[]>([]);
 const receivers = ref<BrowseReceiver[]>([]);
 const sourceRegistry = ref('');
@@ -74,7 +88,7 @@ function expandAll(open: boolean) {
 
 async function load() {
   try {
-    [cfg.value, mirrors.value, watch.value] = await Promise.all([api.config(), api.mirrors(), api.mirrorWatch().catch(() => [])]);
+    [cfg.value, mirrors.value, watchFeeds.value] = await Promise.all([api.config(), api.mirrors(), api.mirrorWatch().catch(() => [])]);
     primeFromConfig(cfg.value);
     if (!deviceId.value) deviceId.value = cfg.value.devices[0]?.id ?? '';
     if (!sourceRegistry.value) sourceRegistry.value = registries.value[0]?.id ?? '';
@@ -378,11 +392,11 @@ onMounted(load);
     <h3>Existing copies</h3>
     <p v-if="watch.length" class="watch">
       <small>
-        Sender copies follow their originals: a changed SDP is picked up from the registry and the copy updated in
-        place, its addresses unchanged.
+        Copies follow their originals through the registries' change feeds — no device is polled: a changed SDP,
+        caps, switched off, gone or back is picked up as the registry reports it.
         <template v-for="w in watch" :key="w.registryId">
           <span :class="w.state === 'open' ? 'ok' : 'busy'" :title="w.error ?? ''">
-            {{ registryName(w.registryId) }}: {{ w.state === 'open' ? 'live' : w.state === 'connecting' ? 'connecting…' : `reconnecting (${w.error})` }}
+            {{ registryName(w.registryId) }} ({{ w.kinds.join(' + ') }}s): {{ w.state === 'open' ? 'live' : w.state === 'connecting' ? 'connecting…' : `reconnecting (${w.error})` }}
           </span>
         </template>
       </small>

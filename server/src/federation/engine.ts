@@ -38,7 +38,7 @@ import type { ConnectionState, StateStore } from './state.js';
 import { log } from '../util/log.js';
 
 export interface EngineEvent {
-  type: 'channel' | 'registry' | 'switch' | 'origin-gone' | 'origin-back';
+  type: 'channel' | 'registry' | 'switch' | 'origin-gone' | 'origin-back' | 'origin-changed';
   [key: string]: unknown;
 }
 
@@ -89,10 +89,10 @@ export class Engine {
   constructor(private deps: EngineDeps) {
     this.watcher = new OriginWatcher({
       targets: () => this.watchTargets(),
-      subscribe: async (registryId) => {
+      subscribe: async (registryId, kind) => {
         const query = this.queries.get(registryId);
         if (!query) throw new Error(`registry ${registryId} is not enabled`);
-        return query.subscribe('/senders');
+        return query.subscribe(kind === 'sender' ? '/senders' : '/receivers');
       },
       onChange: (target, version) => {
         for (const m of this.cfg.mirrors) {
@@ -104,18 +104,21 @@ export class Engine {
         }
       },
       onGone: (target) => this.emit({ type: 'origin-gone', registryId: target.registryId, originId: target.originId }),
+      onModified: (target) => this.emit({ type: 'origin-changed', registryId: target.registryId, originId: target.originId }),
       onBack: (registryId) => this.emit({ type: 'origin-back', registryId }),
     });
   }
 
   /** The originals worth watching: enabled sender copies on enabled registries. */
+  /** The originals worth watching: of enabled sender copies and of receiver proxies. */
   private watchTargets(): WatchTarget[] {
     return this.cfg.mirrors
-      .filter((m) => m.kind === 'sender' && m.enabled && this.queries.has(m.registryId))
+      .filter((m) => m.enabled && this.queries.has(m.registryId))
       .map((m) => ({
         registryId: m.registryId,
+        kind: m.kind,
         originId: m.originId,
-        version: this.deps.state.channelFor(Engine.mirrorKey(m.id))?.originVersion,
+        ...(m.kind === 'sender' ? { version: this.deps.state.channelFor(Engine.mirrorKey(m.id))?.originVersion } : {}),
         missing: !!m.originMissing,
       }));
   }
