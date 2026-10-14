@@ -4,6 +4,9 @@ import { groupHints, grouphintTags, type GroupHint, type Port } from './grouping
 import { OriginWatcher, type WatchTarget } from './origin-watch.js';
 import { ipToInt } from './pool.js';
 import { PASSTHROUGH, type Passthrough } from './passthrough.js';
+
+/** On a sender that is the same stream as others — see Engine.aliasOf. */
+export const ALIAS_TAG = 'urn:x-nmos-federation:alias-of';
 import { RegistryClient, REGISTER_ORDER, type ResourceType } from '../nmos/registry-client.js';
 import { QueryClient } from '../nmos/query-client.js';
 import { discoverRegistries, hostSearchDomains } from '../nmos/discovery.js';
@@ -459,9 +462,11 @@ export class Engine {
     const active = this.activeChannels();
 
     /** Source, flow and sender of one channel, under the device given. */
-    const publish = (channel: Channel, devId: string, label: string, tags: Record<string, string[]>): boolean => {
+    const publish = (channel: Channel, devId: string, label: string, groupTags: Record<string, string[]>): boolean => {
       const essence = this.essenceOf(channel);
       if (!essence) return false;
+      const alias = this.aliasOf(channel);
+      const tags = alias.length ? { ...groupTags, [ALIAS_TAG]: alias } : groupTags;
       const key = channel.receiverId;
       const sourceId = this.sourceNmosId(key);
       const flowId = this.flowNmosId(key);
@@ -1064,6 +1069,25 @@ export class Engine {
       (x): x is { registryId: string; label: string | null } => !!x,
     );
     return { label: found.find((f) => f.label)?.label ?? null, registries: found.map((f) => f.registryId) };
+  }
+
+  /**
+   * The senders a published sender is the same stream as. Without NAT a channel passes
+   * its SDP through unchanged, so its sender carries the very multicast of the sender
+   * it came from — to a controller that sees both, a duplicate; NMOS-Crosspoint refused
+   * to route it ("already in use") and tried to re-address it. The tag says "same
+   * stream, not a conflict". Chains are followed: a copy routed back through a proxy
+   * names both the copy it came from and that copy's original. With NAT the multicast
+   * is the channel's own, and there is nothing to declare.
+   */
+  private aliasOf(channel: Channel, seen = new Set<string>()): string[] {
+    if (channel.allocation || seen.has(channel.receiverId)) return [];
+    seen.add(channel.receiverId);
+    const direct = channel.mirrorId ? this.cfg.mirrors.find((m) => m.id === channel.mirrorId)?.originId : channel.originSenderId;
+    if (!direct) return [];
+    // Is that one of ours? Then it is an alias itself — of whatever it came from.
+    const upstream = this.activeChannels().find((c) => this.senderNmosId(c.receiverId) === direct);
+    return [direct, ...(upstream ? this.aliasOf(upstream, seen) : [])];
   }
 
   /** A published sender is active while its channel runs and, for a copy, its original is on. */

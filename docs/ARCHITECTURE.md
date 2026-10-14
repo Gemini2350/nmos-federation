@@ -400,6 +400,15 @@ the registry the proxy is offered in decides, if that narrows it to one; otherwi
 for a sender found nowhere ("unknown source"), the device is named after the domain.
 These senders carry no group hint: the proxy's group describes the destination.
 
+**Same stream, not a duplicate.** Without NAT a channel passes the SDP through, so its
+sender carries the very multicast of the sender it came from — a copy, and even more so
+a copy routed back to its own domain through a proxy, where it appears next to its
+original. Such a sender carries the tag `urn:x-nmos-federation:alias-of` with the ids it
+is the same stream as, the whole chain (`Engine.aliasOf`). NMOS-Crosspoint (4.47+) skips
+those pairs in its multicast conflict checks; it had refused to route the copy ("already
+in use") and tried to re-address it. With NAT a channel has its own multicast and
+declares nothing.
+
 R must advertise an `urn:x-nmos:control:sr-ctrl/*` control on its device, otherwise it
 cannot be driven and the GUI marks it as not controllable.
 

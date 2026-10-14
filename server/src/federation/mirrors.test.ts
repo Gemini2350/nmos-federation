@@ -1000,3 +1000,47 @@ test('streams arriving through proxies sit in a device named after the registry 
   await engine.activate('p1', conn);
   assert.equal(engine.domainResources('partnerA').devices.find((d) => d.label === 'Studio1')!.senders.length, 2, 'offered only in Studio1: Studio1');
 });
+
+test('a sender passing a stream through unchanged says whose stream it is — the copy, and a copy routed back', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const copyId = randomUUID();
+  const proxyMirror = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    mirrors: [
+      // ORIGIN_SENDER copied from internal into partnerA…
+      { id: copyId, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', enabled: true },
+      // …and a partner-side proxy for an internal receiver, to route that copy back.
+      { id: proxyMirror, kind: 'receiver', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true },
+    ],
+    receivers: [
+      { id: 'back', label: 'Proxy MON03', deviceId: 'dev1', format: 'video', enabled: true, side: 'partnerA',
+        proxyFor: { registryId: 'int', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId: proxyMirror } },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['back'];
+  cfg.bridges[0]!.nat = false; // the SDP passes through: same multicast as the original
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  const ALIAS = 'urn:x-nmos-federation:alias-of';
+  const copy = await engine.copySender(copyId);
+  const copySenderId = engine.senderNmosId(`mirror-${copyId}`);
+  const tagOf = (posts: Stub['posts'], id: string) => (posts.filter((p) => p.type === 'sender' && p.id === id).at(-1)!.data.tags as Record<string, string[]>)[ALIAS];
+  assert.deepEqual(tagOf(partner.posts, copySenderId), [ORIGIN_SENDER], 'the copy is the original\'s stream');
+
+  // Studio side routes the copy onto the proxy: the stream arriving back internally is
+  // the copy's — and so the original's — stream.
+  await engine.activate('back', { sender_id: copySenderId, master_enable: true, transport_file: { data: copy.senderSdp!, type: 'application/sdp' }, transport_params: [{}, {}] });
+  assert.deepEqual(tagOf(internal.posts, engine.senderNmosId('back')), [copySenderId, ORIGIN_SENDER], 'the whole chain');
+
+  // With NAT the copy has a multicast of its own: nothing to declare.
+  cfg.bridges[0]!.nat = true;
+  await engine.copySender(copyId); // rebuilt with an allocation
+  assert.equal(tagOf(partner.posts, copySenderId), undefined);
+});
