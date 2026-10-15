@@ -89,7 +89,7 @@ Bridge "Eigenes Haus ⇄ Partner A"   ← the node, named by you
 
 ## Copying existing resources
 
-The **Copy** page is the second operating mode: browse a registry and copy what is
+The **Bridges** page has a second half for this, on the left: browse a registry and copy what is
 already there, without going through a virtual receiver.
 
 - **Sender copy** — reads the original's SDP from its manifest, NATs the stream into

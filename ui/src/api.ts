@@ -134,6 +134,8 @@ export interface VirtualReceiver {
   group?: string;
   /** Role within it; empty = the original's, or derived from the format. */
   role?: string;
+  /** Set on a receiver proxy: the original it drives, and its copy entry. */
+  proxyFor?: { registryId: string; receiverId: string; deviceId: string; mirrorId: string };
 }
 
 export interface Config {

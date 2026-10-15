@@ -297,6 +297,16 @@ federated sender, a port or source change, and `master_enable: false`. A PATCH t
 re-states the current values succeeds. The pool pair stays reserved; an in-place
 update from the original keeps the chosen group, a full rebuild returns to the pool's.
 
+### One page for bridges and copies
+
+The Bridges page is split in two: on the left a registry's senders and receivers — the
+source, with search and node → device grouping (`RegistryBrowser.vue`) — on the right
+the bridges with their devices — the target. Clicking a device makes it the target of
+the copy buttons on the left; what is copied appears in it at once. Everything a copy
+needs sits on its own row: name, group and role, where it is shared, its state (the
+whole story in the tooltip), Refresh and Remove. Below 1100 px the halves stack. The old
+`#/copy` link redirects there.
+
 ### Name and sharing per copy
 
 Every copy can be renamed and shared individually, without touching its stream:
@@ -331,7 +341,7 @@ same kind carries the original's label on a device with the original device's la
 and no other copy is bound to it. The copy then re-reads its new original: a sender copy
 updates in place (new SDP, NAT if any), a running proxy re-drives the new receiver.
 Anything less certain is not guessed: the copy is marked "original gone" with the reason,
-shown on the Copy page, and the mark clears when the original reappears.
+shown on the copy's row, and the mark clears when the original reappears.
 
 **A copy is offline exactly while its original is.** A sender copy or proxy whose
 original is marked gone is withdrawn from every registry and dropped from its device's
@@ -352,7 +362,7 @@ the copy stays registered, its channel and address unchanged. The state is decid
 before the manifest is read, since many devices serve no transport file for a sender
 that is off. A controller cannot switch a copy on — a PATCH with `master_enable: true`
 on a copy whose original is off answers 423; the copy follows the original only. The
-Copy page shows switched-off originals greyed out, and inactive copies as such.
+registry browser shows switched-off originals greyed out, and inactive copies are marked as such.
 
 ### Passing an original's control APIs through
 
@@ -480,7 +490,7 @@ refuses the parameter (400) is asked again without it, and that is remembered.
 | Direction | Versions |
 |---|---|
 | Registering our resources | v1.3 or v1.2 per registry (Settings). The payloads validate against the official v1.3 **and** v1.2 schemas, and nmos-cpp accepts them at both. |
-| Reading a registry (Copy page, proxies, orphan cleanup) | the registry's version plus `query.downgrade=v1.0` — everything down to v1.0 |
+| Reading a registry (registry browser, proxies, orphan cleanup) | the registry's version plus `query.downgrade=v1.0` — everything down to v1.0 |
 | Driving a foreign receiver (proxy) | IS-05 v1.1 or v1.0, whichever the device advertises (highest wins) |
 | Our own node API | IS-04 Node API v1.3, IS-05 Connection API v1.1 |
 
@@ -523,7 +533,7 @@ message means changes made while the socket — or this software — was down ar
 the registry's initial message. nmos-cpp sends that initial state in several messages and
 its WebSocket on a port of its own; both are handled. A device that changes its SDP
 without bumping its sender's version is not noticed; Refresh re-reads on demand and uses
-the same in-place path. The Copy page shows whether each registry's feed is live.
+the same in-place path. The registry browser shows whether each registry's feed is live.
 
 ### What is deliberately not done
 

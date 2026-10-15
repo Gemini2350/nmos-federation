@@ -3,7 +3,6 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 import App from './App.vue';
 import Channels from './views/Channels.vue';
 import Bridges from './views/Bridges.vue';
-import Copy from './views/Copy.vue';
 import Settings from './views/Settings.vue';
 
 const router = createRouter({
@@ -12,7 +11,8 @@ const router = createRouter({
     { path: '/', redirect: '/channels' },
     { path: '/channels', component: Channels, name: 'Channels' },
     { path: '/bridges', component: Bridges, name: 'Bridges' },
-    { path: '/copy', component: Copy, name: 'Copy' },
+    // Copying moved onto the Bridges page; old links and bookmarks land there.
+    { path: '/copy', redirect: '/bridges' },
     { path: '/settings', component: Settings, name: 'Settings' },
   ],
 });
