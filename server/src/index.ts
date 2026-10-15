@@ -11,6 +11,7 @@ import { StateStore } from './federation/state.js';
 import { PoolManager } from './federation/pools.js';
 import { Engine } from './federation/engine.js';
 import { registerNodeApi } from './nmos/node-api.js';
+import type { Annotator } from './nmos/annotation-api.js';
 import { registerRestApi } from './api/rest.js';
 import { acceptEmptyJson } from './api/http.js';
 import { AristaEapiDriver } from './switch/arista-eapi.js';
@@ -55,12 +56,22 @@ async function main() {
   /** Domains whose address is not (yet) on this host, retried until it is. */
   const waitingForAddress = new Map<string, DomainConfig>();
 
+  // IS-13 PATCHes arrive on the node APIs but change the configuration, so they go
+  // through the REST write queue. The GUI app is created after the node APIs are bound;
+  // until then a PATCH is answered 503.
+  let restApp: FastifyInstance | null = null;
+  const annotate: Annotator = async (kind, nmosId, patch) => {
+    if (!restApp) return { status: 503, body: { code: 503, error: 'starting up', debug: null } };
+    const res = await restApp.inject({ method: 'PATCH', url: `/api/annotations/${kind}/${encodeURIComponent(nmosId)}`, payload: patch });
+    return { status: res.statusCode, body: res.json() };
+  };
+
   const bindNodeApi = async (domain: DomainConfig): Promise<void> => {
     // Controllers differ in whether they add or strip a trailing slash, and the hrefs
     // we publish must resolve either way — see nmos/node-api.ts.
     const app = Fastify({ logger: false, routerOptions: { ignoreTrailingSlash: true } });
     acceptEmptyJson(app);
-    registerNodeApi(app, domain, engine, state);
+    registerNodeApi(app, domain, engine, state, annotate);
     // If two domains share an IP (lab setup), the configured port is already
     // taken. Take the next free one and set the href accordingly — better than
     // leaving a domain without a node API.
@@ -125,6 +136,7 @@ async function main() {
 
   // --- GUI + REST ----------------------------------------------------------
   const gui = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024, routerOptions: { ignoreTrailingSlash: true } });
+  restApp = gui;
   acceptEmptyJson(gui);
   await gui.register(fastifyWebsocket);
   registerRestApi(gui, store, engine, state, async () => {

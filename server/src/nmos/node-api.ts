@@ -5,6 +5,7 @@ import type { StateStore } from '../federation/state.js';
 import { emptyConnection, type ConnectionState } from '../federation/state.js';
 import { log } from '../util/log.js';
 import { registerControlProxy } from './control-proxy.js';
+import { registerAnnotationApi, type Annotator } from './annotation-api.js';
 
 /**
  * IS-04 Node API + IS-05 Connection API for **one** domain.
@@ -31,7 +32,18 @@ interface StagedPatch {
   activation?: ActivationRequest;
 }
 
-export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engine: Engine, state: StateStore): void {
+export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engine: Engine, state: StateStore, annotate?: Annotator): void {
+  // NMOS APIs answer browsers too (IS-13 makes CORS a MUST): permissive headers on every
+  // response, and every pre-flight is answered.
+  app.addHook('onSend', async (req, reply, payload) => {
+    reply.header('Access-Control-Allow-Origin', '*');
+    reply.header('Access-Control-Allow-Methods', 'GET, PUT, POST, PATCH, HEAD, OPTIONS, DELETE');
+    reply.header('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] ?? 'Content-Type, Accept');
+    reply.header('Access-Control-Max-Age', '3600');
+    return payload;
+  });
+  app.options('*', async (_req, reply) => reply.code(200).send());
+
   const res = () => engine.domainResources(domain.id);
 
   /** NMOS receiver ID -> our virtual receiver. */
@@ -295,6 +307,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
 
   // Controls of an original device passed through to its copies (IS-12, IS-08).
   registerControlProxy(app, domain, engine);
+  if (annotate) registerAnnotationApi(app, domain, engine, annotate);
 }
 
 /** "<seconds>:<nanoseconds>" for an activation_time. */

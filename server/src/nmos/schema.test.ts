@@ -90,6 +90,12 @@ test('the node validates', () => {
   check('node.json', buildNode(identity, 'Federation internal', { refclk: null }));
 });
 
+test('the node validates with its IS-13 Annotation service', () => {
+  const node = buildNode(identity, 'Federation internal', { refclk: null });
+  node.services = [{ href: 'http://10.0.0.1:8081/x-nmos-bridge/abc/x-nmos/annotation/v1.0/', type: 'urn:x-nmos:service:annotation/v1.0' }];
+  check('node.json', { ...node, description: 'annotated', tags: { 'urn:x-nmos:tag:user:studio': ['HQ2'] } });
+});
+
 test('the node validates with a PTP clock', () => {
   check('node.json', buildNode(identity, 'Federation internal', { refclk: 'ptp=IEEE1588-2008:08-00-11-FF-FE-22-04-00:0' }));
 });

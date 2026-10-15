@@ -26,6 +26,7 @@ import {
   uuidv5,
   type EssenceParams,
 } from '../nmos/resources.js';
+import { ANNOTATION_SERVICE, type AnnotationKind } from '../nmos/annotation.js';
 import { assignFabrics, essenceCount, parseSdp, rewriteSdp } from '../nmos/sdp.js';
 import { programChannel, unprogramChannel, type SwitchDriver } from '../switch/driver.js';
 import type { Channel, FederationDevice, VirtualReceiver } from '../types.js';
@@ -250,7 +251,7 @@ export class Engine {
     // The OS interface that actually carries this address, for its real MAC — IS-04
     // requires an EUI-48 in interfaces[].port_id.
     const iface = resolveInterface(domain.iface.address, domain.iface.name);
-    return this.stamp(
+    const node = Engine.annotated(
       buildNode(
         {
           id: this.nodeId(bridge.id),
@@ -263,10 +264,72 @@ export class Engine {
         bridge.label,
         { refclk: null },
       ),
+      bridge,
+    );
+    // IS-13: controllers rename what this node offers through it (see nmos/annotation.ts).
+    node.services = [{ href: this.annotationHref(domain, bridge.id), type: ANNOTATION_SERVICE }];
+    return this.stamp(
+      node,
       // Keyed by side: one id, two addresses, and a single cache entry would make them
       // overwrite each other's version on every build.
       `node:${bridge.id}:${domain.id}`,
     );
+  }
+
+  /**
+   * The bridge's Annotation API base. Per node, because several bridges can share one
+   * domain's node API and `node/self` has to know which of them it is.
+   */
+  annotationHref(domain: DomainConfig, bridgeId: string): string {
+    return canonicalUrl('http', domain.iface.address, this.portOf(domain.id), `/x-nmos-bridge/${this.nodeId(bridgeId)}/x-nmos/annotation/v1.0/`);
+  }
+
+  /**
+   * An IS-13 annotation on top of what was built: its description replaces the default
+   * (the label), its tags join ours — ours win, a controller cannot overwrite a group
+   * hint or an alias this way.
+   */
+  static annotated<T extends { description: string; tags: Record<string, string[]> }>(
+    res: T,
+    ann?: { description?: string; tags?: Record<string, string[]> },
+  ): T {
+    if (!ann || (ann.description === undefined && !ann.tags)) return res;
+    return { ...res, description: ann.description ?? res.description, tags: { ...(ann.tags ?? {}), ...res.tags } };
+  }
+
+  /**
+   * What an IS-13 PATCH on one of our resources changes in the configuration.
+   *
+   * Only names an operator could also give in the GUI. Resources whose name is derived
+   * are refused with the reason — renaming them here would be overwritten on the next
+   * rebuild, or would quietly rename something else.
+   */
+  annotationTarget(
+    kind: AnnotationKind,
+    nmosId: string,
+  ): { type: 'bridge' | 'device' | 'receiver' | 'mirror'; id: string } | { refused: string } | undefined {
+    const id = nmosId.toLowerCase();
+    if (kind === 'node') {
+      const b = this.cfg.bridges.find((x) => this.nodeId(x.id) === id);
+      return b && { type: 'bridge', id: b.id };
+    }
+    if (kind === 'device') {
+      const d = this.cfg.devices.find((x) => this.deviceId(x.id) === id);
+      if (d) return { type: 'device', id: d.id };
+      const arrival = this.cfg.bridges.some((b) => b.domains.some((dom) => this.arrivalsOf(b, dom).some((a) => a.devId === id)));
+      return arrival ? { refused: 'this device is named after the registry of the switched sender and follows it' } : undefined;
+    }
+    if (kind === 'receiver') {
+      const r = this.cfg.receivers.find((x) => this.receiverNmosId(x.id) === id);
+      return r && { type: 'receiver', id: r.id };
+    }
+    const m = this.cfg.mirrors.find((x) => x.kind === 'sender' && this.senderNmosId(Engine.mirrorKey(x.id)) === id);
+    if (m) return { type: 'mirror', id: m.id };
+    const channel = this.activeChannels().find((c) => this.senderNmosId(c.receiverId) === id);
+    if (!channel) return undefined;
+    if (this.isArrival(channel)) return { refused: 'this sender is named after its source and follows it' };
+    const vrx = this.cfg.receivers.find((x) => x.id === channel.receiverId);
+    return { refused: `this sender is named after its receiver${vrx ? ` "${vrx.label}"` : ''} — rename that one` };
   }
 
   /**
@@ -471,7 +534,13 @@ export class Engine {
     const active = this.activeChannels();
 
     /** Source, flow and sender of one channel, under the device given. */
-    const publish = (channel: Channel, devId: string, label: string, groupTags: Record<string, string[]>): boolean => {
+    const publish = (
+      channel: Channel,
+      devId: string,
+      label: string,
+      groupTags: Record<string, string[]>,
+      ann?: { description?: string; tags?: Record<string, string[]> },
+    ): boolean => {
       const essence = this.essenceOf(channel);
       if (!essence) return false;
       const alias = this.aliasOf(channel);
@@ -484,17 +553,20 @@ export class Engine {
       flows.push(this.stamp(buildFlow(flowId, sourceId, devId, label, essence)));
       senders.push(
         this.stamp(
-          buildSender(
-            senderId,
-            flowId,
-            devId,
-            label,
-            `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
-            [domain.iface.name],
-            essence,
-            tags,
-            Engine.senderActive(channel),
-            this.originCapsOf(channel.mirrorId) ?? {},
+          Engine.annotated(
+            buildSender(
+              senderId,
+              flowId,
+              devId,
+              label,
+              `${this.connectionBase(domain)}/single/senders/${senderId}/transportfile`,
+              [domain.iface.name],
+              essence,
+              tags,
+              Engine.senderActive(channel),
+              this.originCapsOf(channel.mirrorId) ?? {},
+            ),
+            ann,
           ),
           senderId,
           channel.senderSdp ?? '',
@@ -524,18 +596,21 @@ export class Engine {
             const caps = MEDIA_TYPES[vrx.format];
             receivers.push(
               this.stamp(
-                buildReceiver(
-                  this.receiverNmosId(vrx.id),
-                  devId,
-                  vrx.label,
-                  caps.format,
-                  caps.mediaTypes,
-                  [domain.iface.name],
-                  { sender_id: conn.sender_id, active: conn.master_enable },
-                  grouphintTags(hints.get(vrx.id)),
-                  // A proxy takes what its original can take — its caps, constraint sets
-                  // included, so a controller checks a connection against the real thing.
-                  this.originCapsOf(vrx.proxyFor?.mirrorId),
+                Engine.annotated(
+                  buildReceiver(
+                    this.receiverNmosId(vrx.id),
+                    devId,
+                    vrx.label,
+                    caps.format,
+                    caps.mediaTypes,
+                    [domain.iface.name],
+                    { sender_id: conn.sender_id, active: conn.master_enable },
+                    grouphintTags(hints.get(vrx.id)),
+                    // A proxy takes what its original can take — its caps, constraint sets
+                    // included, so a controller checks a connection against the real thing.
+                    this.originCapsOf(vrx.proxyFor?.mirrorId),
+                  ),
+                  vrx,
                 ),
               ),
             );
@@ -554,21 +629,24 @@ export class Engine {
             this.mirrorOf(vrxId)?.originLabel ??
             this.essenceOf(channel)?.label ??
             vrxId;
-          publish(channel, devId, label, grouphintTags(hints.get(vrxId)));
+          publish(channel, devId, label, grouphintTags(hints.get(vrxId)), this.mirrorOf(vrxId));
         }
 
         const pt = this.passthroughOf(device);
         const passed = pt && pt.domainId === domainId ? pt.controls.map((c) => ({ type: c.type, href: this.passthroughHref(domain, devId, c.type) })) : [];
         devices.push(
           this.stamp(
-            buildDevice(
-              devId,
-              this.nodeId(bridge.id),
-              device.label,
-              this.controlHref(domain),
-              mine.map((c) => this.senderNmosId(c.receiverId)),
-              vrxList.map((v) => this.receiverNmosId(v.id)),
-              passed,
+            Engine.annotated(
+              buildDevice(
+                devId,
+                this.nodeId(bridge.id),
+                device.label,
+                this.controlHref(domain),
+                mine.map((c) => this.senderNmosId(c.receiverId)),
+                vrxList.map((v) => this.receiverNmosId(v.id)),
+                passed,
+              ),
+              device,
             ),
             `device:${domainId}:${devId}`,
           ),

@@ -272,7 +272,7 @@ export function buildNode(identity: NodeIdentity, label: string, clock: ClockInf
       versions: ['v1.3'],
       endpoints: [{ host: identity.address, port: identity.port, protocol: 'http', authorization: false }],
     },
-    services: [],
+    services: [] as { href: string; type: string }[],
     clocks: gmid
       ? [{ name: 'clk0', ref_type: 'ptp', traceable: true, version: 'IEEE1588-2008', gmid: gmid.toLowerCase(), locked: true }]
       : [{ name: 'clk0', ref_type: 'internal' }],

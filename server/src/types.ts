@@ -119,6 +119,9 @@ export interface Bridge {
   registries: string[];
   /** NAT for everything on this bridge; false = SDPs are copied verbatim. */
   nat: boolean;
+  /** IS-13 annotation: description and own tags, when set (see nmos/annotation.ts). */
+  description?: string;
+  tags?: Record<string, string[]>;
   /**
    * Natural grouping (BCP-002-01 group hints) on this bridge's ports. Missing = on.
    * Off publishes no group hints at all; the groups and roles set stay stored.
@@ -133,6 +136,9 @@ export interface FederationDevice {
   label: string;
   bridgeId: string;
   receiverIds: string[];
+  /** IS-13 annotation: description and own tags, when set (see nmos/annotation.ts). */
+  description?: string;
+  tags?: Record<string, string[]>;
 }
 
 export interface VirtualReceiver {
@@ -153,6 +159,9 @@ export interface VirtualReceiver {
   group?: string;
   /** Role within the group, set by the operator; empty = the original's, or derived. */
   role?: string;
+  /** IS-13 annotation: description and own tags, when set (see nmos/annotation.ts). */
+  description?: string;
+  tags?: Record<string, string[]>;
   /**
    * Set when this receiver is a proxy for a real receiver in the other domain: once
    * a stream is connected here, the original is driven over IS-05 so the essence

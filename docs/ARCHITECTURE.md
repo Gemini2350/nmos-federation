@@ -247,6 +247,36 @@ to it, which without the slash produced `…/v1.1single/…`. A test follows eve
 href, including what a controller builds from the control href, and checks every base path
 in both forms.
 
+### IS-13 Annotation
+
+Each bridge node lists an Annotation API in `services`:
+`http://<domain address>:<port>/x-nmos-bridge/<node id>/x-nmos/annotation/v1.0/`. Per node
+rather than one per node API, because a domain's node API serves every bridge touching it
+and `node/self` has to know which one it is. Below it are exactly that node's resources in
+that domain; sources and flows are empty lists (they carry their sender's name).
+
+A PATCH is validated against IS-13's `resource_core_patch` (400) and then sent through the
+REST write queue (`PATCH /api/annotations/:kind/:id`), like any GUI change — it edits the
+same fields, so the GUI and the controller see one name. The answer is the rebuilt resource
+with its new version; the registries get it through the normal sync.
+
+| Resource | Stored on | `label: null` restores |
+|---|---|---|
+| node | bridge | `NMOS Federation` |
+| device | device | `Device` |
+| virtual receiver | receiver | its current name (it has no other default) |
+| proxy | receiver and its copy entry | `Proxy <original>` |
+| sender copy | copy entry | the original's name |
+
+Descriptions override the default (the label) until reset. User tags merge per name, `null`
+removes one, `tags: null` all of them. Our own tags win the merge and stay read-only: the
+alias tag answers 500, and a group hint (`urn:x-nmos:tag:grouphint/v1.0`, one value
+`group:role`) is not kept as a tag but sets the port's group and role. Refused with 500 and
+the reason: senders of virtual receivers (named after the receiver) and the devices and
+senders of streams arriving through proxies (named after the registry and the source).
+
+The node APIs answer CORS (IS-13 makes it a MUST), pre-flights included.
+
 ### IS-05
 
 - **vRX**: full connection API v1.1 (`staged`, `active`, `constraints`,
@@ -968,6 +998,7 @@ already routed.
 8. The external→external transit case in production, failover across several
    registries
 9. Optional: IS-09 system API, authentication (IS-10) for the external domains
+10. ✅ IS-13 Annotation: renaming from a controller
 
 ## 12. Open points
 

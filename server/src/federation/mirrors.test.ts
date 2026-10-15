@@ -1096,3 +1096,51 @@ test('copies carry their original\'s capabilities, and follow when they change',
   await engine.syncRegistries();
   assert.deepEqual(lastOf(internal.posts, 'receiver'), { media_types: ['video/raw', 'video/jxsv'] });
 });
+
+test('IS-13: copies and proxies are annotatable, what is named after its source is not', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const copyId = randomUUID();
+  const proxyMirror = randomUUID();
+  const { engine, cfg } = await build(internal, partner, dir, {
+    bridges: [{ id: 'b1', label: 'NMOS Federation', domains: ['internal', 'partnerA'], registries: ['regA'], nat: false, enabled: true }],
+    mirrors: [
+      { id: copyId, kind: 'sender', deviceId: 'dev1', registryId: 'int', originId: ORIGIN_SENDER, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', enabled: true },
+      { id: proxyMirror, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true },
+    ],
+    receivers: [
+      { id: 'proxy', label: 'Proxy MON03', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId: proxyMirror } },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy'];
+  t.after(async () => {
+    await engine.stop();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  await engine.copySender(copyId);
+  await engine.activate('proxy', { sender_id: ORIGIN_SENDER, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, transport_params: [{}, {}] });
+
+  const copySender = engine.senderNmosId(Engine.mirrorKey(copyId));
+  assert.deepEqual(engine.annotationTarget('sender', copySender), { type: 'mirror', id: copyId });
+  assert.deepEqual(engine.annotationTarget('receiver', engine.receiverNmosId('proxy')), { type: 'receiver', id: 'proxy' });
+
+  // The stream arriving through the proxy: its device and sender are derived.
+  const res = engine.domainResources('partnerA');
+  const arrival = res.devices.find((d) => d.id !== engine.deviceId('dev1') && d.senders.length)!;
+  assert.ok('refused' in engine.annotationTarget('device', arrival.id)!);
+  assert.ok('refused' in engine.annotationTarget('sender', arrival.senders[0]!)!);
+
+  // A copy's description and tags reach IS-04; our alias tag wins over a user tag.
+  const mirror = cfg.mirrors.find((m) => m.id === copyId)!;
+  mirror.description = 'from the truck';
+  mirror.tags = { 'urn:x-nmos:tag:user:truck': ['OB1'], 'urn:x-nmos-federation:alias-of': ['nope'] };
+  const sender = engine.domainResources('partnerA').senders.find((s) => s.id === copySender)!;
+  assert.equal(sender.description, 'from the truck');
+  assert.deepEqual(sender.tags['urn:x-nmos:tag:user:truck'], ['OB1']);
+  assert.deepEqual(sender.tags['urn:x-nmos-federation:alias-of'], [ORIGIN_SENDER]);
+});

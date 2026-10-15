@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import type { MirrorEntry } from '../config/schema.js';
 import type { Bridge } from '../types.js';
 import { listInterfaces } from '../nmos/resources.js';
-import { nextId, otherDomain, proxyLabel } from '../config/schema.js';
+import { DEFAULT_BRIDGE_LABEL, DEFAULT_DEVICE_LABEL, nextId, otherDomain, proxyLabel } from '../config/schema.js';
+import { GROUPHINT_TAG, READ_ONLY_TAGS, mergeTags, validatePatch, type AnnotationKind } from '../nmos/annotation.js';
 import { PASSTHROUGH } from '../federation/passthrough.js';
 import { readOrigin, rebindMirrors } from '../federation/rebind.js';
 import type { StateStore } from '../federation/state.js';
@@ -36,6 +37,7 @@ import { log } from '../util/log.js';
  *   GET/POST /api/mirrors                      registry-to-registry copies
  *   DELETE   /api/mirrors/:id                  remove a copy and tear it down
  *   POST     /api/mirrors/:id/refresh          re-read the origin and rebuild
+ *   PATCH    /api/annotations/:kind/:id        IS-13 from a controller (node/device/sender/receiver, NMOS id)
  *   POST     /api/cleanup                       remove registry resources left over from an earlier run
  *   POST     /api/reset                         factory reset: unregister everything, wipe config and state
  *   POST     /api/reconcile                    run desired/actual reconciliation now
@@ -269,7 +271,7 @@ export function registerRestApi(
     }
     const device: FederationDevice = {
       id: randomUUID(),
-      label: req.body.label ?? 'Device',
+      label: req.body.label ?? DEFAULT_DEVICE_LABEL,
       bridgeId: req.body.bridgeId,
       receiverIds: [],
     };
@@ -813,6 +815,99 @@ export function registerRestApi(
       return { ok: true };
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  /**
+   * IS-13 Annotation, reached from the node API (nmos/annotation-api.ts) and queued here
+   * like every other write. Changes the same fields the GUI edits, so a name given from a
+   * controller shows up in the GUI and the other way round. Errors use IS-13's format:
+   * 400 for a body outside its schema, 500 for what it allows but we cannot do.
+   */
+  app.patch<{ Params: { kind: string; id: string } }>('/api/annotations/:kind/:id', async (req, reply) => {
+    const fail = (code: number, error: string) => reply.code(code).send({ code, error, debug: null });
+    const kind = req.params.kind as AnnotationKind;
+    if (!['node', 'device', 'sender', 'receiver'].includes(kind)) return fail(404, 'unknown resource type');
+    const checked = validatePatch(req.body);
+    if ('error' in checked) return fail(400, checked.error);
+    const p = checked.patch;
+    const target = engine.annotationTarget(kind, req.params.id);
+    if (!target) return fail(404, `unknown ${kind}`);
+    if ('refused' in target) return fail(500, target.refused);
+
+    const readOnly = Object.keys(p.tags ?? {}).filter((k) => READ_ONLY_TAGS.includes(k));
+    if (readOnly.length) return fail(500, `read-only tag: ${readOnly.join(', ')}`);
+    if (typeof p.label === 'string' && !p.label.trim()) return fail(500, 'an empty name is not set — send null to restore the default');
+
+    const cfg = structuredClone(store.current);
+    const entity: { label?: string; description?: string; tags?: Record<string, string[]>; group?: string; role?: string } | undefined =
+      target.type === 'bridge'
+        ? cfg.bridges.find((b) => b.id === target.id)
+        : target.type === 'device'
+          ? cfg.devices.find((d) => d.id === target.id)
+          : target.type === 'receiver'
+            ? cfg.receivers.find((r) => r.id === target.id)
+            : cfg.mirrors.find((m) => m.id === target.id);
+    if (!entity) return fail(404, `unknown ${kind}`);
+    const proxy = target.type === 'receiver' ? (entity as VirtualReceiver).proxyFor : undefined;
+    const proxyMirror = proxy && cfg.mirrors.find((m) => m.id === proxy.mirrorId);
+
+    // A group hint is how a controller sets the natural group (BCP-002-01): one value,
+    // "group:role" or "group"; null removes both.
+    if (p.tags && GROUPHINT_TAG in p.tags) {
+      if (target.type !== 'receiver' && target.type !== 'mirror') return fail(500, `${GROUPHINT_TAG} is set per sender and receiver`);
+      const v = p.tags[GROUPHINT_TAG];
+      if (v === null) {
+        delete entity.group;
+        delete entity.role;
+      } else {
+        if (v.length !== 1) return fail(500, `${GROUPHINT_TAG} takes exactly one value`);
+        const [group, role, ...rest] = v[0]!.split(':').map((x) => x.trim());
+        if (!group || rest.length) return fail(500, `${GROUPHINT_TAG} is "<group>:<role>"`);
+        entity.group = group;
+        if (role) entity.role = role;
+        else delete entity.role;
+      }
+    }
+
+    if (p.label !== undefined) {
+      const label = p.label?.trim();
+      if (target.type === 'mirror') {
+        if (label) entity.label = label;
+        else delete entity.label;
+      } else if (label) {
+        entity.label = label;
+      } else if (target.type === 'bridge') {
+        entity.label = DEFAULT_BRIDGE_LABEL;
+      } else if (target.type === 'device') {
+        entity.label = DEFAULT_DEVICE_LABEL;
+      } else if (proxyMirror) {
+        entity.label = proxyLabel(proxyMirror.originLabel);
+      }
+      // A free virtual receiver has no default beyond the name it was given: it stays.
+      // A proxy's name lives on its copy entry too (see PUT /api/mirrors/:id).
+      if (proxyMirror) {
+        if (label) proxyMirror.label = label;
+        else delete proxyMirror.label;
+      }
+    }
+    if (p.description !== undefined) {
+      if (p.description === null) delete entity.description;
+      else entity.description = p.description;
+    }
+    if (p.tags !== undefined) {
+      const tags = mergeTags(entity.tags, p.tags);
+      if (tags) entity.tags = tags;
+      else delete entity.tags;
+    }
+
+    try {
+      await store.save(cfg);
+      if (target.type === 'mirror') await engine.applyMirrorChange(target.id);
+      else await onConfigChange();
+      return { ok: true };
+    } catch (e) {
+      return fail(500, (e as Error).message);
     }
   });
 

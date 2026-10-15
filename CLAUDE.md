@@ -32,6 +32,7 @@ server/src/
   nmos/is05-client.ts       drives a FOREIGN receiver (receiver proxies)
   nmos/node-api.ts          IS-04 node API, IS-05 vRX/vTX, /transportfile
   nmos/control-proxy.ts     IS-12 / IS-08 of an original, proxied with ids translated
+  nmos/annotation*.ts       IS-13: bridge node, devices, receivers, copies renamable from a controller
   federation/passthrough.ts when a device passes an original's controls through
   federation/grouping.ts    natural grouping (BCP-002-01) per port
   federation/origin-watch.ts query-API subscriptions: copies follow their original's SDP
@@ -103,6 +104,10 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
 - **Two ports:** `port` (GUI/REST, 0.0.0.0) and `nmosPort` (node/connection API,
   bound per domain to that domain's IP). If two domains share an IP, the second takes
   the next free port and its `href` follows.
+- **IS-13 writes go through the REST queue** (`PATCH /api/annotations/…`, reached from the
+  node API via `inject`). Its Annotation API is per bridge node (`/x-nmos-bridge/<node>/…`)
+  because one node API serves several bridges. Managed tags (group hint, alias) always win
+  the tag merge; a group hint PATCH sets group/role instead of being stored as a tag.
 - **`.dockerignore` matters.** Without it the build context carries both
   `node_modules` trees and "load build context" takes minutes on a virtiofs-backed
   Docker host.

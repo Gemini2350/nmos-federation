@@ -287,6 +287,9 @@ export interface MirrorEntry {
   group?: string;
   /** Role within it, likewise; empty = the original's. */
   role?: string;
+  /** IS-13 annotation of a sender copy: description and own tags, when set. */
+  description?: string;
+  tags?: Record<string, string[]>;
   /**
    * The original's group hint (BCP-002-01) and its device's label, read when the copy
    * was made. `undefined` = not read yet, `null` = the original has none.
@@ -329,6 +332,7 @@ export interface AppConfig {
 const emptyPool = (base: string): PoolConfig => ({ base, pairs: 64, sourceNat: null });
 
 export const DEFAULT_BRIDGE_LABEL = 'NMOS Federation';
+export const DEFAULT_DEVICE_LABEL = 'Device';
 
 /**
  * Name of a receiver proxy. "Proxy" goes in front: origin labels typically end in a

@@ -105,6 +105,17 @@ the NAT setting. Copies keep their original's **natural grouping** (BCP-002-01 g
 hints), and every port can be put into a group of its own on the Bridges page. The direction comes from the registry you copy from: a copy always runs
 into the bridge's other domain. Each copy can be renamed and given its own registries.
 
+### Renaming from a controller (IS-13)
+
+Every bridge node offers the AMWA IS-13 Annotation API (`urn:x-nmos:service:annotation/v1.0`
+in its IS-04 `services`), so a controller such as NMOS-Crosspoint can rename the bridge,
+its devices, virtual receivers, proxies and sender copies — and set a description, user
+tags, or a group hint (which becomes the port's natural group and role). The change is
+saved in the same place the GUI edits, so both show the same name; `null` restores the
+default (`NMOS Federation`, `Device`, `Proxy <original>`, the original's name). Names
+that are derived are refused with the reason: a sender named after its virtual receiver
+(rename the receiver), and the devices and senders of streams arriving through proxies.
+
 `network_mode: host` is required — the software needs one interface with a real IP
 per domain (node href, manifest fetch, mDNS). Configuration and state live in
 `./config`.
@@ -181,7 +192,7 @@ down in reverse order. 38 offline tests, including the full chain against a stub
 registry.
 
 Still open: the eAPI driver is unverified against real hardware (see below),
-BCP-008-01 monitoring is missing, discovery is limited to unicast DNS-SD, and of the
+discovery is limited to unicast DNS-SD, and of the
 IS-05 activation modes only `activate_immediate` is implemented.
 
 > ⚠ Multicast NAT on the target platform (DCS-7060SX2) is not proven yet: the CLI
