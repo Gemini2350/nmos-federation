@@ -70,7 +70,7 @@ Then open `http://<host>:8080` and configure it under **Settings**:
    software then logs the switch commands instead of sending them, which lets you see
    the whole federation in your controller without touching the network.
 
-The **Channels** page shows a status line per registry — resolved address, state,
+The **Status** page shows a status line per registry — resolved address, state,
 how many of our resources it holds, the age of the last heartbeat and the last error —
 plus a Test button that probes one registry without changing anything.
 

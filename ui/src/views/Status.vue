@@ -41,7 +41,7 @@ const badge = (state: string) => (state === 'active' ? 'ok' : state === 'failed'
 
 <template>
   <div class="head">
-    <h2>Channels</h2>
+    <h2>Status</h2>
     <button @click="api.reconcile().then(refresh)">Reconcile now</button>
   </div>
   <p v-if="error" class="bad">{{ error }}</p>
