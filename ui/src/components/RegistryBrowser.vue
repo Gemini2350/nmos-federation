@@ -120,8 +120,10 @@ const formatOf = (format: string): 'video' | 'audio' | 'data' =>
 
 /** Rows ticked for copying, per list. Cleared when another registry is browsed. */
 const selected = reactive({ sender: new Set<string>(), receiver: new Set<string>() });
-const copyableSender = (s: BrowseSender) => !s.copied && !s.ours && !!s.manifest_href;
-const copyableReceiver = (r: BrowseReceiver) => !r.copied && !r.ours && r.controllable;
+// MXL is shared memory on one host — nothing to NAT, no SDP: never copyable.
+const copyableSender = (s: BrowseSender) => !s.copied && !s.ours && !s.mxl && !!s.manifest_href;
+const copyableReceiver = (r: BrowseReceiver) => !r.copied && !r.ours && !r.mxl && r.controllable;
+const MXL_TITLE = 'MXL is host-local shared memory: no multicast to NAT, no SDP — it cannot be federated into another network';
 
 function toggle(kind: 'sender' | 'receiver', ids: string[], on: boolean) {
   for (const id of ids) {
@@ -215,7 +217,7 @@ async function copySelected(kind: 'sender' | 'receiver') {
       :busy="busy"
       noun="sender"
       :col-classes="['c-ess']"
-      :inactive="(s) => s.subscription?.active === false"
+      :inactive="(s) => s.subscription?.active === false || !!s.mxl"
       @toggle="(ids, on) => toggle('sender', ids, on)"
     >
       <template #head><th>Essence</th></template>
@@ -226,7 +228,8 @@ async function copySelected(kind: 'sender' | 'receiver') {
         </td>
       </template>
       <template #status="{ row: s }">
-        <span v-if="s.copied" class="ok">copied</span>
+        <span v-if="s.mxl" class="muted" :title="MXL_TITLE">MXL — host-local</span>
+        <span v-else-if="s.copied" class="ok">copied</span>
         <span v-else-if="s.subscription?.active === false" class="muted" title="switched off at the device">inactive</span>
         <span v-else-if="s.ours" class="muted" title="copying our own copy would loop">—</span>
         <span v-else-if="!s.manifest_href" class="muted" title="no manifest_href, so there is no SDP to read">no manifest</span>
@@ -248,6 +251,7 @@ async function copySelected(kind: 'sender' | 'receiver') {
       :busy="busy"
       noun="receiver"
       :col-classes="['c-ess', 'c-cur']"
+      :inactive="(r) => !!r.mxl"
       @toggle="(ids, on) => toggle('receiver', ids, on)"
     >
       <template #head><th>Accepts</th><th>Currently</th></template>
@@ -256,7 +260,8 @@ async function copySelected(kind: 'sender' | 'receiver') {
         <td><small>{{ currently(r) }}</small></td>
       </template>
       <template #status="{ row: r }">
-        <span v-if="r.copied" class="ok">proxied</span>
+        <span v-if="r.mxl" class="muted" :title="MXL_TITLE">MXL — host-local</span>
+        <span v-else-if="r.copied" class="ok">proxied</span>
         <span v-else-if="r.ours" class="muted">—</span>
         <span v-else-if="!r.controllable" class="muted" title="advertises no sr-ctrl control, so it cannot be driven over IS-05">not controllable</span>
       </template>

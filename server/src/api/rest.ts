@@ -51,6 +51,9 @@ import { log } from '../util/log.js';
  * handler awaits switch teardowns and registry syncs before it saves, and anything
  * that lands in between works on a stale copy. Reads are not queued.
  */
+/** An MXL resource (transport urn:x-nmos:transport:mxl…): host-local, never federated. */
+export const isMxl = (r: { transport?: string | null }): boolean => /^urn:x-nmos:transport:mxl\b/.test(r.transport ?? '');
+
 function serializeWrites(app: FastifyInstance): void {
   let tail: Promise<void> = Promise.resolve();
   const releases = new WeakMap<object, () => void>();
@@ -495,7 +498,7 @@ export function registerRestApi(
       const ourNodes = new Set(store.current.bridges.map((b) => engine.nodeId(b.id)));
       const copied = new Set(store.current.mirrors.map((m) => `${m.registryId}:${m.originId}`));
 
-      const annotate = (r: { id: string; device_id: string }) => {
+      const annotate = (r: { id: string; device_id: string; transport?: string }) => {
         const device = deviceById.get(r.device_id);
         return {
           deviceLabel: device?.label ?? r.device_id,
@@ -504,6 +507,7 @@ export function registerRestApi(
           ours: device ? ourNodes.has(device.node_id) : false,
           copied: copied.has(`${req.params.id}:${r.id}`),
           controllable: !!device?.controls?.some((c) => c.type.startsWith('urn:x-nmos:control:sr-ctrl/')),
+          mxl: isMxl(r),
         };
       };
 
@@ -586,6 +590,13 @@ export function registerRestApi(
     const other = bridge && origin ? otherDomain(bridge, origin) : undefined;
     if (!bridge || !other) {
       return reply.code(400).send({ error: `that registry is in neither domain of the device's bridge` });
+    }
+    // MXL is shared memory on one host: no multicast to NAT, no SDP to rewrite. A copy
+    // could only be refused later — a proxy would hand its MXL original an RTP SDP on
+    // the first switch. Refused here, with the reason.
+    const original = await (b.kind === 'sender' ? engine.queryClient(b.registryId)?.sender(b.originId) : engine.queryClient(b.registryId)?.receiver(b.originId))?.catch(() => null);
+    if (original && isMxl(original)) {
+      return reply.code(400).send({ error: 'MXL is host-local shared memory — it cannot be federated into another network' });
     }
 
     const mirror: MirrorEntry = {

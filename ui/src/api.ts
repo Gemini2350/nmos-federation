@@ -162,6 +162,8 @@ export interface BrowseSender {
   ours: boolean;
   copied: boolean;
   controllable: boolean;
+  /** MXL (host-local shared memory): shown, never copyable. */
+  mxl?: boolean;
   /** IS-04 subscription: `active: false` = the sender is switched off. */
   subscription?: { receiver_id: string | null; active: boolean };
   flow: { media_type: string; frame_width?: number; frame_height?: number; grain_rate?: { numerator: number; denominator?: number } } | null;
@@ -182,6 +184,8 @@ export interface BrowseReceiver {
   copied: boolean;
   /** Advertises an sr-ctrl control, so it can be driven over IS-05. */
   controllable: boolean;
+  /** MXL (host-local shared memory): shown, never copyable. */
+  mxl?: boolean;
 }
 
 export interface Discovered {

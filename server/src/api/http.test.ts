@@ -229,3 +229,72 @@ test('removing a proxy receiver removes its copy entry with it', async (t) => {
   assert.equal(store.current.receivers.length, 0);
   assert.equal(store.current.mirrors.length, 0, 'the copy entry went with it');
 });
+
+test('MXL senders and receivers are shown as such and never copied', async (t) => {
+  const DEV = '0d0d0d0d-0000-4000-8000-000000000001';
+  const MXL_RX = '0d0d0d0d-0000-4000-8000-0000000000a1';
+  const RTP_RX = '0d0d0d0d-0000-4000-8000-0000000000a2';
+  const receivers = [
+    { id: MXL_RX, label: 'MXL in', device_id: DEV, format: 'urn:x-nmos:format:video', transport: 'urn:x-nmos:transport:mxl', caps: {} },
+    { id: RTP_RX, label: 'RTP in', device_id: DEV, format: 'urn:x-nmos:format:video', transport: 'urn:x-nmos:transport:rtp.mcast', caps: {} },
+  ];
+  const device = { id: DEV, label: 'Box', node_id: 'n', controls: [{ type: 'urn:x-nmos:control:sr-ctrl/v1.1', href: 'http://127.0.0.1:9/x-nmos/connection/v1.1/' }] };
+  const reg = createServer((req, res) => {
+    const url = (req.url ?? '').split('?')[0]!;
+    const json = (c: number, b: unknown) => {
+      res.writeHead(c, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(b));
+    };
+    req.resume();
+    if (url.endsWith('/receivers')) return json(200, receivers);
+    if (url.endsWith('/devices')) return json(200, [device]);
+    const one = receivers.find((r) => url.endsWith(`/receivers/${r.id}`));
+    if (one) return json(200, one);
+    if (url.endsWith(`/devices/${DEV}`)) return json(200, device);
+    if (url.includes('/query/')) return url.split('/').length > 6 ? json(404, {}) : json(200, []);
+    json(200, {});
+  });
+  await new Promise<void>((r) => reg.listen(0, '127.0.0.1', r));
+  const port = (reg.address() as { port: number }).port;
+
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-http-'));
+  const store = new ConfigStore(dir);
+  await store.load();
+  const cfg = structuredClone(store.current);
+  cfg.domains.push({ ...structuredClone(cfg.domains[0]!), id: '2', label: 'Partner', kind: 'external' });
+  cfg.domains[1]!.pool.base = '239.202.0.0';
+  cfg.registries = [{ id: 'p', label: 'Partner', domainId: '2', mode: 'manual', ip: '127.0.0.1', port, version: 'v1.3', enabled: true }];
+  cfg.bridges = [{ id: '1', label: 'Bridge', domains: ['1', '2'], registries: [], nat: false, enabled: true }];
+  cfg.devices = [{ id: 'd1', label: 'D', bridgeId: '1', receiverIds: [] }];
+  await store.save(cfg);
+  const state = new StateStore(dir);
+  await state.load();
+  const sw = { host: '', user: '', password: '', tls: true, join: 'igmpStatic' as const };
+  const engine = new Engine({
+    config: () => store.current,
+    state,
+    pools: new PoolManager(store.current.domains, store.current.nat.groupIdRange),
+    drivers: { red: new MockSwitchDriver('red', sw), blue: new MockSwitchDriver('blue', sw) },
+  });
+  await engine.start();
+  const app = Fastify();
+  acceptEmptyJson(app);
+  await app.register(fastifyWebsocket);
+  registerRestApi(app, store, engine, state, async () => undefined);
+  t.after(async () => {
+    await app.close();
+    await engine.stop();
+    reg.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const browse = (await app.inject({ method: 'GET', url: '/api/registries/p/browse' })).json() as { receivers: { id: string; mxl: boolean }[] };
+  assert.deepEqual(browse.receivers.map((r) => [r.id, r.mxl]), [[MXL_RX, true], [RTP_RX, false]]);
+
+  const copy = (originId: string) =>
+    app.inject({ method: 'POST', url: '/api/mirrors', headers: { 'content-type': 'application/json' }, payload: JSON.stringify({ kind: 'receiver', deviceId: 'd1', registryId: 'p', originId, originDeviceId: DEV, originLabel: 'x', format: 'video' }) });
+  const refused = await copy(MXL_RX);
+  assert.equal(refused.statusCode, 400);
+  assert.match(refused.json().error, /MXL/);
+  assert.equal((await copy(RTP_RX)).statusCode, 200, 'an RTP receiver is proxied as before');
+});

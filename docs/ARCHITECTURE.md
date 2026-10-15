@@ -535,6 +535,15 @@ its WebSocket on a port of its own; both are handled. A device that changes its 
 without bumping its sender's version is not noticed; Refresh re-reads on demand and uses
 the same in-place path. The registry browser shows whether each registry's feed is live.
 
+### MXL is not federated
+
+MXL (`urn:x-nmos:transport:mxl…`) is shared memory on one host: no multicast to NAT, no
+SDP to rewrite. Bringing such a source into another network would mean turning it into a
+network stream (MXL → ST 2110) — a media gateway, not address translation. MXL senders
+and receivers are shown greyed out as "MXL — host-local" in the registry browser, and
+`POST /api/mirrors` refuses them with that reason; a proxy would otherwise hand its MXL
+original an RTP SDP on the first switch.
+
 ### What is deliberately not done
 
 - Copies are re-homed under **our** node in the target domain, with our own IDs. The
