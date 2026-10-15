@@ -304,7 +304,7 @@ source, with search and node → device grouping (`RegistryBrowser.vue`) — on 
 the bridges with their devices — the target. Clicking a device makes it the target of
 the copy buttons on the left; what is copied appears in it at once. Everything a copy
 needs sits on its own row: name, group and role, where it is shared, its state (the
-whole story in the tooltip), Refresh and Remove. Below 1100 px the halves stack. The old
+whole story in the tooltip), Refresh and Remove. Devices collapse to one line — how many ports, and in red anything offline, failed or not connected — open on a click of the chevron, all at once per bridge, and the target opens after a copy; which are open is remembered in the browser. Below 1100 px the halves stack. The old
 `#/copy` link redirects there.
 
 ### Name and sharing per copy

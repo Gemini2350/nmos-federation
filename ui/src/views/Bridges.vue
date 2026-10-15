@@ -139,6 +139,62 @@ function toggleShare(m: Mirror, registryId: string, on: boolean) {
   void rename(() => api.updateMirror(m.id, { registries: m.registryChoices.filter((id) => next.includes(id)) }));
 }
 
+/**
+ * Which devices are open. Collapsed by default — a device of 30 ports is a screenful —
+ * and remembered in this browser only (it is a view preference, not configuration).
+ */
+const OPEN_KEY = 'nmos-federation.bridges.openDevices';
+const open = ref<Set<string>>(new Set());
+try {
+  const saved = JSON.parse(localStorage.getItem(OPEN_KEY) ?? '[]');
+  if (Array.isArray(saved)) open.value = new Set(saved.filter((x): x is string => typeof x === 'string'));
+} catch {
+  /* private window, blocked storage: everything starts collapsed */
+}
+function setOpen(ids: string[], on: boolean) {
+  const next = new Set(open.value);
+  for (const id of ids) {
+    if (on) next.add(id);
+    else next.delete(id);
+  }
+  open.value = next;
+  try {
+    localStorage.setItem(OPEN_KEY, JSON.stringify([...next]));
+  } catch {
+    /* not remembered, still works */
+  }
+}
+const isOpen = (d: Device) => open.value.has(d.id);
+
+/** What a collapsed device still says: how many ports, and anything wrong with them. */
+function summary(d: Device): { text: string; problems: string } {
+  const proxies = (d.receivers ?? []).filter((r) => r.proxyFor).length;
+  const virtual = (d.receivers?.length ?? 0) - proxies;
+  const copies = d.senderCopies?.length ?? 0;
+  const parts = [
+    virtual ? `${virtual} virtual receiver${virtual === 1 ? '' : 's'}` : '',
+    proxies ? `${proxies} prox${proxies === 1 ? 'y' : 'ies'}` : '',
+    copies ? `${copies} sender cop${copies === 1 ? 'y' : 'ies'}` : '',
+  ].filter(Boolean);
+  const words = [
+    ...(d.receivers ?? []).map((r) => copyState(mirrorOf(r.proxyFor?.mirrorId)).word),
+    ...(d.senderCopies ?? []).map((c) => copyState(mirrorOf(c.id)).word),
+  ];
+  const count = (w: string) => words.filter((x) => x === w).length;
+  const problems = [
+    count('offline') ? `${count('offline')} offline` : '',
+    count('failed') ? `${count('failed')} failed` : '',
+    count('active ⚠') ? `${count('active ⚠')} not connected` : '',
+  ].filter(Boolean);
+  return { text: parts.join(' · ') || 'no ports', problems: problems.join(' · ') };
+}
+
+/** After a copy: show its result — the target opens. */
+function afterCopy() {
+  if (targetId.value) setOpen([targetId.value], true);
+  void refresh();
+}
+
 const browser = ref<{ browse: (quiet?: boolean) => Promise<void> } | null>(null);
 /** Removing a copy frees its original for copying again — the browser shows that. */
 async function removeCopy(fn: () => Promise<unknown>) {
@@ -172,7 +228,7 @@ onMounted(refresh);
         :cfg="cfg"
         :target="target"
         :bridge="targetBridge"
-        @changed="refresh"
+        @changed="afterCopy"
         @notice="notify"
         @error="(e) => (error = e)"
       />
@@ -232,6 +288,8 @@ onMounted(refresh);
           <div class="controls">
             <label class="check" title="Rebuilds this bridge's channels"><input type="checkbox" :checked="b.nat" @change="patchBridge(b, { nat: ($event.target as HTMLInputElement).checked })" /> NAT</label>
             <label class="check" title="Natural grouping (BCP-002-01) — off publishes no group hints; the groups set stay stored"><input type="checkbox" :checked="b.grouping !== false" @change="patchBridge(b, { grouping: ($event.target as HTMLInputElement).checked })" /> Grouping</label>
+            <button title="expand all devices" @click="setOpen(devicesOf(b.id).map((d) => d.id), true)">▾ all</button>
+            <button title="collapse all devices" @click="setOpen(devicesOf(b.id).map((d) => d.id), false)">▸ all</button>
             <button :disabled="busy" @click="run(() => api.deleteBridge(b.id))">Delete bridge</button>
           </div>
         </header>
@@ -239,8 +297,10 @@ onMounted(refresh);
         <article v-for="d in devicesOf(b.id)" :key="d.id" :class="['device', { target: d.id === targetId }]" @click="targetId = d.id">
           <header>
             <div>
+              <button class="chev" :title="isOpen(d) ? 'collapse' : 'expand'" @click.stop="setOpen([d.id], !isOpen(d))">{{ isOpen(d) ? '▾' : '▸' }}</button>
               <strong><EditableName :value="d.label" @save="(label) => rename(() => api.updateDevice(d.id, { label }))" /></strong>
               <span v-if="d.id === targetId" class="tgt">◀ copy target</span>
+              <small class="sum">{{ summary(d).text }}<span v-if="summary(d).problems" class="bad"> · {{ summary(d).problems }}</span></small>
               <small v-if="d.passthrough" class="pass" title="Every port of this device is a copy of one original device, so its control APIs are offered here too — through this software, with ids translated to the copies'.">
                 passes through {{ d.passthrough.apis.join(' and ') }} of {{ d.passthrough.from }} · in {{ domainName(d.passthrough.domainId) }}
               </small>
@@ -248,6 +308,7 @@ onMounted(refresh);
             <button :disabled="busy" @click.stop="run(() => api.deleteDevice(d.id))">Remove device</button>
           </header>
 
+          <template v-if="isOpen(d)">
           <table v-if="d.receivers?.length">
             <thead><tr><th>Receiver</th><th v-if="groupingOn(d)">Group</th><th>Direction</th><th>State</th><th></th></tr></thead>
             <tbody>
@@ -331,6 +392,7 @@ onMounted(refresh);
               <button :disabled="busy" @click="run(() => api.addReceivers(d.id, rxDraft[d.id]!))">Add</button>
             </div>
           </details>
+          </template>
         </article>
 
         <div class="row add-device">
@@ -364,6 +426,10 @@ h2 { display: flex; align-items: center; font-size: 1.15rem; margin: 0 0 0.75rem
 .device > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
 .device table, .device input, .device select, .device button, .device details { cursor: auto; }
 .tgt { font-size: 0.75rem; color: #2e7fc0; margin-left: 0.5rem; }
+.chev { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 0.3rem 0 0; font-size: 0.9rem; opacity: 0.7; }
+.chev:hover { opacity: 1; }
+.sum { display: block; font-size: 0.75rem; opacity: 0.6; margin-left: 1.25rem; }
+.sum .bad { opacity: 1; }
 .add-device { margin-top: 0.75rem; margin-left: 0.75rem; }
 .row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
 label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }
