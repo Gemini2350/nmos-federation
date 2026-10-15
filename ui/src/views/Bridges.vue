@@ -74,7 +74,7 @@ async function refresh() {
       ];
     }
     if (!targetId.value || !devices.value.some((d) => d.id === targetId.value)) targetId.value = devices.value[0]?.id ?? null;
-    for (const b of bridges.value) deviceDraft.value[b.id] ??= 'Device';
+    for (const b of bridges.value) deviceDraft.value[b.id] ??= '';
     for (const d of devices.value) {
       rxDraft.value[d.id] ??= { count: 1, pattern: `${d.label} {n}`, format: 'video', side: bridgeOf(d)?.domains[0] ?? '' };
     }
@@ -189,6 +189,17 @@ function summary(d: Device): { text: string; problems: string } {
   return { text: parts.join(' · ') || 'no ports', problems: problems.join(' · ') };
 }
 
+/** A new device opens and becomes the copy target — it is where things go next. */
+async function addDevice(bridgeId: string) {
+  const label = deviceDraft.value[bridgeId]?.trim() || 'Device';
+  await run(async () => {
+    const created = await api.createDevice({ bridgeId, label });
+    deviceDraft.value[bridgeId] = '';
+    setOpen([created.id], true);
+    targetId.value = created.id;
+  });
+}
+
 /** After a copy: show its result — the target opens. */
 function afterCopy() {
   if (targetId.value) setOpen([targetId.value], true);
@@ -294,6 +305,12 @@ onMounted(refresh);
           </div>
         </header>
 
+        <!-- Up here, not below a long list of devices one has to scroll past. -->
+        <div class="row add-device">
+          <input v-model="deviceDraft[b.id]" placeholder="New device name" aria-label="New device name" @keydown.enter="addDevice(b.id)" />
+          <button :disabled="busy" @click="addDevice(b.id)">Add device</button>
+        </div>
+
         <article v-for="d in devicesOf(b.id)" :key="d.id" :class="['device', { target: d.id === targetId }]" @click="targetId = d.id">
           <header>
             <div>
@@ -395,10 +412,6 @@ onMounted(refresh);
           </template>
         </article>
 
-        <div class="row add-device">
-          <label><span>New device</span><input v-model="deviceDraft[b.id]" placeholder="Cameras" /></label>
-          <button :disabled="busy" @click="run(() => api.createDevice({ bridgeId: b.id, label: deviceDraft[b.id] }))">Add device</button>
-        </div>
       </article>
 
       <p v-if="!bridges.length"><small>No bridges yet.</small></p>
@@ -430,7 +443,8 @@ h2 { display: flex; align-items: center; font-size: 1.15rem; margin: 0 0 0.75rem
 .chev:hover { opacity: 1; }
 .sum { display: block; font-size: 0.75rem; opacity: 0.6; margin-left: 1.25rem; }
 .sum .bad { opacity: 1; }
-.add-device { margin-top: 0.75rem; margin-left: 0.75rem; }
+.add-device { margin: 0 0 0.25rem 0.75rem; align-items: center; }
+.add-device input { width: 14rem; }
 .row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
 label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }
 label.check { flex-direction: row; align-items: center; gap: 0.3rem; }
