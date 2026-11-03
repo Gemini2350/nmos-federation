@@ -10,6 +10,7 @@ import { listInterfaces } from '../nmos/resources.js';
 import { DEFAULT_BRIDGE_LABEL, DEFAULT_DEVICE_LABEL, nextId, otherDomain, proxyLabel } from '../config/schema.js';
 import { GROUPHINT_TAG, READ_ONLY_TAGS, mergeTags, validatePatch, type AnnotationKind } from '../nmos/annotation.js';
 import { PASSTHROUGH } from '../federation/passthrough.js';
+import { applyOriginDevice, excludeFromFollow, planDeviceCopy, type DeviceCopyPlan, type OriginDevice, type OriginReceiver, type OriginSender, type PlannedCopy, type RegistryContent } from '../federation/device-copy.js';
 import { readOrigin, rebindMirrors } from '../federation/rebind.js';
 import type { StateStore } from '../federation/state.js';
 import { log } from '../util/log.js';
@@ -36,6 +37,8 @@ import { log } from '../util/log.js';
  *   GET      /api/registries/:id/browse         list a registry's senders and receivers
  *   GET/POST /api/mirrors                      registry-to-registry copies
  *   DELETE   /api/mirrors/:id                  remove a copy and tear it down
+ *   POST     /api/devices/copy                 copy a whole device 1:1; what it gains later follows
+ *   DELETE   /api/devices/:id/follow           stop following; the copies stay
  *   POST     /api/mirrors/:id/refresh          re-read the origin and rebuild
  *   PATCH    /api/annotations/:kind/:id        IS-13 from a controller (node/device/sender/receiver, NMOS id)
  *   POST     /api/cleanup                       remove registry resources left over from an earlier run
@@ -90,6 +93,109 @@ export function registerRestApi(
     if (!query) throw new Error(`registry ${m.registryId} is not enabled`);
     return readOrigin(query, m);
   };
+  /**
+   * One copy into the configuration being edited: its entry, what it keeps of its
+   * original and, for a receiver, its proxy. The caller saves and starts the channel.
+   */
+  const addCopy = async (
+    cfg: AppConfig,
+    device: FederationDevice,
+    side: string,
+    spec: { kind: 'sender' | 'receiver'; registryId: string; originId: string; originDeviceId: string; originLabel: string; label?: string; enabled?: boolean; format?: 'video' | 'audio' | 'data' },
+  ): Promise<MirrorEntry> => {
+    const mirror: MirrorEntry = {
+      id: randomUUID(),
+      kind: spec.kind,
+      deviceId: device.id,
+      registryId: spec.registryId,
+      originId: spec.originId,
+      originDeviceId: spec.originDeviceId,
+      originLabel: spec.originLabel,
+      ...(spec.label ? { label: spec.label } : {}),
+      enabled: spec.enabled ?? true,
+    };
+    // Its grouping comes along. A registry that cannot answer right now does not stop the
+    // copy; the startup pass fills it in later.
+    Object.assign(mirror, await originOf(mirror).catch(() => ({})));
+    cfg.mirrors.push(mirror);
+
+    // A receiver copy needs a proxy receiver to exist as an ordering point. A sender
+    // copy needs nothing extra — its channel is created right away.
+    if (mirror.kind === 'receiver') {
+      const vrxId = randomUUID();
+      cfg.receivers.push({
+        id: vrxId,
+        label: mirror.label || proxyLabel(mirror.originLabel),
+        deviceId: device.id,
+        format: spec.format ?? 'video',
+        enabled: true,
+        side,
+        proxyFor: {
+          registryId: mirror.registryId,
+          receiverId: mirror.originId,
+          deviceId: mirror.originDeviceId,
+          mirrorId: mirror.id,
+        },
+      });
+      device.receiverIds.push(vrxId);
+    }
+    return mirror;
+  };
+
+  /** What a registry holds, as a 1:1 copy needs it. Throws when it cannot answer. */
+  const readRegistry = async (registryId: string): Promise<RegistryContent | null> => {
+    const query = engine.queryClient(registryId);
+    if (!query) return null;
+    const [senders, receivers, devices] = await Promise.all([
+      query.getAll<OriginSender>('senders'),
+      query.getAll<OriginReceiver>('receivers'),
+      query.getAll<OriginDevice>('devices'),
+    ]);
+    return { senders: senders.items, receivers: receivers.items, devices: devices.items };
+  };
+
+  const copyPlanned = async (cfg: AppConfig, device: FederationDevice, side: string, plan: Extract<DeviceCopyPlan, { status: 'ok' }>): Promise<MirrorEntry[]> => {
+    const added: MirrorEntry[] = [];
+    for (const item of plan.add as PlannedCopy[]) {
+      added.push(
+        await addCopy(cfg, device, side, {
+          kind: item.kind,
+          registryId: device.follows!.registryId,
+          originId: item.id,
+          originDeviceId: plan.originDeviceId,
+          originLabel: item.label,
+          format: item.format,
+        }),
+      );
+    }
+    return added;
+  };
+
+  /** Brings every device copied 1:1 up to date. Changes `cfg`; the caller saves it. */
+  const followDevices = async (cfg: AppConfig): Promise<{ added: MirrorEntry[]; changed: boolean }> => {
+    const added: MirrorEntry[] = [];
+    let changed = false;
+    const contents = new Map<string, RegistryContent | null>();
+    for (const device of cfg.devices.filter((d) => d.follows)) {
+      const follow = device.follows!;
+      const bridge = cfg.bridges.find((b) => b.id === device.bridgeId);
+      const origin = cfg.registries.find((r) => r.id === follow.registryId)?.domainId;
+      const side = bridge && origin ? otherDomain(bridge, origin) : undefined;
+      if (!side) continue;
+      if (!contents.has(follow.registryId)) contents.set(follow.registryId, await readRegistry(follow.registryId).catch(() => null));
+      const content = contents.get(follow.registryId);
+      if (!content) continue; // a registry that cannot answer says nothing about the device
+      const plan = planDeviceCopy(device, cfg, content);
+      if (plan.status !== 'ok') continue;
+      if (applyOriginDevice(device, cfg, plan)) changed = true;
+      const fresh = await copyPlanned(cfg, device, side, plan);
+      for (const m of fresh) log.info({ device: device.label, copy: m.originLabel, kind: m.kind }, 'new on the original device — copied');
+      if (fresh.length) changed = true;
+      added.push(...fresh);
+    }
+    return { added, changed };
+  };
+
   app.get('/api/status', async () => engine.status());
   app.get('/api/config', async () => store.current);
   app.get('/api/channels', async () => engine.channels());
@@ -148,7 +254,7 @@ export function registerRestApi(
   app.put<{ Params: { id: string }; Body: Partial<Bridge> }>('/api/bridges/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
     const i = cfg.bridges.findIndex((b) => b.id === req.params.id);
-    if (i < 0) return reply.code(404).send({ error: 'unknown bridge' });
+    if (i < 0) return reply.code(404).send({ error: 'unknown virtual device' });
     const before = cfg.bridges[i]!;
     const after: Bridge = { ...before, ...req.body, id: req.params.id };
     cfg.bridges[i] = after;
@@ -188,7 +294,7 @@ export function registerRestApi(
 
   app.delete<{ Params: { id: string } }>('/api/bridges/:id', async (req, reply) => {
     const cfg = structuredClone(store.current);
-    if (!cfg.bridges.some((b) => b.id === req.params.id)) return reply.code(404).send({ error: 'unknown bridge' });
+    if (!cfg.bridges.some((b) => b.id === req.params.id)) return reply.code(404).send({ error: 'unknown virtual device' });
     const devices = cfg.devices.filter((d) => d.bridgeId === req.params.id);
     const victims = cfg.receivers.filter((r) => devices.some((d) => d.id === r.deviceId));
     for (const vrx of victims) await engine.deactivate(vrx.id);
@@ -267,7 +373,7 @@ export function registerRestApi(
   app.post<{ Body: Partial<FederationDevice> }>('/api/devices', async (req, reply) => {
     const cfg = structuredClone(store.current);
     if (!req.body.bridgeId || !cfg.bridges.some((b) => b.id === req.body.bridgeId)) {
-      return reply.code(400).send({ error: 'a device needs a bridge' });
+      return reply.code(400).send({ error: 'a device needs a virtual device to hang on' });
     }
     const device: FederationDevice = {
       id: randomUUID(),
@@ -296,6 +402,84 @@ export function registerRestApi(
       await store.save(cfg);
       await onConfigChange();
       return cfg.devices[i];
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  /**
+   * A whole device, 1:1: its senders and receivers now, and what it gains later (the
+   * change feed triggers the re-binding pass, which runs `followDevices`). Picks up a
+   * device on this bridge already holding copies of it, so nothing is copied twice.
+   */
+  app.post<{ Body: { bridgeId?: string; registryId?: string; originDeviceId?: string } }>('/api/devices/copy', async (req, reply) => {
+    const { bridgeId, registryId, originDeviceId } = req.body ?? {};
+    if (!bridgeId || !registryId || !originDeviceId) return reply.code(400).send({ error: 'bridgeId, registryId and originDeviceId are required' });
+    const cfg = structuredClone(store.current);
+    const bridge = cfg.bridges.find((b) => b.id === bridgeId);
+    if (!bridge) return reply.code(404).send({ error: 'unknown virtual device' });
+    const domainId = cfg.registries.find((r) => r.id === registryId)?.domainId;
+    const side = domainId ? otherDomain(bridge, domainId) : undefined;
+    if (!side) return reply.code(400).send({ error: 'that registry is in neither domain of this virtual device' });
+    const already = cfg.devices.find((d) => d.follows?.registryId === registryId && d.follows.originDeviceId === originDeviceId);
+    if (already) return reply.code(409).send({ error: `this device is already copied 1:1 into "${already.label}"` });
+
+    let content: RegistryContent | null;
+    try {
+      content = await readRegistry(registryId);
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
+    if (!content) return reply.code(404).send({ error: `no registry ${registryId}, or it is disabled` });
+    const original = content.devices.find((d) => d.id === originDeviceId);
+    if (!original) return reply.code(404).send({ error: 'that device is not in this registry' });
+    if (original.node_id && cfg.bridges.some((b) => engine.nodeId(b.id) === original.node_id)) {
+      return reply.code(400).send({ error: 'that device is one of ours — copying a copy of ours would loop' });
+    }
+
+    const holding = cfg.devices
+      .filter((d) => d.bridgeId === bridge.id && !d.follows)
+      .map((d) => ({ d, n: cfg.mirrors.filter((m) => m.deviceId === d.id && m.registryId === registryId && m.originDeviceId === originDeviceId).length }))
+      .filter((x) => x.n > 0)
+      .sort((a, b) => b.n - a.n)[0]?.d;
+    const device: FederationDevice = holding ?? { id: randomUUID(), label: original.label, bridgeId: bridge.id, receiverIds: [] };
+    if (!holding) cfg.devices.push(device);
+    device.follows = { registryId, originDeviceId, originDeviceLabel: original.label };
+
+    const plan = planDeviceCopy(device, cfg, content);
+    if (plan.status !== 'ok') return reply.code(404).send({ error: plan.reason });
+    applyOriginDevice(device, cfg, plan);
+    const added = await copyPlanned(cfg, device, side, plan);
+
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+    const failed: { label: string; error: string }[] = [];
+    for (const m of added.filter((x) => x.kind === 'sender')) {
+      await engine.copySender(m.id).catch((e) => failed.push({ label: m.originLabel, error: (e as Error).message }));
+    }
+    return {
+      device,
+      senders: added.filter((m) => m.kind === 'sender').length,
+      receivers: added.filter((m) => m.kind === 'receiver').length,
+      skipped: plan.skipped,
+      failed,
+    };
+  });
+
+  // Stops taking over what is new. The copies stay what they are: ordinary copies.
+  app.delete<{ Params: { id: string } }>('/api/devices/:id/follow', async (req, reply) => {
+    const cfg = structuredClone(store.current);
+    const device = cfg.devices.find((d) => d.id === req.params.id);
+    if (!device) return reply.code(404).send({ error: 'unknown device' });
+    delete device.follows;
+    try {
+      await store.save(cfg);
+      await onConfigChange();
+      return device;
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
@@ -332,10 +516,10 @@ export function registerRestApi(
       const format = req.body?.format ?? 'video';
       // The side decides the direction: offered there, its stream flows to the other one.
       const bridge = cfg.bridges.find((b) => b.id === device.bridgeId);
-      if (!bridge) return reply.code(400).send({ error: 'the device hangs on no bridge' });
+      if (!bridge) return reply.code(400).send({ error: 'the device hangs on no virtual device' });
       const side = req.body?.side ?? bridge.domains[0];
       if (!bridge.domains.includes(side)) {
-        return reply.code(400).send({ error: `domain ${side} is not one of bridge "${bridge.label}"'s two` });
+        return reply.code(400).send({ error: `domain ${side} is not one of virtual device "${bridge.label}"'s two` });
       }
       const existing = cfg.receivers.filter((r) => r.deviceId === device.id).length;
       const created: VirtualReceiver[] = [];
@@ -401,7 +585,11 @@ export function registerRestApi(
     // A proxy is half of a copy. Leaving its copy entry behind kept the original marked
     // "proxied" on the Copy page and listed a copy that no longer had a receiver.
     const mirrorId = cfg.receivers.find((r) => r.id === req.params.id)?.proxyFor?.mirrorId;
-    if (mirrorId) cfg.mirrors = cfg.mirrors.filter((m) => m.id !== mirrorId);
+    if (mirrorId) {
+      const mirror = cfg.mirrors.find((m) => m.id === mirrorId);
+      if (mirror) excludeFromFollow(cfg, mirror);
+      cfg.mirrors = cfg.mirrors.filter((m) => m.id !== mirrorId);
+    }
     cfg.receivers = cfg.receivers.filter((r) => r.id !== req.params.id);
     for (const d of cfg.devices) d.receiverIds = d.receiverIds.filter((id) => id !== req.params.id);
     try {
@@ -499,6 +687,9 @@ export function registerRestApi(
       );
       const ourNodes = new Set(store.current.bridges.map((b) => engine.nodeId(b.id)));
       const copied = new Set(store.current.mirrors.map((m) => `${m.registryId}:${m.originId}`));
+      const followedBy = new Map(
+        store.current.devices.filter((d) => d.follows?.registryId === req.params.id).map((d) => [d.follows!.originDeviceId, d.label]),
+      );
 
       const annotate = (r: { id: string; device_id: string; transport?: string }) => {
         const device = deviceById.get(r.device_id);
@@ -508,6 +699,7 @@ export function registerRestApi(
           nodeLabel: device ? (nodeLabel.get(device.node_id) ?? device.node_id) : null,
           ours: device ? ourNodes.has(device.node_id) : false,
           copied: copied.has(`${req.params.id}:${r.id}`),
+          followedBy: followedBy.get(r.device_id) ?? null,
           controllable: !!device?.controls?.some((c) => c.type.startsWith('urn:x-nmos:control:sr-ctrl/')),
           mxl: isMxl(r),
         };
@@ -591,7 +783,7 @@ export function registerRestApi(
     const origin = cfg.registries.find((r) => r.id === b.registryId)?.domainId;
     const other = bridge && origin ? otherDomain(bridge, origin) : undefined;
     if (!bridge || !other) {
-      return reply.code(400).send({ error: `that registry is in neither domain of the device's bridge` });
+      return reply.code(400).send({ error: `that registry is in neither domain of the device's virtual device` });
     }
     // MXL is shared memory on one host: no multicast to NAT, no SDP to rewrite. A copy
     // could only be refused later — a proxy would hand its MXL original an RTP SDP on
@@ -601,41 +793,20 @@ export function registerRestApi(
       return reply.code(400).send({ error: 'MXL is host-local shared memory — it cannot be federated into another network' });
     }
 
-    const mirror: MirrorEntry = {
-      id: randomUUID(),
+    const mirror = await addCopy(cfg, device, other, {
       kind: b.kind,
-      deviceId: device.id,
       registryId: b.registryId,
       originId: b.originId,
       originDeviceId: b.originDeviceId,
       originLabel: b.originLabel ?? b.originId,
       ...(b.label ? { label: b.label } : {}),
-      enabled: b.enabled ?? true,
-    };
-    // Its grouping comes along. A registry that cannot answer right now does not stop the
-    // copy; the startup pass fills it in later.
-    Object.assign(mirror, await originOf(mirror).catch(() => ({})));
-    cfg.mirrors.push(mirror);
-
-    // A receiver copy needs a proxy receiver to exist as an ordering point. A sender
-    // copy needs nothing extra — its channel is created right away.
-    if (mirror.kind === 'receiver') {
-      const vrxId = randomUUID();
-      cfg.receivers.push({
-        id: vrxId,
-        label: mirror.label || proxyLabel(mirror.originLabel),
-        deviceId: device.id,
-        format: b.format ?? 'video',
-        enabled: true,
-        side: other,
-        proxyFor: {
-          registryId: mirror.registryId,
-          receiverId: mirror.originId,
-          deviceId: mirror.originDeviceId,
-          mirrorId: mirror.id,
-        },
-      });
-      device.receiverIds.push(vrxId);
+      enabled: b.enabled,
+      format: b.format,
+    });
+    // Copied by hand after being removed from a 1:1 copy: wanted after all.
+    if (device.follows?.excluded) {
+      device.follows.excluded = device.follows.excluded.filter((x) => !(x.kind === mirror.kind && x.id === mirror.originId));
+      if (!device.follows.excluded.length) delete device.follows.excluded;
     }
 
     try {
@@ -748,7 +919,9 @@ export function registerRestApi(
       result.recovered.length ||
       result.capsChanged.length ||
       result.missing.some((m) => !store.current.mirrors.find((x) => x.id === m.mirrorId)?.originMissing);
-    if (!changed) return result;
+    // After re-binding: a port that only changed its id is not a new port.
+    const followed = await followDevices(cfg);
+    if (!changed && !followed.changed) return result;
     await store.save(cfg);
     // Publishes what came back and withdraws what went missing: a copy is offline
     // exactly while its original is (Engine.originOffline).
@@ -773,7 +946,12 @@ export function registerRestApi(
         }
       }
     }
-    return result;
+    for (const m of followed.added.filter((x) => x.kind === 'sender')) {
+      // Stays listed with its error, and the reconciler tries again.
+      await engine.copySender(m.id).catch((e) => log.warn({ copy: m.originLabel, err: String(e) }, 'new sender not copied'));
+    }
+    if (followed.added.length) engine.announceDevicesChanged();
+    return { ...result, followed: followed.added.map((m) => m.id) };
   });
 
   app.post<{ Params: { id: string } }>('/api/mirrors/:id/refresh', async (req, reply) => {
@@ -807,6 +985,7 @@ export function registerRestApi(
         for (const d of cfg.devices) d.receiverIds = d.receiverIds.filter((id) => id !== proxy.id);
       }
     }
+    excludeFromFollow(cfg, mirror);
     cfg.mirrors = cfg.mirrors.filter((m) => m.id !== req.params.id);
 
     try {
@@ -880,7 +1059,7 @@ export function registerRestApi(
       } else if (target.type === 'bridge') {
         entity.label = DEFAULT_BRIDGE_LABEL;
       } else if (target.type === 'device') {
-        entity.label = DEFAULT_DEVICE_LABEL;
+        entity.label = (entity as FederationDevice).follows?.originDeviceLabel ?? DEFAULT_DEVICE_LABEL;
       } else if (proxyMirror) {
         entity.label = proxyLabel(proxyMirror.originLabel);
       }

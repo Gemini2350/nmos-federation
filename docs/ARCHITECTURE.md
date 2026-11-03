@@ -22,6 +22,10 @@ The software is a **broker, not a media path**:
 
 ## 2. Terms
 
+The GUI calls a **bridge** a **Virtual Device**. Code, configuration (`bridges`), the REST API
+and this document keep "bridge": renaming stored keys would gain nothing and break existing
+configurations. It is still the NMOS node; the devices under it are NMOS devices.
+
 - **Domain** — a network with its own registry view: its own interface, its own
   federation pool, its own L3 interface on both switches. Exactly one domain is the
   internal one, plus **any number of external ones**.
@@ -351,6 +355,30 @@ Changing either only moves registrations: the NAT and the multicast groups stay 
 they are, and a deselected registry has the copy removed. At least one registry is
 always kept; chosen registries that are later disabled drop out, and if none is left
 the default applies again.
+
+### A whole device, 1:1
+
+`POST /api/devices/copy` copies every sender and receiver of a device in a registry into a
+device of its own. The device records `follows` (registry, origin device id and label); its
+ports are ordinary copies and follow their originals like any other. `federation/device-copy.ts`
+only decides what has no copy yet.
+
+New ports are found without polling. The origin watcher also subscribes for registries holding
+a followed device, even before it has a copy; a resource on that device with no copy bound to
+it raises `origin-added`, once per id, and the debounced re-binding pass runs. That pass
+re-binds first and follows second, so a port that only changed its id is not taken for a new
+one. The ten-minute safety pass covers a feed that is down.
+
+| Situation | Behaviour |
+|---|---|
+| Port removed by hand | recorded in `follows.excluded`, by id and label; not copied again |
+| Port gone from the original | offline, same id, stays until removed — a restart looks identical |
+| Same name as a copy still missing its original | waits; a second copy would be worse |
+| Copied into another device earlier | listed as skipped, not copied twice |
+| MXL, no manifest, no IS-05 control | listed as skipped with the reason |
+| Device back under new ids | found by its label if exactly one matches, otherwise left alone |
+| Device renamed at the source | a copy's name follows unless it was renamed by hand |
+| One of our own devices | refused: it would loop |
 
 ### Originals that change their ids
 

@@ -34,6 +34,7 @@ server/src/
   nmos/control-proxy.ts     IS-12 / IS-08 of an original, proxied with ids translated
   nmos/annotation*.ts       IS-13: bridge node, devices, receivers, copies renamable from a controller
   federation/passthrough.ts when a device passes an original's controls through
+  federation/device-copy.ts  a whole device 1:1: what it lacks, what is kept out
   federation/grouping.ts    natural grouping (BCP-002-01) per port
   federation/origin-watch.ts query-API subscriptions: copies follow their original's SDP
   switch/driver.ts          driver interface program/unprogram/readState
@@ -108,6 +109,11 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
   node API via `inject`). Its Annotation API is per bridge node (`/x-nmos-bridge/<node>/…`)
   because one node API serves several bridges. Managed tags (group hint, alias) always win
   the tag merge; a group hint PATCH sets group/role instead of being stored as a tag.
+- **"Virtual Device" is the GUI's word for a bridge.** Only user-facing text uses it; code,
+  config keys and the REST API say `bridge`.
+- **A followed device never deletes copies on its own.** A registry cannot tell a restart
+  from a deletion, so a missing port goes offline with the same id. Re-binding runs before
+  following, or a port that only changed its id gets copied twice.
 - **`.dockerignore` matters.** Without it the build context carries both
   `node_modules` trees and "load build context" takes minutes on a virtiofs-backed
   Docker host.

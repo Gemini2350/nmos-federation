@@ -5,13 +5,13 @@ import { domainName, registryName } from '../names';
 import BrowseList from './BrowseList.vue';
 
 /**
- * The source half of the Bridges page: browse a registry and copy what is there into
+ * The source half of the Virtual Devices page: browse a registry and copy what is there into
  * the target device picked on the right. A sender copy is published in the bridge's
  * other domain, a receiver proxy offered there — a copy always runs away from the
  * registry it comes from, so the registry only has to sit in one of the bridge's two
  * domains.
  */
-const props = defineProps<{ cfg: Config | null; target: Device | null; bridge: Bridge | null }>();
+const props = defineProps<{ cfg: Config | null; target: Device | null; bridge: Bridge | null; bridges: Bridge[] }>();
 const emit = defineEmits<{ changed: []; notice: [text: string]; error: [text: string | null] }>();
 
 const senders = ref<BrowseSender[]>([]);
@@ -39,6 +39,17 @@ const inBridge = computed(() => !!props.bridge && props.bridge.domains.includes(
 const otherSide = computed(() =>
   props.bridge ? (props.bridge.domains[0] === originDomain.value ? props.bridge.domains[1] : props.bridge.domains[0]) : '',
 );
+
+/**
+ * Where a whole device goes: the virtual device of the selected target, otherwise the
+ * only one joining this registry's domain. With several and no target, the choice is
+ * the operator's.
+ */
+const deviceBridge = computed(() => {
+  if (inBridge.value) return props.bridge;
+  const candidates = props.bridges.filter((b) => b.domains.includes(originDomain.value));
+  return candidates.length === 1 ? candidates[0]! : null;
+});
 
 /** One line per registry: live when every feed of it (senders, receivers) is. */
 const feeds = computed(() => {
@@ -115,6 +126,12 @@ async function browse(quiet = false) {
 }
 defineExpose({ browse });
 
+const deviceTitle = computed(() =>
+  deviceBridge.value
+    ? `Copies every sender and receiver of this device into a device of its own in ${deviceBridge.value.label}. What the device gains later is copied too.`
+    : 'Several virtual devices join this domain — click a device in the one it should go to',
+);
+
 const formatOf = (format: string): 'video' | 'audio' | 'data' =>
   format.endsWith(':audio') ? 'audio' : format.endsWith(':data') ? 'data' : 'video';
 
@@ -130,6 +147,27 @@ function toggle(kind: 'sender' | 'receiver', ids: string[], on: boolean) {
     if (on) selected[kind].add(id);
     else selected[kind].delete(id);
   }
+}
+
+/** The whole device, 1:1 — into a device of its own, and what it gains later follows. */
+async function copyDevice(device: { key: string; label: string }) {
+  const bridge = deviceBridge.value;
+  if (!bridge) return emit('error', 'several virtual devices join this domain — click a device in the one it should go to');
+  busy.value = true;
+  emit('notice', `Copying ${device.label}…`);
+  try {
+    const res = await api.copyDevice({ bridgeId: bridge.id, registryId: sourceRegistry.value, originDeviceId: device.key });
+    const parts = [`${res.senders} sender(s)`, `${res.receivers} receiver(s)`];
+    if (res.skipped.length) parts.push(`${res.skipped.length} not copied`);
+    emit('notice', `${device.label} copied 1:1 into ${bridge.label}: ${parts.join(', ')}`);
+    emit('error', res.failed.length ? res.failed.map((f) => `${f.label}: ${f.error}`).join(' · ') : null);
+    emit('changed');
+  } catch (e) {
+    emit('error', (e as Error).message);
+  } finally {
+    busy.value = false;
+  }
+  await browse(true);
 }
 
 async function copySelected(kind: 'sender' | 'receiver') {
@@ -198,7 +236,7 @@ async function copySelected(kind: 'sender' | 'receiver') {
 
     <p v-if="!target" class="hint">Click a device on the right to make it the target.</p>
     <p v-else-if="!inBridge && sourceRegistry" class="warn">
-      {{ registryName(sourceRegistry) }} is in {{ domainName(originDomain) }}, which the bridge of
+      {{ registryName(sourceRegistry) }} is in {{ domainName(originDomain) }}, which the virtual device of
       “{{ target.label }}” does not join ({{ domainName(bridge?.domains[0] ?? '') }} ⇄ {{ domainName(bridge?.domains[1] ?? '') }}).
     </p>
 
@@ -221,6 +259,10 @@ async function copySelected(kind: 'sender' | 'receiver') {
       @toggle="(ids, on) => toggle('sender', ids, on)"
     >
       <template #head><th>Essence</th></template>
+      <template #device="{ device: d }">
+        <small v-if="d.rows[0]?.followedBy" class="ok follow">1:1 in {{ d.rows[0].followedBy }}</small>
+        <button v-else-if="!d.rows[0]?.ours" class="whole" :disabled="busy || !deviceBridge" :title="deviceTitle" @click.stop="copyDevice(d)">Copy 1:1</button>
+      </template>
       <template #cells="{ row: s }">
         <td>
           <template v-if="s.flow">{{ s.flow.media_type }}<small v-if="s.flow.frame_width">{{ s.flow.frame_width }}×{{ s.flow.frame_height }}</small></template>
@@ -255,6 +297,10 @@ async function copySelected(kind: 'sender' | 'receiver') {
       @toggle="(ids, on) => toggle('receiver', ids, on)"
     >
       <template #head><th>Accepts</th><th>Currently</th></template>
+      <template #device="{ device: d }">
+        <small v-if="d.rows[0]?.followedBy" class="ok follow">1:1 in {{ d.rows[0].followedBy }}</small>
+        <button v-else-if="!d.rows[0]?.ours" class="whole" :disabled="busy || !deviceBridge" :title="deviceTitle" @click.stop="copyDevice(d)">Copy 1:1</button>
+      </template>
       <template #cells="{ row: r }">
         <td>{{ (r.caps?.media_types ?? []).join(', ') || '—' }}</td>
         <td><small>{{ currently(r) }}</small></td>
@@ -282,6 +328,8 @@ select, input { padding: 0.3rem 0.4rem; }
 h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin: 1rem 0 0.3rem; }
 h3 small { text-transform: none; letter-spacing: 0; margin-left: 0.4rem; opacity: 0.8; }
 .bulk { margin: 0.2rem 0 0.4rem; }
+.whole { margin-left: 0.5rem; padding: 0 0.4rem; font-size: 0.75rem; }
+.follow { margin-left: 0.5rem; font-size: 0.75rem; }
 .hint { font-size: 0.85rem; color: #2e7fc0; margin: 0.5rem 0; }
 .warn { color: #c08a2e; font-size: 0.85rem; }
 .ok { color: #2e9e4f; }

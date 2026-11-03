@@ -39,7 +39,7 @@ import type { ConnectionState, StateStore } from './state.js';
 import { log } from '../util/log.js';
 
 export interface EngineEvent {
-  type: 'channel' | 'registry' | 'switch' | 'origin-gone' | 'origin-back' | 'origin-changed';
+  type: 'channel' | 'registry' | 'switch' | 'origin-gone' | 'origin-back' | 'origin-changed' | 'origin-added' | 'devices';
   [key: string]: unknown;
 }
 
@@ -107,6 +107,9 @@ export class Engine {
       onGone: (target) => this.emit({ type: 'origin-gone', registryId: target.registryId, originId: target.originId }),
       onModified: (target) => this.emit({ type: 'origin-changed', registryId: target.registryId, originId: target.originId }),
       onBack: (registryId) => this.emit({ type: 'origin-back', registryId }),
+      followed: () =>
+        this.cfg.devices.flatMap((d) => (d.follows && this.queries.has(d.follows.registryId) ? [{ registryId: d.follows.registryId, deviceId: d.follows.originDeviceId }] : [])),
+      onAdded: (registryId) => this.emit({ type: 'origin-added', registryId }),
     });
   }
 
@@ -209,6 +212,10 @@ export class Engine {
   }
 
   // -- Events --------------------------------------------------------------
+  /** Ports appeared without anyone asking the GUI to: it should read the devices again. */
+  announceDevicesChanged(): void {
+    this.emit({ type: 'devices' });
+  }
   on(fn: (e: EngineEvent) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);

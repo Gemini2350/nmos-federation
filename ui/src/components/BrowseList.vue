@@ -36,6 +36,8 @@ defineSlots<{
   head(): unknown;
   cells(props: { row: T }): unknown;
   status(props: { row: T }): unknown;
+  /** Beside a device's name: an action on the device as a whole. */
+  device(props: { device: { key: string; label: string; rows: T[] } }): unknown;
 }>();
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
@@ -175,6 +177,7 @@ const span = computed(() => props.colClasses.length + 2);
             <td :colspan="span">
               <span class="chev" :class="{ hidden: searching }">{{ deviceOpen(d.key) ? '▾' : '▸' }}</span>
               {{ d.label }} <small class="meta">{{ summary(d.rows) }}</small>
+              <slot name="device" :device="d" />
             </td>
           </tr>
           <template v-if="deviceOpen(d.key)">

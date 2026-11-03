@@ -70,7 +70,7 @@ export interface Switch {
   join: 'igmpStatic' | 'pim' | 'none';
 }
 
-/** A bridge between two domains, and the NMOS node everything under it belongs to. */
+/** A bridge ("Virtual Device" in the GUI) between two domains, and the NMOS node everything under it belongs to. */
 export interface Bridge {
   id: string;
   label: string;
@@ -96,11 +96,21 @@ export interface GroupHint {
   scope?: string;
 }
 
+/** A device copied 1:1 from a registry: what appears on the original is copied too. */
+export interface DeviceFollow {
+  registryId: string;
+  originDeviceId: string;
+  originDeviceLabel: string;
+  /** On the original but not copied, with the reason. */
+  skipped?: { kind: 'sender' | 'receiver'; label: string; reason: string }[];
+}
+
 export interface Device {
   id: string;
   label: string;
   bridgeId: string;
   receiverIds: string[];
+  follows?: DeviceFollow;
   receivers?: (VirtualReceiver & { origin?: { label: string; registryId: string } | null; offline?: boolean; groupHint?: GroupHint | null })[];
   /** Sender copies on this device: no virtual receiver, but ports on it all the same. */
   senderCopies?: {
@@ -161,6 +171,8 @@ export interface BrowseSender {
   /** Belongs to one of our own nodes — copying a copy is rarely what you want. */
   ours: boolean;
   copied: boolean;
+  /** Its device is copied 1:1 into this device of ours. */
+  followedBy?: string | null;
   controllable: boolean;
   /** MXL (host-local shared memory): shown, never copyable. */
   mxl?: boolean;
@@ -182,6 +194,8 @@ export interface BrowseReceiver {
   subscription?: { sender_id: string | null; active: boolean };
   ours: boolean;
   copied: boolean;
+  /** Its device is copied 1:1 into this device of ours. */
+  followedBy?: string | null;
   /** Advertises an sr-ctrl control, so it can be driven over IS-05. */
   controllable: boolean;
   /** MXL (host-local shared memory): shown, never copyable. */
@@ -346,6 +360,12 @@ export const api = {
       body: JSON.stringify(d),
     }),
   deleteDevice: (id: string) => req<{ ok: boolean }>(`/devices/${id}`, { method: 'DELETE' }),
+  copyDevice: (body: { bridgeId: string; registryId: string; originDeviceId: string }) =>
+    req<{ device: Device; senders: number; receivers: number; skipped: NonNullable<DeviceFollow['skipped']>; failed: { label: string; error: string }[] }>('/devices/copy', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  stopFollowing: (id: string) => req<Device>(`/devices/${id}/follow`, { method: 'DELETE' }),
   addReceivers: (deviceId: string, body: { count: number; pattern: string; format: VirtualReceiver['format']; side?: string }) =>
     req<VirtualReceiver[]>(`/devices/${deviceId}/receivers`, { method: 'POST', body: JSON.stringify(body) }),
   setReceiverGroup: (id: string, change: { group?: string; role?: string }) =>

@@ -131,11 +131,23 @@ export interface Bridge {
 }
 
 /** A group of ports on a bridge — one NMOS device under the bridge's node. */
+/** A device copied 1:1 from a registry: what appears on the original is copied too. */
+export interface DeviceFollow {
+  registryId: string;
+  originDeviceId: string;
+  originDeviceLabel: string;
+  /** Removed from the copy by hand; a later pass does not bring these back. */
+  excluded?: { kind: 'sender' | 'receiver'; id: string; label: string }[];
+  /** On the original but not copied, with the reason. */
+  skipped?: { kind: 'sender' | 'receiver'; label: string; reason: string }[];
+}
+
 export interface FederationDevice {
   id: string;
   label: string;
   bridgeId: string;
   receiverIds: string[];
+  follows?: DeviceFollow;
   /** IS-13 annotation: description and own tags, when set (see nmos/annotation.ts). */
   description?: string;
   tags?: Record<string, string[]>;

@@ -12,9 +12,10 @@ const router = createRouter({
     { path: '/status', component: Status, name: 'Status' },
     // The page was called Channels; old links and bookmarks land on it.
     { path: '/channels', redirect: '/status' },
-    { path: '/bridges', component: Bridges, name: 'Bridges' },
-    // Copying moved onto the Bridges page; old links and bookmarks land there.
-    { path: '/copy', redirect: '/bridges' },
+    { path: '/virtual-devices', component: Bridges, name: 'Virtual Devices' },
+    // The page was called Bridges, and copying had its own; old links land here.
+    { path: '/bridges', redirect: '/virtual-devices' },
+    { path: '/copy', redirect: '/virtual-devices' },
     { path: '/settings', component: Settings, name: 'Settings' },
   ],
 });

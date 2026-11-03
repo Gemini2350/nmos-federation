@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api, type Bridge, type Config, type Device, type Mirror, type VirtualReceiver } from '../api';
 import { domainName, primeFromConfig, registryName, registryNames } from '../names';
 import InfoHint from '../components/InfoHint.vue';
@@ -7,7 +7,7 @@ import EditableName from '../components/EditableName.vue';
 import RegistryBrowser from '../components/RegistryBrowser.vue';
 
 /**
- * Bridges and copies on one page: on the left a registry's senders and receivers (the
+ * Virtual devices (bridges, in the code and the API) and copies on one page: on the left a registry's senders and receivers (the
  * source), on the right the bridges with their devices (the target). Clicking a device
  * makes it the target of the copy buttons on the left; what is copied appears in it at
  * once, and everything a copy needs — name, group, where it is shared, its state,
@@ -213,7 +213,18 @@ async function removeCopy(fn: () => Promise<unknown>) {
   await browser.value?.browse(true);
 }
 
-onMounted(refresh);
+// A device copied 1:1 gains ports without anyone touching this page.
+let events: WebSocket | undefined;
+onMounted(() => {
+  void refresh();
+  events = api.events();
+  events.onmessage = (ev) => {
+    if ((JSON.parse(String(ev.data)) as { type?: string }).type !== 'devices') return;
+    void refresh();
+    void browser.value?.browse(true);
+  };
+});
+onBeforeUnmount(() => events?.close());
 </script>
 
 <template>
@@ -228,10 +239,12 @@ onMounted(refresh);
       <h2>
         Copy from a registry
         <InfoHint wide>
-          A <strong>sender</strong> copy reads the original's SDP, NATs the stream into the bridge's other domain
+          A <strong>sender</strong> copy reads the original's SDP, NATs the stream into the virtual device's other domain
           and publishes it there. A <strong>receiver</strong> copy creates a proxy in the other domain: connect a
           stream to it and the original receiver is driven over IS-05. A copy always runs away from the
           registry you browse. The target is the device selected on the right.
+          <strong>Copy 1:1</strong> takes a whole device into a device of its own, and what it gains later is
+          copied too.
         </InfoHint>
       </h2>
       <RegistryBrowser
@@ -239,26 +252,27 @@ onMounted(refresh);
         :cfg="cfg"
         :target="target"
         :bridge="targetBridge"
+        :bridges="bridges"
         @changed="afterCopy"
         @notice="notify"
         @error="(e) => (error = e)"
       />
     </aside>
 
-    <!-- ── Target: bridges, devices, ports ── -->
+    <!-- ── Target: virtual devices, devices, ports ── -->
     <section class="target">
       <h2>
-        Bridges
+        Virtual Devices
         <InfoHint wide>
-          A bridge joins two domains and <strong>is</strong> an NMOS node: every registry in either domain
+          A virtual device joins two domains and <strong>is</strong> an NMOS node: every registry in either domain
           shows it under this name. It carries streams both ways — each virtual receiver is offered in one
-          of the two domains and its stream flows to the other. Registries and NAT belong to the bridge; a
+          of the two domains and its stream flows to the other. Registries and NAT belong to it; a
           device is simply a group of ports on it, in either direction. Click a device to copy into it.
         </InfoHint>
       </h2>
 
       <details class="new" :open="!bridges.length">
-        <summary>New bridge</summary>
+        <summary>New virtual device</summary>
         <div class="row">
           <label><span>Name <InfoHint text="The NMOS node's label, as every registry will show it. &quot;NMOS Federation&quot; is only the suggestion — name it after what it connects. Rename it any time by clicking the name." /></span><input v-model="draft.label" placeholder="NMOS Federation" /></label>
           <label><span>Domain</span>
@@ -266,7 +280,7 @@ onMounted(refresh);
               <option v-for="d in domains" :key="d.id" :value="d.id">{{ d.label }}</option>
             </select>
           </label>
-          <span class="both" title="a bridge carries streams both ways — each port decides its own direction">⇄</span>
+          <span class="both" title="a virtual device carries streams both ways — each port decides its own direction">⇄</span>
           <label><span>Domain</span>
             <select v-model="draft.domains[1]">
               <option v-for="d in domains" :key="d.id" :value="d.id">{{ d.label }}</option>
@@ -274,13 +288,13 @@ onMounted(refresh);
           </label>
           <label class="check"><input type="checkbox" v-model="draft.nat" /><span>NAT<InfoHint text="Off copies every SDP verbatim and touches no switch — right when the address plans do not collide." /></span></label>
           <label class="check"><input type="checkbox" v-model="draft.grouping" /><span>Grouping<InfoHint text="Natural grouping (BCP-002-01): ports carry group hints so controllers show video, audio and ancillary of one source together. Off publishes no hints; groups you set stay stored." /></span></label>
-          <button :disabled="busy" @click="run(() => api.createBridge(draft))">Create bridge</button>
+          <button :disabled="busy" @click="run(() => api.createBridge(draft))">Create virtual device</button>
         </div>
         <fieldset v-for="dom in draft.domains.filter((x, i) => x && draft.domains.indexOf(x) === i)" v-show="registriesOf(dom).length" :key="dom">
           <legend>Registries in {{ domainName(dom) }} (none ticked = all enabled ones)</legend>
           <label v-for="r in registriesOf(dom)" :key="r.id" class="check"><input type="checkbox" :value="r.id" v-model="draft.registries" /> {{ r.label }}</label>
         </fieldset>
-        <p v-if="domains.length < 2" class="warn">A bridge needs two domains — add a second one under Settings first.</p>
+        <p v-if="domains.length < 2" class="warn">A virtual device needs two domains — add a second one under Settings first.</p>
       </details>
 
       <article v-for="b in bridges" :key="b.id" :class="['bridge', { detached: b.detached }]">
@@ -293,15 +307,15 @@ onMounted(refresh);
               in {{ domainName(b.domains[0]) }}: {{ sharedIn(b, b.domains[0]) }} · in {{ domainName(b.domains[1]) }}: {{ sharedIn(b, b.domains[1]) }}
             </small>
             <small v-if="b.detached" class="bad">
-              Points at {{ (b.missing?.domains ?? []).map(domainName).join(' and ') }}, which does not exist — this bridge registers nothing.
+              Points at {{ (b.missing?.domains ?? []).map(domainName).join(' and ') }}, which does not exist — this virtual device registers nothing.
             </small>
           </div>
           <div class="controls">
-            <label class="check" title="Rebuilds this bridge's channels"><input type="checkbox" :checked="b.nat" @change="patchBridge(b, { nat: ($event.target as HTMLInputElement).checked })" /> NAT</label>
+            <label class="check" title="Rebuilds this virtual device's channels"><input type="checkbox" :checked="b.nat" @change="patchBridge(b, { nat: ($event.target as HTMLInputElement).checked })" /> NAT</label>
             <label class="check" title="Natural grouping (BCP-002-01) — off publishes no group hints; the groups set stay stored"><input type="checkbox" :checked="b.grouping !== false" @change="patchBridge(b, { grouping: ($event.target as HTMLInputElement).checked })" /> Grouping</label>
             <button title="expand all devices" @click="setOpen(devicesOf(b.id).map((d) => d.id), true)">▾ all</button>
             <button title="collapse all devices" @click="setOpen(devicesOf(b.id).map((d) => d.id), false)">▸ all</button>
-            <button :disabled="busy" @click="run(() => api.deleteBridge(b.id))">Delete bridge</button>
+            <button :disabled="busy" @click="run(() => api.deleteBridge(b.id))">Delete virtual device</button>
           </div>
         </header>
 
@@ -318,11 +332,20 @@ onMounted(refresh);
               <strong><EditableName :value="d.label" @save="(label) => rename(() => api.updateDevice(d.id, { label }))" /></strong>
               <span v-if="d.id === targetId" class="tgt">◀ copy target</span>
               <small class="sum">{{ summary(d).text }}<span v-if="summary(d).problems" class="bad"> · {{ summary(d).problems }}</span></small>
+              <small v-if="d.follows" class="pass" title="Every sender and receiver of the original is copied here, and what it gains later follows. Removing a copy keeps it removed; a copy whose original disappears goes offline and stays until you remove it.">
+                1:1 copy of {{ d.follows.originDeviceLabel }} · {{ registryName(d.follows.registryId) }}
+              </small>
+              <small v-if="d.follows?.skipped?.length" class="sum">
+                <span class="bad" :title="d.follows.skipped.map((x) => `${x.label}: ${x.reason}`).join('\n')">{{ d.follows.skipped.length }} not copied</span>
+              </small>
               <small v-if="d.passthrough" class="pass" title="Every port of this device is a copy of one original device, so its control APIs are offered here too — through this software, with ids translated to the copies'.">
                 passes through {{ d.passthrough.apis.join(' and ') }} of {{ d.passthrough.from }} · in {{ domainName(d.passthrough.domainId) }}
               </small>
             </div>
-            <button :disabled="busy" @click.stop="run(() => api.deleteDevice(d.id))">Remove device</button>
+            <div class="device-actions">
+              <button v-if="d.follows" :disabled="busy" title="New ports of the original are no longer copied. The copies stay." @click.stop="run(() => api.stopFollowing(d.id))">Stop following</button>
+              <button :disabled="busy" @click.stop="run(() => api.deleteDevice(d.id))">Remove device</button>
+            </div>
           </header>
 
           <template v-if="isOpen(d)">
@@ -414,7 +437,7 @@ onMounted(refresh);
 
       </article>
 
-      <p v-if="!bridges.length"><small>No bridges yet.</small></p>
+      <p v-if="!bridges.length"><small>No virtual devices yet.</small></p>
     </section>
   </div>
 </template>
@@ -438,6 +461,7 @@ h2 { display: flex; align-items: center; font-size: 1.15rem; margin: 0 0 0.75rem
 .device.target { border-color: #2e7fc0; box-shadow: 0 0 0 1px #2e7fc0; }
 .device > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
 .device table, .device input, .device select, .device button, .device details { cursor: auto; }
+.device-actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
 .tgt { font-size: 0.75rem; color: #2e7fc0; margin-left: 0.5rem; }
 .chev { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 0.3rem 0 0; font-size: 0.9rem; opacity: 0.7; }
 .chev:hover { opacity: 1; }

@@ -74,7 +74,7 @@ The **Status** page shows a status line per registry — resolved address, state
 how many of our resources it holds, the age of the last heartbeat and the last error —
 plus a Test button that probes one registry without changing anything.
 
-Then create a **bridge** between your domain and a partner's — that is the NMOS node
+Then create a **virtual device** between your domain and a partner's — that is the NMOS node
 every registry will show. It carries streams **both ways**. Add **devices** under it, and
 virtual receivers into those; each receiver is offered in one of the two domains and its
 stream flows to the other. The receivers appear in the registry immediately; connecting
@@ -82,33 +82,48 @@ a source to one of them with your usual controller creates the virtual sender on
 other side.
 
 ```
-Bridge "Eigenes Haus ⇄ Partner A"   ← the node, named by you
+Virtual Device "Eigenes Haus ⇄ Partner A"   ← the node, named by you
   ├─ Device "Kameras"               ← one NMOS device, ports in either direction
   └─ Device "Ton"
 ```
 
 ## Copying existing resources
 
-The **Bridges** page has a second half for this, on the left: browse a registry and copy what is
+The **Virtual Devices** page has a second half for this, on the left: browse a registry and copy what is
 already there, without going through a virtual receiver.
 
 - **Sender copy** — reads the original's SDP from its manifest, NATs the stream into
-  the bridge's other domain and publishes the copy there. *Refresh* re-reads the manifest if
+  the virtual device's other domain and publishes the copy there. *Refresh* re-reads the manifest if
   the origin changed.
-- **Receiver proxy** — creates a proxy receiver in the bridge's other domain. Connect a stream
+- **Receiver proxy** — creates a proxy receiver in the virtual device's other domain. Connect a stream
   to it and the original receiver in the other registry is driven over IS-05, so the
   essence actually arrives. The original has to advertise an `sr-ctrl` control;
   receivers that do not are shown as not controllable.
 
-Both hang off a device, and through it off its bridge, which supplies the registries and
+Both hang off a device, and through it off its virtual device, which supplies the registries and
 the NAT setting. Copies keep their original's **natural grouping** (BCP-002-01 group
-hints), and every port can be put into a group of its own on the Bridges page. The direction comes from the registry you copy from: a copy always runs
-into the bridge's other domain. Each copy can be renamed and given its own registries.
+hints), and every port can be put into a group of its own on the Virtual Devices page. The direction comes from the registry you copy from: a copy always runs
+into the virtual device's other domain. Each copy can be renamed and given its own registries.
+
+### Copying a whole device 1:1
+
+**Copy 1:1** beside a device in the registry list copies all of its senders and receivers into
+a device of its own, named after the original — and keeps it that way: the registry's change
+feed reports what the original gains, and it is copied within seconds. Nothing is polled. A
+device on this virtual device already holding copies of the original is taken over rather than
+duplicated.
+
+Control APIs (IS-12, IS-08) pass through as for any device whose ports all come from one
+original. What cannot be copied (MXL, no manifest, no IS-05 control) is listed as *not copied*
+with the reason. A copy removed by hand stays removed. A port that disappears from the
+original is **not** removed: to a registry a restart looks the same as a deletion, so its copy
+goes offline, keeps its id and stays until you remove it. *Stop following* ends the following
+and leaves the copies as they are.
 
 ### Renaming from a controller (IS-13)
 
-Every bridge node offers the AMWA IS-13 Annotation API (`urn:x-nmos:service:annotation/v1.0`
-in its IS-04 `services`), so a controller such as NMOS-Crosspoint can rename the bridge,
+Every virtual device node offers the AMWA IS-13 Annotation API (`urn:x-nmos:service:annotation/v1.0`
+in its IS-04 `services`), so a controller such as NMOS-Crosspoint can rename the virtual device,
 its devices, virtual receivers, proxies and sender copies — and set a description, user
 tags, or a group hint (which becomes the port's natural group and role). The change is
 saved in the same place the GUI edits, so both show the same name; `null` restores the

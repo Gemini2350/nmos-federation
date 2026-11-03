@@ -4,7 +4,7 @@ import { ref, watch } from 'vue';
 /**
  * A name that is edited where it is shown. Saves on Enter or when the field loses
  * focus, Escape restores. An empty name falls back to `fallback` when one is given
- * (a bridge without a name is "NMOS Federation"), otherwise it is refused.
+ * (a virtual device without a name is "NMOS Federation"), otherwise it is refused.
  *
  * Tab and Shift+Tab move to the next or previous name on the page, skipping the
  * buttons in between, with the text selected — renaming a column of receivers is

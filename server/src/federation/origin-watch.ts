@@ -15,6 +15,8 @@ import { log } from '../util/log.js';
  *    re-binding pass runs (`onModified`), which takes over what changed.
  *  - Removed (`onGone`), or something appearing where an original is missing
  *    (`onBack`): the re-binding pass finds out whether it is back, perhaps under new ids.
+ *  - A resource without a copy on a device copied 1:1 (`onAdded`): the same pass copies
+ *    it. Reported once per id; what cannot be copied does not trigger it on every change.
  *
  * The registry opens each connection with the current state of everything. Senders are
  * compared with the version their copy was built from, so a change made while the
@@ -52,12 +54,16 @@ interface Deps {
    * it is back, under its old id or a new one. Deciding which is the re-binding pass's.
    */
   onBack?: (registryId: string) => void;
+  /** Devices copied 1:1: their registries are watched even before they have a copy. */
+  followed?: () => { registryId: string; deviceId: string }[];
+  /** A followed device has a sender or receiver nothing is bound to yet. */
+  onAdded?: (registryId: string) => void;
   /** Reconnect delay; tests make it short. */
   retryMs?: number;
 }
 
 interface Grain {
-  grain?: { data?: { path?: string; pre?: { id?: string; version?: string }; post?: { id?: string; version?: string } }[] };
+  grain?: { data?: { path?: string; pre?: { id?: string; version?: string }; post?: { id?: string; version?: string; device_id?: string } }[] };
 }
 
 interface Sub {
@@ -70,6 +76,8 @@ interface Sub {
   error: string | null;
   /** Last version seen per id — survives reconnects; the baseline for "modified". */
   seen: Map<string, string>;
+  /** Resources already reported to `onAdded`. */
+  announced: Set<string>;
 }
 
 const key = (registryId: string, kind: WatchKind) => `${registryId}|${kind}`;
@@ -81,7 +89,10 @@ export class OriginWatcher {
 
   /** Opens what is needed, closes what is not. Cheap; call after every change. */
   sync(): void {
-    const needed = new Map(this.deps.targets().map((t) => [key(t.registryId, t.kind), t] as const));
+    const needed = new Map<string, { registryId: string; kind: WatchKind }>(this.deps.targets().map((t) => [key(t.registryId, t.kind), t]));
+    for (const { registryId } of this.deps.followed?.() ?? []) {
+      for (const kind of ['sender', 'receiver'] as const) needed.set(key(registryId, kind), { registryId, kind });
+    }
     for (const [k, sub] of this.subs) {
       if (needed.has(k)) continue;
       this.close(sub);
@@ -89,7 +100,7 @@ export class OriginWatcher {
     }
     for (const [k, t] of needed) {
       if (this.subs.has(k)) continue;
-      const sub: Sub = { registryId: t.registryId, kind: t.kind, ws: null, timer: null, closed: false, state: 'connecting', error: null, seen: new Map() };
+      const sub: Sub = { registryId: t.registryId, kind: t.kind, ws: null, timer: null, closed: false, state: 'connecting', error: null, seen: new Map(), announced: new Set() };
       this.subs.set(k, sub);
       void this.open(sub);
     }
@@ -164,7 +175,9 @@ export class OriginWatcher {
         .map((t) => [t.originId, t]),
     );
     const anyMissing = [...watched.values()].some((t) => t.missing);
+    const followed = new Set((this.deps.followed?.() ?? []).filter((f) => f.registryId === sub.registryId).map((f) => f.deviceId));
     let maybeBack = false;
+    let added = false;
     for (const item of msg.grain?.data ?? []) {
       const id = item.post?.id;
       const version = item.post?.version;
@@ -172,12 +185,19 @@ export class OriginWatcher {
         // Removed. The copy keeps running on what it has; whether the original came
         // back under new ids is for the re-binding pass to find out.
         const goneId = item.pre?.id;
-        if (goneId) sub.seen.delete(goneId);
+        if (goneId) {
+          sub.seen.delete(goneId);
+          sub.announced.delete(goneId);
+        }
         const gone = goneId && watched.get(goneId);
         if (gone) this.deps.onGone?.(gone);
         continue;
       }
       const target = watched.get(id);
+      if (!target && item.post?.device_id && followed.has(item.post.device_id) && !sub.announced.has(id)) {
+        sub.announced.add(id);
+        added = true;
+      }
       if (anyMissing && (target?.missing || !item.pre)) maybeBack = true;
       const before = sub.seen.get(id);
       sub.seen.set(id, version);
@@ -186,5 +206,6 @@ export class OriginWatcher {
       if (before !== undefined && before !== version) this.deps.onModified?.(target);
     }
     if (maybeBack) this.deps.onBack?.(sub.registryId);
+    if (added) this.deps.onAdded?.(sub.registryId);
   }
 }

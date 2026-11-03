@@ -181,7 +181,7 @@ async function main() {
   rebind();
   rebindInterval.unref();
   engine.on((e) => {
-    if (e.type !== 'origin-gone' && e.type !== 'origin-back' && e.type !== 'origin-changed') return;
+    if (e.type !== 'origin-gone' && e.type !== 'origin-back' && e.type !== 'origin-changed' && e.type !== 'origin-added') return;
     if (rebindTimer) clearTimeout(rebindTimer);
     rebindTimer = setTimeout(rebind, 3_000);
     rebindTimer.unref();

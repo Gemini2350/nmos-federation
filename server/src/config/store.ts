@@ -122,22 +122,22 @@ export class ConfigStore {
     const bridgeIds = new Set<string>();
     for (const b of cfg.bridges) {
       const name = b.label || b.id;
-      if (bridgeIds.has(b.id)) err(`duplicate bridge ID ${b.id}`);
+      if (bridgeIds.has(b.id)) err(`duplicate virtual device ID ${b.id}`);
       bridgeIds.add(b.id);
-      for (const d of b.domains) if (!domainIds.has(d)) warn(`bridge "${name}" is detached: no domain ${d}`);
-      if (b.domains[0] === b.domains[1]) err(`bridge "${name}": both ends are the same domain`);
+      for (const d of b.domains) if (!domainIds.has(d)) warn(`virtual device "${name}" is detached: no domain ${d}`);
+      if (b.domains[0] === b.domains[1]) err(`virtual device "${name}": both ends are the same domain`);
       for (const rid of b.registries) {
         const reg = cfg.registries.find((r) => r.id === rid);
-        if (!reg) warn(`bridge "${name}": no registry ${rid} — it is ignored`);
+        if (!reg) warn(`virtual device "${name}": no registry ${rid} — it is ignored`);
         else if (!b.domains.includes(reg.domainId)) {
-          warn(`bridge "${name}": registry ${rid} is in neither of its domains — it is ignored`);
+          warn(`virtual device "${name}": registry ${rid} is in neither of its domains — it is ignored`);
         }
       }
     }
 
     for (const dev of cfg.devices) {
       if (!bridgeIds.has(dev.bridgeId)) {
-        warn(`device "${dev.label || dev.id}" is detached: no bridge ${dev.bridgeId}`);
+        warn(`device "${dev.label || dev.id}" is detached: no virtual device ${dev.bridgeId}`);
       }
     }
 
@@ -148,7 +148,7 @@ export class ConfigStore {
       const bridge = device && cfg.bridges.find((b) => b.id === device.bridgeId);
       const from = cfg.registries.find((r) => r.id === m.registryId)?.domainId;
       if (bridge && from && !bridge.domains.includes(from)) {
-        warn(`copy of "${m.originLabel}": its registry is in neither domain of bridge "${bridge.label}" — it cannot run`);
+        warn(`copy of "${m.originLabel}": its registry is in neither domain of virtual device "${bridge.label}" — it cannot run`);
       }
     }
 

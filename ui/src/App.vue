@@ -7,7 +7,7 @@ import { RouterLink, RouterView } from 'vue-router';
     <h1><img src="/icon.svg" alt="" width="24" height="24" />NMOS Federation</h1>
     <nav>
       <RouterLink to="/status">Status</RouterLink>
-      <RouterLink to="/bridges">Bridges</RouterLink>
+      <RouterLink to="/virtual-devices">Virtual Devices</RouterLink>
       <RouterLink to="/settings">Settings</RouterLink>
     </nav>
   </header>
