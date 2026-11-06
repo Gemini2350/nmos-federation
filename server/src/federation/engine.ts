@@ -35,7 +35,7 @@ import type { Bridge } from '../types.js';
 import { createHash } from 'node:crypto';
 import { buildChannelPlan } from './channel.js';
 import type { PoolManager } from './pools.js';
-import type { ConnectionState, StateStore } from './state.js';
+import { emptyConnection, type ConnectionState, type StateStore } from './state.js';
 import { log } from '../util/log.js';
 
 export interface EngineEvent {
@@ -106,6 +106,10 @@ export class Engine {
       },
       onGone: (target) => this.emit({ type: 'origin-gone', registryId: target.registryId, originId: target.originId }),
       onModified: (target) => this.emit({ type: 'origin-changed', registryId: target.registryId, originId: target.originId }),
+      onReceiverState: (target, sub, first) =>
+        void this.followOriginReceiver(target.registryId, target.originId, sub, first).catch((e) =>
+          log.warn({ origin: target.originId, err: String(e) }, 'proxy did not follow its original receiver'),
+        ),
       onBack: (registryId) => this.emit({ type: 'origin-back', registryId }),
       followed: () =>
         this.cfg.devices.flatMap((d) => (d.follows && this.queries.has(d.follows.registryId) ? [{ registryId: d.follows.registryId, deviceId: d.follows.originDeviceId }] : [])),
@@ -1577,13 +1581,17 @@ export class Engine {
    * Teardown. The order is mandatory: unregister the sender first, then clear the
    * switch, then release the pool.
    */
-  async deactivate(vrxId: string): Promise<void> {
+  /**
+   * `releaseRemote: false` leaves a proxy's original receiver alone — when it was
+   * connected to something else at its origin, releasing it would undo that.
+   */
+  async deactivate(vrxId: string, opts: { releaseRemote?: boolean } = {}): Promise<void> {
     const channel = this.deps.state.channelFor(vrxId);
     if (!channel) return;
 
     // A proxied receiver is released before our sender disappears — otherwise it sits
     // subscribed to a stream that is about to stop.
-    if (channel.remoteReceiver?.connected) {
+    if (channel.remoteReceiver?.connected && opts.releaseRemote !== false) {
       const is05 = this.is05.get(channel.remoteReceiver.registryId);
       const proxy = this.cfg.receivers.find((r) => r.id === channel.receiverId)?.proxyFor;
       if (is05 && proxy) {
@@ -1615,6 +1623,103 @@ export class Engine {
     await this.deps.state.save();
     log.info({ channel: channel.id }, 'channel torn down');
     this.emit({ type: 'channel', channel: { ...channel, state: 'idle' } });
+  }
+
+  /**
+   * A proxy shows what its original receiver does.
+   *
+   * Its original can be patched at its origin too — by a controller there, overriding
+   * what was switched through the proxy. Until now the proxy went on claiming its old
+   * connection and kept its channel (NAT, published sender) for a stream nobody took.
+   *
+   * The original's IS-04 subscription decides, read from the registry's change feed:
+   *  - our own sender for this proxy: in step, nothing to do;
+   *  - off: the proxy is off;
+   *  - a sender that exists in the proxy's domain too — a sender copy of it, or the
+   *    source behind another proxy — the proxy shows that sender;
+   *  - any other: the proxy is active without a sender, as IS-05 has it for an SDP
+   *    given by hand. Its stream is not ours to name.
+   * In all but the first the proxy's channel goes, without releasing the original. The
+   * original is never patched from here: the origin's choice stands.
+   *
+   * At startup (`first`) only a connection to another sender counts. "Off" may just be
+   * a patch of ours that failed, and that is reported on the channel, not undone.
+   */
+  async followOriginReceiver(
+    registryId: string,
+    originId: string,
+    sub: { sender_id: string | null; active: boolean },
+    first = false,
+  ): Promise<void> {
+    for (const vrx of this.cfg.receivers) {
+      const proxy = vrx.proxyFor;
+      if (!proxy || proxy.registryId !== registryId || proxy.receiverId !== originId) continue;
+      if (sub.active && sub.sender_id === this.senderNmosId(vrx.id)) continue;
+      if (!sub.active && first) continue;
+      const channel = this.deps.state.channelFor(vrx.id);
+      // Our own patch did not take: the original never was ours, so nothing was overridden.
+      if (!sub.active && channel?.remoteReceiver && !channel.remoteReceiver.connected) continue;
+
+      const next = this.proxyStateFor(vrx, sub);
+      const conn = this.deps.state.connection(vrx.id);
+      const same =
+        conn.active.master_enable === next.master_enable &&
+        conn.active.sender_id === next.sender_id &&
+        conn.active.transport_file.data === next.transport_file.data;
+      if (same && !channel) continue;
+
+      log.info(
+        { proxy: vrx.label, origin: originId, sender: sub.sender_id, active: sub.active },
+        'original receiver switched at its origin — the proxy follows',
+      );
+      if (channel) await this.deactivate(vrx.id, { releaseRemote: false });
+      conn.active = next;
+      conn.staged = structuredClone(next);
+      await this.deps.state.save();
+      await this.syncRegistries();
+      this.emit({ type: 'devices' });
+    }
+  }
+
+  /**
+   * A controller switches a receiver off. A proxy that only shows what its original was
+   * switched to at its origin has no channel to tear down — switching it off then
+   * releases the original, as switching off any proxy does.
+   */
+  async switchOff(vrxId: string): Promise<void> {
+    if (this.deps.state.channelFor(vrxId)) return this.deactivate(vrxId);
+    const proxy = this.cfg.receivers.find((r) => r.id === vrxId)?.proxyFor;
+    const is05 = proxy && this.is05.get(proxy.registryId);
+    if (!proxy || !is05) return;
+    await is05.disconnect(proxy.receiverId, proxy.deviceId).catch((e) => log.warn({ proxy: vrxId, err: String(e) }, 'original receiver not released'));
+  }
+
+  /** The IS-05 state a proxy takes when its original receives `sub`. */
+  private proxyStateFor(vrx: VirtualReceiver, sub: { sender_id: string | null; active: boolean }): ConnectionState {
+    if (!sub.active) return emptyConnection();
+    const side = this.bridgeOfReceiver(vrx.id) ? this.sideOf(vrx, this.bridgeOfReceiver(vrx.id)!) : null;
+    const connected = (senderId: string, sdp: string | null): ConnectionState => ({
+      ...emptyConnection(),
+      sender_id: senderId,
+      master_enable: true,
+      transport_file: sdp ? { data: sdp, type: 'application/sdp' } : { data: null, type: null },
+    });
+    if (sub.sender_id && side) {
+      // A copy of that sender, published where the proxy is.
+      for (const m of this.cfg.mirrors) {
+        if (m.kind !== 'sender' || m.registryId !== vrx.proxyFor!.registryId || m.originId !== sub.sender_id) continue;
+        const ch = this.deps.state.channelFor(Engine.mirrorKey(m.id));
+        if (ch?.state === 'active' && ch.targetDomain === side) return connected(this.senderNmosId(Engine.mirrorKey(m.id)), ch.senderSdp ?? null);
+      }
+      // The stream another proxy brought over: its source, in the proxy's domain.
+      for (const other of this.cfg.receivers) {
+        if (!other.proxyFor || other.id === vrx.id || this.senderNmosId(other.id) !== sub.sender_id) continue;
+        const ch = this.deps.state.channelFor(other.id);
+        const src = this.deps.state.connection(other.id).active;
+        if (ch?.state === 'active' && ch.sourceDomain === side && src.sender_id) return connected(src.sender_id, src.transport_file.data);
+      }
+    }
+    return { ...emptyConnection(), master_enable: true };
   }
 
   /** Desired/actual reconciliation: catch registries up, verify switch rules. */

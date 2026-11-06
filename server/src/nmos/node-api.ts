@@ -284,6 +284,7 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
 
       // Immediate: staged becomes active, then the federation chain runs.
       const activationTime = `${Math.floor(Date.now() / 1000)}:0`;
+      const wasActive = conn.active.master_enable;
       conn.active = structuredClone(staged);
       conn.staged = emptyConnection();
       await state.save();
@@ -291,6 +292,8 @@ export function registerNodeApi(app: FastifyInstance, domain: DomainConfig, engi
       try {
         if (staged.master_enable && staged.transport_file.data) {
           await engine.activate(vrx.id, conn.active);
+        } else if (wasActive) {
+          await engine.switchOff(vrx.id);
         } else {
           await engine.deactivate(vrx.id);
         }

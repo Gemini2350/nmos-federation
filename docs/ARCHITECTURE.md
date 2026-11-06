@@ -500,6 +500,26 @@ because the far end was briefly unreachable is worse than leaving it running.
 On teardown the remote receiver is released **before** our sender disappears — the same
 ordering rule as everywhere else.
 
+### A proxy follows its original receiver
+
+The original behind a proxy can be switched at its origin too, overriding what was switched
+through the proxy. The origin watcher reports every change of the original's IS-04
+`subscription`, and `Engine.followOriginReceiver` brings the proxy in line:
+
+| Original receives | Proxy shows | Proxy's channel |
+|---|---|---|
+| our sender for this proxy | unchanged | kept |
+| nothing (off) | off | torn down |
+| a sender with a copy in the proxy's domain | that copy | torn down |
+| the stream another proxy brought over | that proxy's source | torn down |
+| anything else | active, no sender (as for a hand-given SDP) | torn down |
+
+The original is never patched from there — the origin's choice stands. Our own sender id
+per proxy is stable across switches, so a switch through the proxy never looks foreign.
+At startup only a connection to another sender counts: "off" may be a patch of ours that
+failed, which the channel reports. Switching a proxy off over IS-05 while it shows the
+origin's choice releases the original (`Engine.switchOff`), as switching off any proxy does.
+
 ### Browsing a registry: pagination
 
 Listing a registry's resources is not one GET. Five things have to be right, and each

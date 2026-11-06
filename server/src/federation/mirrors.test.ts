@@ -1144,3 +1144,96 @@ test('IS-13: copies and proxies are annotatable, what is named after its source 
   assert.deepEqual(sender.tags['urn:x-nmos:tag:user:truck'], ['OB1']);
   assert.deepEqual(sender.tags['urn:x-nmos-federation:alias-of'], [ORIGIN_SENDER]);
 });
+
+test('a proxy follows its original receiver when that is switched at its origin', async (t) => {
+  const internal = await startStub();
+  const partner = await startStub();
+  const wsApp = Fastify();
+  await wsApp.register(fastifyWebsocket);
+  const sockets = new Set<{ send(data: string): void; on(ev: 'close', fn: () => void): void }>();
+  wsApp.get('/ws', { websocket: true }, (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await wsApp.listen({ port: 0, host: '127.0.0.1' });
+  partner.wsHref = `ws://127.0.0.1:${(wsApp.server.address() as { port: number }).port}/ws`;
+  // A sender at the partner, copied into our domain — what the original gets switched to.
+  partner.senderId = randomUUID();
+
+  const dir = await mkdtemp(join(tmpdir(), 'nmos-mirror-'));
+  const proxyMirror = randomUUID();
+  const copyId = randomUUID();
+  const { engine, cfg, state } = await build(internal, partner, dir, {
+    mirrors: [
+      { id: proxyMirror, kind: 'receiver', deviceId: 'dev1', registryId: 'regA', originId: ORIGIN_RECEIVER, originDeviceId: ORIGIN_DEVICE, originLabel: 'MON03', enabled: true },
+      { id: copyId, kind: 'sender', deviceId: 'dev1', registryId: 'regA', originId: partner.senderId, originDeviceId: ORIGIN_DEVICE, originLabel: 'CAM07 Video', enabled: true },
+    ],
+    receivers: [
+      { id: 'proxy', label: 'Proxy MON03', deviceId: 'dev1', format: 'video', enabled: true, side: 'internal',
+        proxyFor: { registryId: 'regA', receiverId: ORIGIN_RECEIVER, deviceId: ORIGIN_DEVICE, mirrorId: proxyMirror } },
+    ],
+  });
+  cfg.devices[0]!.receiverIds = ['proxy'];
+  t.after(async () => {
+    await engine.stop();
+    await wsApp.close();
+    internal.server.close();
+    partner.server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await engine.start();
+  await engine.copySender(copyId);
+  const conn = { sender_id: ORIGIN_SENDER, master_enable: true, transport_file: { data: SDP, type: 'application/sdp' }, transport_params: [{}, {}] };
+  state.connection('proxy').active = structuredClone(conn);
+  await engine.activate('proxy', conn);
+  assert.equal(partner.patches.length, 1, 'the original was driven through the proxy');
+
+  const until = async (cond: () => boolean, what: string) => {
+    for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(cond(), what);
+  };
+  await until(() => sockets.size >= 1, 'subscribed');
+  let v = 200;
+  const original = (sender_id: string | null, active: boolean) => {
+    const post = { id: ORIGIN_RECEIVER, version: `${v++}:0`, device_id: ORIGIN_DEVICE, subscription: { sender_id, active } };
+    const grain = { grain_type: 'event', grain: { topic: '/receivers/', data: [{ path: ORIGIN_RECEIVER, pre: post, post }] } };
+    for (const s of sockets) s.send(JSON.stringify(grain));
+  };
+  const proxy = () => state.connection('proxy').active;
+  const ourReceiver = () => engine.domainResources('internal').receivers.find((r) => r.id === engine.receiverNmosId('proxy'))!;
+
+  // In step: our own sender on the original — nothing happens.
+  original(engine.senderNmosId('proxy'), true);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.ok(state.channelFor('proxy'), 'still running');
+
+  // Switched at the origin to a sender we have a copy of: the proxy shows that copy.
+  original(partner.senderId, true);
+  const copySender = engine.senderNmosId(Engine.mirrorKey(copyId));
+  await until(() => proxy().sender_id === copySender, 'the proxy shows the copy of the new sender');
+  assert.equal(proxy().master_enable, true);
+  assert.equal(state.channelFor('proxy'), undefined, 'its own channel is gone — nobody takes that stream');
+  assert.equal(partner.patches.length, 1, 'the original is not touched: the origin decided');
+  assert.deepEqual(ourReceiver().subscription, { sender_id: copySender, active: true });
+
+  // To something we cannot name here: active, without a sender.
+  original(randomUUID(), true);
+  await until(() => proxy().sender_id === null && proxy().master_enable, 'active, no sender');
+
+  // Switched off through the proxy while it shows the origin's choice: the original is
+  // released, as with any proxy.
+  state.connection('proxy').active.master_enable = true;
+  await engine.switchOff('proxy');
+  assert.equal(partner.patches.length, 2, 'released');
+  assert.equal((partner.patches.at(-1)!.body as { master_enable?: boolean }).master_enable, false);
+
+  // Switched off at the origin: the proxy is off.
+  original(null, false);
+  await until(() => !proxy().master_enable, 'the proxy is off');
+  assert.deepEqual(ourReceiver().subscription, { sender_id: null, active: false });
+  assert.equal(partner.patches.length, 2, 'nothing sent back to the origin');
+
+  // Switched through the proxy again: driven as before.
+  await engine.activate('proxy', conn);
+  assert.equal(partner.patches.length, 3);
+});

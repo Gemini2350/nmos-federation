@@ -114,6 +114,9 @@ Everything is testable without hardware: `switch/mock.ts` logs the commands and
 - **A followed device never deletes copies on its own.** A registry cannot tell a restart
   from a deletion, so a missing port goes offline with the same id. Re-binding runs before
   following, or a port that only changed its id gets copied twice.
+- **A proxy mirrors its original receiver, never the reverse.** A switch made at the
+  origin is taken over (`followOriginReceiver`) and its channel dropped without releasing
+  the original; nothing is patched back. Only an IS-05 switch-off on the proxy releases it.
 - **`.dockerignore` matters.** Without it the build context carries both
   `node_modules` trees and "load build context" takes minutes on a virtiofs-backed
   Docker host.

@@ -15,6 +15,8 @@ import { log } from '../util/log.js';
  *    re-binding pass runs (`onModified`), which takes over what changed.
  *  - Removed (`onGone`), or something appearing where an original is missing
  *    (`onBack`): the re-binding pass finds out whether it is back, perhaps under new ids.
+ *  - A proxied original receiver connected or disconnected at its origin
+ *    (`onReceiverState`): its proxy shows the same, see Engine.followOriginReceiver.
  *  - A resource without a copy on a device copied 1:1 (`onAdded`): the same pass copies
  *    it. Reported once per id; what cannot be copied does not trigger it on every change.
  *
@@ -54,6 +56,11 @@ interface Deps {
    * it is back, under its old id or a new one. Deciding which is the re-binding pass's.
    */
   onBack?: (registryId: string) => void;
+  /**
+   * A watched receiver's IS-04 subscription changed — or was seen for the first time
+   * (`first`), which covers what changed while nobody was watching.
+   */
+  onReceiverState?: (target: WatchTarget, subscription: { sender_id: string | null; active: boolean }, first: boolean) => void;
   /** Devices copied 1:1: their registries are watched even before they have a copy. */
   followed?: () => { registryId: string; deviceId: string }[];
   /** A followed device has a sender or receiver nothing is bound to yet. */
@@ -63,7 +70,7 @@ interface Deps {
 }
 
 interface Grain {
-  grain?: { data?: { path?: string; pre?: { id?: string; version?: string }; post?: { id?: string; version?: string; device_id?: string } }[] };
+  grain?: { data?: { path?: string; pre?: { id?: string; version?: string }; post?: { id?: string; version?: string; device_id?: string; subscription?: { sender_id?: string | null; active?: boolean } } }[] };
 }
 
 interface Sub {
@@ -78,6 +85,8 @@ interface Sub {
   seen: Map<string, string>;
   /** Resources already reported to `onAdded`. */
   announced: Set<string>;
+  /** Last subscription seen per receiver, to report only changes. */
+  subscriptions: Map<string, string>;
 }
 
 const key = (registryId: string, kind: WatchKind) => `${registryId}|${kind}`;
@@ -100,7 +109,7 @@ export class OriginWatcher {
     }
     for (const [k, t] of needed) {
       if (this.subs.has(k)) continue;
-      const sub: Sub = { registryId: t.registryId, kind: t.kind, ws: null, timer: null, closed: false, state: 'connecting', error: null, seen: new Map(), announced: new Set() };
+      const sub: Sub = { registryId: t.registryId, kind: t.kind, ws: null, timer: null, closed: false, state: 'connecting', error: null, seen: new Map(), announced: new Set(), subscriptions: new Map() };
       this.subs.set(k, sub);
       void this.open(sub);
     }
@@ -187,6 +196,7 @@ export class OriginWatcher {
         const goneId = item.pre?.id;
         if (goneId) {
           sub.seen.delete(goneId);
+          sub.subscriptions.delete(goneId);
           sub.announced.delete(goneId);
         }
         const gone = goneId && watched.get(goneId);
@@ -202,6 +212,12 @@ export class OriginWatcher {
       const before = sub.seen.get(id);
       sub.seen.set(id, version);
       if (!target || target.missing) continue;
+      if (target.kind === 'receiver' && item.post?.subscription) {
+        const now = { sender_id: item.post.subscription.sender_id ?? null, active: !!item.post.subscription.active };
+        const prev = sub.subscriptions.get(id);
+        sub.subscriptions.set(id, JSON.stringify(now));
+        if (prev !== JSON.stringify(now)) this.deps.onReceiverState?.(target, now, prev === undefined);
+      }
       if (target.kind === 'sender' && target.version !== version) this.deps.onChange(target, version);
       if (before !== undefined && before !== version) this.deps.onModified?.(target);
     }
